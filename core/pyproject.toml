@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Shared domain: solar geometry, horizon queries and city configuration"
 requires-python = ">=3.14"
 dependencies = [
+    "numpy>=2",
+    "pvlib>=0.15",
     "pydantic>=2.11",
     "pyyaml>=6",
 ]
