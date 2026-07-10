@@ -9,7 +9,7 @@ completarlos y anota decisiones en el registro del final. El spec de referencia 
 | Fase | Nombre                             | Estado    |
 | ---- | ---------------------------------- | --------- |
 | 0    | Bootstrap del repo                 | hecha     |
-| 1    | core/: modelo solar + horizonte    | pendiente |
+| 1    | core/: modelo solar + horizonte    | hecha     |
 | 2    | pipeline/: de LAZ a artefactos COG | pendiente |
 | 3    | api/: consulta de sombra (sin DB)  | pendiente |
 | 4    | Cordoba real + validacion de campo | pendiente |
@@ -69,15 +69,16 @@ Criterio de salida: CUMPLIDO 2026-07-10. CI verde en https://github.com/aJustDev
 
 Objetivo: motor de sombra correcto sobre rasteres sinteticos.
 
-- [ ] Modulo solar sobre pvlib: azimut/elevacion para (lat, lon, t, tz); convenciones documentadas (azimut 0=N, horario)
-- [ ] Lectura de horizonte: ventana puntual sobre raster multibanda, interpolacion entre sectores de azimut
-- [ ] `is_shaded(point, t)`: observador DTM+1.6m; caso especial pixel bajo copa (apunte 1)
-- [ ] Timeline diario: barrido de la trayectoria solar (paso configurable 5-10 min), fusion de intervalos
-- [ ] Golden test: cubo de 20 m sobre DSM plano, sombras calculadas a mano (solsticios + equinoccio)
-- [ ] Segundo sintetico con "arbol" para validar tipo de sombra
-- [ ] docs/learning: azimut/elevacion/declinacion; algoritmo de horizonte por sectores; DSM vs DTM vs CHM (la nota de CRS ya se hizo en Fase 0)
+- [x] Modulo solar sobre pvlib (`core/solar.py`): azimut 0=N horario, elevacion APARENTE (refraccion); datetime naive -> ValueError; barrido vectorizado del dia
+- [x] Lectura de horizonte (`core/horizon.py`): `HorizonGrid` en memoria, interpolacion azimutal lineal circular, muestreo espacial nearest
+- [x] `is_shaded` (`core/shade.py`): observador DTM+1.6m; pixel bajo copa -> sombra vegetal si es de dia; estados sun/shade/night
+- [x] Timeline diario: barrido con paso configurable (default 5 min), fusion de intervalos contiguos, solo horas de luz
+- [x] Golden test: cubo de 20 m, solsticios via formula geometrica independiente (sombra = 18.4/tan(elev)); 29 tests en total
+- [x] Segundo sintetico con "arbol": bajo copa -> vegetation; sombra proyectada clasificada por ray-march
+- [x] docs/learning: solar-geometry.md, horizon-algorithm.md, dsm-dtm-chm.md + crs.md ampliado con el porque de cada proyeccion
+- [x] Extra no planificado: `compute_horizon_reference` (fuerza bruta) en core como oraculo de la version vectorizada de Fase 2
 
-Criterio de salida: golden tests pasando; timeline continuo con amanecer/atardecer correctos.
+Criterio de salida: CUMPLIDO 2026-07-10. 29 tests verdes en CI; timeline de invierno reproduce sol -> sombra(building) -> sol con amanecer/atardecer correctos.
 
 ## Fase 2 - pipeline/: de LAZ a artefactos COG
 
@@ -164,17 +165,22 @@ Criterio de salida: mapa de sombra visible en ajustino.dev.
 
 ## Registro de decisiones
 
-| Fecha      | Decision                                               | Porque                                                                                                     |
-| ---------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| 2026-07-10 | Horizonte con observador en DTM+1.6m, obstaculos DSM   | Evita error bajo copa y sobre tejado (apunte 1)                                                            |
-| 2026-07-10 | Postgres pospuesto a Fase 5                            | Fases 0-4 no necesitan DB (apunte 4)                                                                       |
-| 2026-07-10 | Pipeline contenerizado desde el inicio                 | PDAL solo fiable via conda-forge (apunte 5)                                                                |
-| 2026-07-10 | Licencia MIT                                           | Eleccion del usuario; permisiva y minima                                                                   |
-| 2026-07-10 | README en ingles; docs/ y docs/learning/ en castellano | Alcance OSS vs objetivo didactico personal                                                                 |
-| 2026-07-10 | Python 3.14 en todo el workspace                       | Wheels cp314 verificados en PyPI para rasterio 1.5.0, shapely 2.1.2, pyproj 3.7.2, numpy 2.5.1; pvlib puro |
-| 2026-07-10 | Repo publico ya: github.com/aJustDev/shade-engine      | Unica forma de verificar el criterio "CI verde"                                                            |
-| 2026-07-10 | Commits en ingles (convencion en CLAUDE.md)            | Coherencia con repo OSS publico en ingles                                                                  |
-| 2026-07-10 | docker-compose aplazado a Fase 2/5                     | Sin DB ni servicios que orquestar todavia                                                                  |
+| Fecha      | Decision                                                                   | Porque                                                                                                                                                                                |
+| ---------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-10 | Horizonte con observador en DTM+1.6m, obstaculos DSM                       | Evita error bajo copa y sobre tejado (apunte 1)                                                                                                                                       |
+| 2026-07-10 | Postgres pospuesto a Fase 5                                                | Fases 0-4 no necesitan DB (apunte 4)                                                                                                                                                  |
+| 2026-07-10 | Pipeline contenerizado desde el inicio                                     | PDAL solo fiable via conda-forge (apunte 5)                                                                                                                                           |
+| 2026-07-10 | Licencia MIT                                                               | Eleccion del usuario; permisiva y minima                                                                                                                                              |
+| 2026-07-10 | README en ingles; docs/ y docs/learning/ en castellano                     | Alcance OSS vs objetivo didactico personal                                                                                                                                            |
+| 2026-07-10 | Python 3.14 en todo el workspace                                           | Wheels cp314 verificados en PyPI para rasterio 1.5.0, shapely 2.1.2, pyproj 3.7.2, numpy 2.5.1; pvlib puro                                                                            |
+| 2026-07-10 | Repo publico ya: github.com/aJustDev/shade-engine                          | Unica forma de verificar el criterio "CI verde"                                                                                                                                       |
+| 2026-07-10 | Commits en ingles (convencion en CLAUDE.md)                                | Coherencia con repo OSS publico en ingles                                                                                                                                             |
+| 2026-07-10 | docker-compose aplazado a Fase 2/5                                         | Sin DB ni servicios que orquestar todavia                                                                                                                                             |
+| 2026-07-10 | Elevacion solar APARENTE (con refraccion)                                  | Es el sol que se ve; relevante al amanecer/atardecer (~0.5 grados en el horizonte)                                                                                                    |
+| 2026-07-10 | Horizonte: interpolacion azimutal lineal circular                          | Nearest erraria hasta medio sector (~2.8 grados con 64), metros de frontera de sombra                                                                                                 |
+| 2026-07-10 | Horizonte: muestreo espacial nearest, no bilinear                          | Promediar perfiles a traves de una pared mezcla tejado con calle: angulos sin sentido fisico                                                                                          |
+| 2026-07-10 | `compute_horizon_reference` (fuerza bruta) en core                         | Oraculo para validar la version vectorizada/tileada del pipeline (Fase 2) sobre los mismos fixtures                                                                                   |
+| 2026-07-10 | Tipo de sombra: ray-march a medio pixel + fallback al sector contribuyente | La interpolacion azimutal difumina bordes de obstaculo ~medio sector; en esa banda el tipo se atribuye al sector que aporto el angulo. Paso de medio pixel: uno entero salta esquinas |
 
 Pendientes de decidir:
 
@@ -183,7 +189,16 @@ Pendientes de decidir:
 
 ## Notas entre sesiones
 
-- 2026-07-10: Fase 0 completada y pusheada. Siguiente: Fase 1 (core/, modelo solar +
-  horizonte). Al empezarla, anadir pvlib/numpy/rasterio como dependencias de shade-core.
-  El dato `name: Cordoba` en cities/cordoba.yaml va sin tilde (regla ASCII); si se quiere
-  tilde de cara a la API, cambiarlo entonces.
+- 2026-07-10: Fase 0 completada y pusheada. El dato `name: Cordoba` en cities/cordoba.yaml
+  va sin tilde (regla ASCII); si se quiere tilde de cara a la API, cambiarlo entonces.
+- 2026-07-10: Fase 1 completada. Siguiente: Fase 2 (pipeline/). Notas para entonces:
+  - rasterio NO se anadio aun a shade-core (Fase 1 quedo todo en memoria); anadirlo cuando
+    core tenga que leer COGs, junto con la variante de `HorizonGrid` respaldada por fichero.
+  - La version vectorizada del horizonte debe validarse contra `compute_horizon_reference`
+    sobre los fixtures de tests/synthetic.py (tolerancia: discretizacion de medio pixel).
+  - Trampa descubierta: fixtures sinteticos con numeros redondos crean geometrias de medida
+    cero (rayo que roza justo la esquina del cubo) donde dos muestreos correctos discrepan;
+    los puntos de consulta de test van desplazados del eje de simetria (synthetic.QUERY_X).
+  - La decision abierta del apunte 3 (ray-march vs bandas por sector) tiene ya un dato: el
+    ray-march runtime funciona pero necesito DSM+DTM+landcover en memoria/ventana; para la
+    API sobre COGs eso son 3 lecturas extra por consulta. Evaluar en Fase 2 con I/O real.
