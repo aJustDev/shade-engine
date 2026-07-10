@@ -15,13 +15,36 @@ la superficie curva en un plano. Se identifican con codigos EPSG:
 
 ## Por que lo usamos aqui
 
+No existe la proyeccion buena para todo: cualquier plano distorsiona algo
+(distancias, angulos o areas). Se elige la buena para cada tarea:
+
 - **Calculamos en EPSG:25830**: el bbox de cada ciudad, los rasteres (DSM,
   DTM, horizonte) y toda la matematica de distancias van en metros reales.
   Pixel de 1 m = 1 m de suelo, y el barrido de horizonte necesita distancias
-  euclidianas correctas.
-- **Servimos en EPSG:4326/3857**: la API recibe lat/lon (lo que tiene el
-  cliente) y los tiles de visualizacion van en Web Mercator (lo que espera la
-  libreria de mapas). La conversion ocurre solo en la frontera de la API.
+  euclidianas correctas (`sombra = altura / tan(elevacion)` exige metros).
+  - **Por que UTM**: trocea el mundo en 60 husos de 6 grados y proyecta cada
+    uno centrado en su meridiano. Dentro del huso el error de escala maximo
+    es ~0.04%: una sombra de 100 m se equivoca en centimetros. No hay
+    proyeccion global sin distorsion, pero si proyecciones locales casi
+    perfectas; por eso el CRS va en el YAML de cada ciudad (Cordoba huso 30;
+    Vigo usaria 25829).
+  - **Por que ETRS89 y no WGS84**: es el datum oficial europeo, anclado a la
+    placa euroasiatica (WGS84 deriva ~2.5 cm/ano con el continente). Y el
+    LiDAR PNOA ya viene en ETRS89 UTM: calcular en el CRS del dato fuente =
+    cero reproyecciones del raster = cero perdida por resampling.
+- **Servimos en EPSG:4326**: es el idioma de intercambio universal (GPS,
+  geocoders; GeoJSON lo exige por RFC 7946). La conversion a 25830 ocurre una
+  sola vez, en la frontera de la API; el interior nunca ve un grado.
+- **Tiles en EPSG:3857 (Web Mercator)**: en la latitud de Cordoba infla las
+  distancias ~27% (factor 1/cos(lat)), pero para _mirar_ es ideal: conforme
+  (las calles conservan angulos, norte siempre arriba) y proyecta el mundo en
+  un cuadrado que se subdivide en quadtree, de ahi el esquema de tiles z/x/y
+  que esperan MapLibre/Leaflet. Regla: en 3857 se pinta, nunca se mide.
+
+Resumen del flujo: LiDAR llega en 25830 -> pipeline y motor calculan en 25830
+-> la API traduce lat/lon en la frontera -> los tiles se reproyectan a 3857
+solo para el navegador. Como guardar dinero en centimos enteros y formatear
+en euros solo al mostrarlo.
 
 ## Trampa tipica
 
