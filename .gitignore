@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+
+# Environments and tool caches
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local raster artifacts and downloads (COGs, LAZ) live outside git
+data/

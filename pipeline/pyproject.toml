@@ -1,0 +1,15 @@
+[project]
+name = "shade-pipeline"
+version = "0.1.0"
+description = "Offline CLI that turns LiDAR into per-city raster artifacts (DSM, DTM, horizon)"
+requires-python = ">=3.14"
+dependencies = [
+    "shade-core",
+]
+
+[tool.uv.sources]
+shade-core = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"

@@ -1,0 +1,13 @@
+[project]
+name = "shade-core"
+version = "0.1.0"
+description = "Shared domain: solar geometry, horizon queries and city configuration"
+requires-python = ">=3.14"
+dependencies = [
+    "pydantic>=2.11",
+    "pyyaml>=6",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
