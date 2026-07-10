@@ -8,7 +8,7 @@ completarlos y anota decisiones en el registro del final. El spec de referencia 
 
 | Fase | Nombre                             | Estado    |
 | ---- | ---------------------------------- | --------- |
-| 0    | Bootstrap del repo                 | pendiente |
+| 0    | Bootstrap del repo                 | hecha     |
 | 1    | core/: modelo solar + horizonte    | pendiente |
 | 2    | pipeline/: de LAZ a artefactos COG | pendiente |
 | 3    | api/: consulta de sombra (sin DB)  | pendiente |
@@ -53,16 +53,17 @@ cambiar pixel a pixel; considerar agregado de vecindario o campo de confianza en
 
 Objetivo: esqueleto trabajable con CI verde.
 
-- [ ] git init + LICENSE (decidir MIT vs Apache-2.0) + README con vision y roadmap (seccion 11 del spec)
-- [ ] Estructura monorepo: `api/`, `pipeline/`, `core/`, `cities/`, `tests/`, `docker/`, `docs/learning/`
-- [ ] Tooling: uv (workspace), ruff, mypy, pytest, pre-commit
-- [ ] CLAUDE.md del repo con las instrucciones didacticas de la seccion 10 del spec
-- [ ] Verificar wheels Python 3.14 para rasterio/shapely/pdal-bindings; decidir 3.14 vs 3.13 por paquete
-- [ ] CI GitHub Actions: lint + mypy + pytest
-- [ ] docker-compose dev minimo (sin postgis todavia, apunte 4)
-- [ ] Incorporar al spec los apuntes aceptados (DTM/observador, max_distance)
+- [x] git init + LICENSE (MIT) + README con vision y roadmap (seccion 11 del spec)
+- [x] Estructura monorepo: `api/`, `pipeline/`, `core/`, `cities/`, `tests/`, `docs/learning/` (`docker/` llegara con su primera pieza)
+- [x] Tooling: uv (workspace con 3 paquetes src layout), ruff, mypy strict, pytest, pre-commit
+- [x] CLAUDE.md del repo con las instrucciones didacticas de la seccion 10 del spec
+- [x] Verificar wheels Python 3.14: rasterio/shapely/pyproj/numpy publican cp314 -> 3.14 en todo el workspace; PDAL solo sdist -> contenedor en Fase 2
+- [x] CI GitHub Actions: lint + format + mypy + pytest (setup-uv pineado a tag completo, no hay major flotante)
+- [x] docker-compose dev minimo -> APLAZADO a la fase que lo necesite (Fase 2/5): sin DB ni servicios aun, un compose vacio es ruido
+- [x] Incorporar al spec los apuntes aceptados (DTM/observador, max_distance)
+- [x] Extra no planificado: modelo `CityConfig` (pydantic) en core + `cities/cordoba.yaml` + 4 tests, para que el test de CI sea real y no un placeholder
 
-Criterio de salida: CI verde con al menos un test trivial; README publicable.
+Criterio de salida: CUMPLIDO 2026-07-10. CI verde en https://github.com/aJustDev/shade-engine (run 29122034951).
 
 ## Fase 1 - core/: modelo solar + consulta de horizonte
 
@@ -74,7 +75,7 @@ Objetivo: motor de sombra correcto sobre rasteres sinteticos.
 - [ ] Timeline diario: barrido de la trayectoria solar (paso configurable 5-10 min), fusion de intervalos
 - [ ] Golden test: cubo de 20 m sobre DSM plano, sombras calculadas a mano (solsticios + equinoccio)
 - [ ] Segundo sintetico con "arbol" para validar tipo de sombra
-- [ ] docs/learning: CRS y por que 25830; azimut/elevacion/declinacion; algoritmo de horizonte por sectores; DSM vs DTM vs CHM
+- [ ] docs/learning: azimut/elevacion/declinacion; algoritmo de horizonte por sectores; DSM vs DTM vs CHM (la nota de CRS ya se hizo en Fase 0)
 
 Criterio de salida: golden tests pasando; timeline continuo con amanecer/atardecer correctos.
 
@@ -163,19 +164,26 @@ Criterio de salida: mapa de sombra visible en ajustino.dev.
 
 ## Registro de decisiones
 
-| Fecha      | Decision                                             | Porque                                          |
-| ---------- | ---------------------------------------------------- | ----------------------------------------------- |
-| 2026-07-10 | Horizonte con observador en DTM+1.6m, obstaculos DSM | Evita error bajo copa y sobre tejado (apunte 1) |
-| 2026-07-10 | Postgres pospuesto a Fase 5                          | Fases 0-4 no necesitan DB (apunte 4)            |
-| 2026-07-10 | Pipeline contenerizado desde el inicio               | PDAL solo fiable via conda-forge (apunte 5)     |
+| Fecha      | Decision                                               | Porque                                                                                                     |
+| ---------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 2026-07-10 | Horizonte con observador en DTM+1.6m, obstaculos DSM   | Evita error bajo copa y sobre tejado (apunte 1)                                                            |
+| 2026-07-10 | Postgres pospuesto a Fase 5                            | Fases 0-4 no necesitan DB (apunte 4)                                                                       |
+| 2026-07-10 | Pipeline contenerizado desde el inicio                 | PDAL solo fiable via conda-forge (apunte 5)                                                                |
+| 2026-07-10 | Licencia MIT                                           | Eleccion del usuario; permisiva y minima                                                                   |
+| 2026-07-10 | README en ingles; docs/ y docs/learning/ en castellano | Alcance OSS vs objetivo didactico personal                                                                 |
+| 2026-07-10 | Python 3.14 en todo el workspace                       | Wheels cp314 verificados en PyPI para rasterio 1.5.0, shapely 2.1.2, pyproj 3.7.2, numpy 2.5.1; pvlib puro |
+| 2026-07-10 | Repo publico ya: github.com/aJustDev/shade-engine      | Unica forma de verificar el criterio "CI verde"                                                            |
+| 2026-07-10 | Commits en ingles (convencion en CLAUDE.md)            | Coherencia con repo OSS publico en ingles                                                                  |
+| 2026-07-10 | docker-compose aplazado a Fase 2/5                     | Sin DB ni servicios que orquestar todavia                                                                  |
 
 Pendientes de decidir:
 
-- LICENSE: MIT vs Apache-2.0 (Fase 0)
-- Python 3.14 vs 3.13 por paquete, segun wheels disponibles (Fase 0)
 - Clasificacion tipo de sombra: ray-march runtime vs bandas por sector (Fase 2)
 - PMTiles estaticos vs tiles PNG dinamicos (Fase 7)
 
 ## Notas entre sesiones
 
-(espacio para dejar contexto a la siguiente sesion: donde se quedo el trabajo, bloqueos, ideas)
+- 2026-07-10: Fase 0 completada y pusheada. Siguiente: Fase 1 (core/, modelo solar +
+  horizonte). Al empezarla, anadir pvlib/numpy/rasterio como dependencias de shade-core.
+  El dato `name: Cordoba` en cities/cordoba.yaml va sin tilde (regla ASCII); si se quiere
+  tilde de cara a la API, cambiarlo entonces.
