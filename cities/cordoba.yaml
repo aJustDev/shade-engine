@@ -1,0 +1,13 @@
+id: cordoba
+name: Cordoba
+country: ES
+timezone: Europe/Madrid
+crs: EPSG:25830 # UTM 30N ETRS89
+bbox: [341000, 4192000, 349000, 4199000] # en CRS local (metros)
+resolution_m: 1.0
+horizon_sectors: 64
+sources:
+  lidar: pnoa # driver de descarga
+  lidar_coverage: PNOA 2a cobertura # informativo: campana del vuelo
+attribution:
+  - LiDAR PNOA (c) Instituto Geografico Nacional de Espana
