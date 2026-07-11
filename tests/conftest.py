@@ -1,9 +1,14 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import yaml
+from fastapi.testclient import TestClient
 
 import laz_fixture
 import synthetic
+from shade_api.app import create_app
+from shade_api.settings import ApiSettings
 from shade_core.config import CityConfig
 from shade_core.horizon import HorizonGrid, compute_horizon_reference
 from shade_core.shade import ShadeScene
@@ -67,3 +72,29 @@ def built_city(tmp_path_factory: pytest.TempPathFactory) -> Path:
     lidar_dir.mkdir()
     laz_fixture.write_cube_laz(lidar_dir / "cube.laz", origin=synthetic.UTM_ORIGIN)
     return build_city(CUBE_CITY, LocalDirectory(lidar_dir), root / "data")
+
+
+@pytest.fixture(scope="session")
+def api_settings(built_city: Path, tmp_path_factory: pytest.TempPathFactory) -> ApiSettings:
+    """Settings pointing at the built fixture city plus a ghost city.
+
+    The ghost has a valid YAML but no artifacts: the registry must skip it.
+    Rate limiting is off; the dedicated limits test builds its own app.
+    """
+    cities_dir = tmp_path_factory.mktemp("api_cities")
+    (cities_dir / "cube.yaml").write_text(yaml.safe_dump(CUBE_CITY.model_dump(mode="json")))
+    ghost = CUBE_CITY.model_copy(update={"id": "ghost"})
+    (cities_dir / "ghost.yaml").write_text(yaml.safe_dump(ghost.model_dump(mode="json")))
+    return ApiSettings(
+        cities_dir=cities_dir,
+        artifacts_root=built_city.parent.parent,
+        cors_origins=["https://example.test"],
+        rate_limit_enabled=False,
+    )
+
+
+@pytest.fixture(scope="session")
+def client(api_settings: ApiSettings) -> Iterator[TestClient]:
+    """API test client; the context manager runs the lifespan (registry load)."""
+    with TestClient(create_app(api_settings)) as instance:
+        yield instance

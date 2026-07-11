@@ -1,0 +1,47 @@
+"""Application factory. Run with ``uvicorn shade_api.app:app``.
+
+``create_app`` takes settings explicitly so tests can build isolated apps;
+the module-level ``app`` reads them from the environment. No IO happens at
+import time -- the city registry is built inside the lifespan, so uvicorn
+importing the module stays cheap and failures surface at startup.
+"""
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from importlib import metadata as importlib_metadata
+
+from fastapi import FastAPI
+
+from shade_api.registry import CityRegistry
+from shade_api.routes import health_router, router
+from shade_api.settings import ApiSettings
+
+_DESCRIPTION = (
+    "Public API of shade-engine: urban shade queries answered from "
+    "precomputed per-city horizon artifacts. Times without a UTC offset "
+    "are interpreted in the city's timezone."
+)
+
+
+def create_app(settings: ApiSettings | None = None) -> FastAPI:
+    app_settings = settings if settings is not None else ApiSettings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.registry = CityRegistry.load(app_settings)
+        yield
+        app.state.registry.close()
+
+    app = FastAPI(
+        title="shade-engine API",
+        version=importlib_metadata.version("shade-api"),
+        description=_DESCRIPTION,
+        lifespan=lifespan,
+    )
+    app.state.settings = app_settings
+    app.include_router(router)
+    app.include_router(health_router)
+    return app
+
+
+app = create_app()
