@@ -15,7 +15,9 @@ Cells without ground points -- building footprints, water -- are DTM holes
 filled by inverse-distance interpolation from surrounding ground pixels
 (rasterio's ``fillnodata``). Cells without any first return copy the filled
 DTM, and the DSM is floored at the DTM to guard against noise points below
-the terrain.
+the terrain. Noise *above* the terrain has no such floor, so noise and
+overlap classes (7, 18, 12) and withheld-flagged points are dropped before
+binning; see the chunk loop for the details.
 """
 
 from collections.abc import Sequence
@@ -36,6 +38,10 @@ from shade_pipeline.grid import grid_shape, transform_from_bbox
 LIDAR_CLASS_GROUND = 2
 LIDAR_CLASSES_VEGETATION = (3, 4, 5)
 LIDAR_CLASS_BUILDING = 6
+LIDAR_CLASS_LOW_NOISE = 7
+LIDAR_CLASS_OVERLAP = 12
+LIDAR_CLASS_HIGH_NOISE = 18
+DROPPED_CLASSES = (LIDAR_CLASS_LOW_NOISE, LIDAR_CLASS_OVERLAP, LIDAR_CLASS_HIGH_NOISE)
 
 
 @dataclass(frozen=True)
@@ -87,9 +93,22 @@ def rasterize_lidar(
                 first = np.asarray(points.return_number) == 1
                 total += len(x)
 
+                # Noise (7/18) and overlap (12, or its LAS 1.4 flag) never bin:
+                # the DSM is a max, so one stray return 50 m above a street
+                # would cast a phantom obstacle over every horizon profile
+                # within max_distance. Withheld points are excluded by spec.
+                # The synthetic flag stays: it marks valid points produced by
+                # another technique (hydro-flattened water is class 2 +
+                # synthetic; dropping it would hole the DTM across the river).
+                keep = ~(
+                    np.isin(classification, DROPPED_CLASSES)
+                    | np.asarray(points.withheld, dtype=bool)
+                    | np.asarray(points.overlap, dtype=bool)
+                )
+
                 col = np.floor((x - min_x) / resolution_m).astype(np.int64)
                 row = np.floor((max_y - y) / resolution_m).astype(np.int64)
-                inside = (row >= 0) & (row < rows) & (col >= 0) & (col < cols)
+                inside = keep & (row >= 0) & (row < rows) & (col >= 0) & (col < cols)
                 idx = (row * cols + col)[inside]
                 z = z[inside]
                 classification = classification[inside]

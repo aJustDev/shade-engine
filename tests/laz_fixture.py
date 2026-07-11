@@ -28,8 +28,16 @@ def write_laz(
     z: npt.NDArray[np.float64],
     classification: npt.NDArray[np.uint8],
     return_number: npt.NDArray[np.uint8] | None = None,
+    *,
+    withheld: npt.NDArray[np.bool_] | None = None,
+    overlap: npt.NDArray[np.bool_] | None = None,
+    synthetic_flag: npt.NDArray[np.bool_] | None = None,
 ) -> int:
-    """Write parallel point arrays as a LAZ file; returns the point count."""
+    """Write parallel point arrays as a LAZ file; returns the point count.
+
+    The keyword flags map to the LAS 1.4 per-point classification flags
+    (``synthetic_flag`` avoids shadowing the ``synthetic`` module).
+    """
     header = laspy.LasHeader(version="1.4", point_format=6)
     header.scales = np.array([0.01, 0.01, 0.01])
     header.offsets = np.array([0.0, 0.0, 0.0])
@@ -42,6 +50,12 @@ def write_laz(
         return_number = np.ones(len(x), dtype=np.uint8)
     las.return_number = return_number
     las.number_of_returns = return_number
+    if withheld is not None:
+        las.withheld = withheld
+    if overlap is not None:
+        las.overlap = overlap
+    if synthetic_flag is not None:
+        las.synthetic = synthetic_flag
     las.write(path)
     return len(x)
 

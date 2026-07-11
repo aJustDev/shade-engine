@@ -13,6 +13,14 @@ las clases que usa PNOA y que consumimos aqui:
 - `2` suelo
 - `3` / `4` / `5` vegetacion baja / media / alta
 - `6` edificio
+- `7` / `18` ruido bajo / alto (reflejos, pajaros, aerosoles): se descartan
+- `12` solape entre pasadas del vuelo (peor geometria): se descarta
+
+LAS 1.4 anade ademas flags por punto, aparte de la clase: `withheld` (la
+spec manda excluirlo del procesado), `overlap` (equivalente moderno de la
+clase 12) y `synthetic` (punto VALIDO generado por otra tecnica; el caso
+tipico es el hidro-aplanado: laminas de agua rellenadas como clase 2 +
+synthetic).
 
 ## Por que lo usamos aqui
 
@@ -24,9 +32,20 @@ las clases que usa PNOA y que consumimos aqui:
 - Landcover (building/vegetation/ground) = clase del punto que fijo el DSM
   de la celda: es lo que la consulta reporta como "que da esta sombra".
 
-PNOA distribuye tiles LAZ de 2x2 km en el UTM local (EPSG:25830 en Cordoba):
-otro motivo de calcular en ese CRS (cero reproyecciones). La 2a cobertura
-(~0.5-2 pt/m2) usa formato de punto 6 de LAS 1.4.
+PNOA distribuye tiles LAZ en el UTM local (EPSG:25830 en Cordoba): otro
+motivo de calcular en ese CRS (cero reproyecciones). La 2a cobertura
+(~0.5-2 pt/m2, tiles de 2x2 km) y la 3a (~5 pt/m2, tiles de 1x1 km, 2024 en
+Cordoba) usan formato de punto 6 de LAS 1.4.
+
+El filtrado de ruido importa mas de lo que parece por como agregamos: el DSM
+es un **max** por celda. Un outlier por debajo del terreno lo absorbe el
+suelo (`dsm = max(dsm, dtm)`), pero un unico punto de ruido a +50 m sobre
+una calle no tiene defensa: seria el DSM de su celda y, como el barrido de
+horizonte mira hasta `max_distance` (500 m), apareceria como obstaculo
+fantasma en el perfil de ~10^5 pixeles vecinos. Por eso 7/18/12, `withheld`
+y `overlap` se tiran antes del binning. `synthetic` NO se tira: en el
+Guadalquivir es lo unico que da suelo al DTM (sin el, el rio seria un
+agujero mas ancho que el radio de rellenado y el build abortaria).
 
 ## Trampa tipica
 

@@ -21,6 +21,10 @@ def _rasterize(
     z: list[float],
     classification: list[int],
     return_number: list[int] | None = None,
+    *,
+    withheld: list[bool] | None = None,
+    overlap: list[bool] | None = None,
+    synthetic_flag: list[bool] | None = None,
 ) -> RasterStack:
     path = tmp_path / "points.laz"
     laz_fixture.write_laz(
@@ -30,6 +34,9 @@ def _rasterize(
         np.array(z, dtype=np.float64),
         np.array(classification, dtype=np.uint8),
         None if return_number is None else np.array(return_number, dtype=np.uint8),
+        withheld=None if withheld is None else np.array(withheld, dtype=np.bool_),
+        overlap=None if overlap is None else np.array(overlap, dtype=np.bool_),
+        synthetic_flag=None if synthetic_flag is None else np.array(synthetic_flag, dtype=np.bool_),
     )
     return rasterize_lidar([path], BBOX, 1.0)
 
@@ -78,6 +85,39 @@ def test_dsm_hole_takes_filled_dtm(tmp_path: Path) -> None:
     stack = _rasterize(tmp_path, [0.5], [3.5], [3.0], [2], return_number=[2])
     assert stack.dsm[0, 0] == 3.0
     assert stack.landcover[0, 0] == Landcover.GROUND
+
+
+def test_noise_classes_do_not_feed_dsm(tmp_path: Path) -> None:
+    # Low (7) and high (18) noise 50 m up: without the filter each would
+    # become its cell's DSM and a phantom horizon obstacle.
+    stack = _rasterize(tmp_path, [0.5, 0.5, 2.5], [3.5, 3.5, 1.5], [0.0, 50.0, 50.0], [2, 7, 18])
+    assert float(stack.dsm.max()) == 0.0
+
+
+def test_overlap_class_dropped(tmp_path: Path) -> None:
+    stack = _rasterize(tmp_path, [0.5, 0.5], [3.5, 3.5], [0.0, 30.0], [2, 12])
+    assert stack.dsm[0, 0] == 0.0
+    assert stack.dtm[0, 0] == pytest.approx(0.0)
+
+
+def test_withheld_points_dropped(tmp_path: Path) -> None:
+    stack = _rasterize(
+        tmp_path, [0.5, 0.5], [3.5, 3.5], [0.0, 30.0], [2, 6], withheld=[False, True]
+    )
+    assert stack.dsm[0, 0] == 0.0
+    assert stack.landcover[0, 0] == Landcover.GROUND
+
+
+def test_overlap_flag_dropped(tmp_path: Path) -> None:
+    stack = _rasterize(tmp_path, [0.5, 0.5], [3.5, 3.5], [0.0, 30.0], [2, 6], overlap=[False, True])
+    assert stack.dsm[0, 0] == 0.0
+
+
+def test_synthetic_ground_feeds_dtm(tmp_path: Path) -> None:
+    # Hydro-flattened water ships as class 2 + synthetic; it must keep
+    # feeding the DTM or rivers become unfillable holes.
+    stack = _rasterize(tmp_path, [0.5], [3.5], [42.0], [2], synthetic_flag=[True])
+    assert stack.dtm[0, 0] == pytest.approx(42.0)
 
 
 def test_fill_dtm_gaps_interior_hole() -> None:
