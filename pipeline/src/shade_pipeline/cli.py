@@ -76,7 +76,7 @@ def build(
         step_mode="exact" if step_mode is StepMode.exact else "geometric",
     )
     try:
-        out_dir = build_city(config, source, output_root, params)
+        out_dir = build_city(config, source, output_root, params, progress=typer.echo)
     except (CoverageError, CnigError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc

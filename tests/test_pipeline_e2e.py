@@ -100,6 +100,8 @@ def test_cli_smoke(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
+    assert "binning [1/1] cube.laz" in result.output
+    assert "sweeping tile [1/1]" in result.output
     for name in ARTIFACT_FILES:
         assert (output_root / "cube" / "v1" / name).exists(), name
 

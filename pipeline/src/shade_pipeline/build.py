@@ -8,6 +8,7 @@ bbox -- every artifact shares one shape and georeference, as the engine's
 """
 
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -40,8 +41,13 @@ def build_city(
     source: LidarSource,
     output_root: Path,
     params: HorizonParams | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> Path:
-    """Produce ``<output_root>/<city>/v1/`` artifacts; returns that directory."""
+    """Produce ``<output_root>/<city>/v1/`` artifacts; returns that directory.
+
+    ``progress`` receives one line per LiDAR file binned and per horizon
+    tile swept -- city builds run for hours and silence reads as a hang.
+    """
     if params is None:
         params = HorizonParams(
             sectors=config.horizon_sectors,
@@ -52,7 +58,7 @@ def build_city(
     pad = buffer_pixels(params.max_distance_m, resolution)
     padded = padded_bbox(config.bbox, resolution, pad)
     files = source.files_covering(config.bbox, pad * resolution)
-    stack = rasterize_lidar(files, padded, resolution)
+    stack = rasterize_lidar(files, padded, resolution, progress=progress)
 
     rows, cols = grid_shape(config.bbox, resolution)
     inner = (pad, pad + rows, pad, pad + cols)
@@ -74,6 +80,7 @@ def build_city(
             params,
             inner,
             scratch_dir=Path(scratch),
+            progress=progress,
         )
         write_cog(
             out_dir / HORIZON_FILENAME,

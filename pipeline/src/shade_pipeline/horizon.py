@@ -28,6 +28,7 @@ against the oracle at tight tolerance.
 """
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -162,6 +163,7 @@ def compute_horizon_tiled(
     inner: tuple[int, int, int, int] | None = None,
     *,
     scratch_dir: Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> HorizonResult:
     """Sweep the ``inner`` window (default: everything) tile by tile.
 
@@ -190,10 +192,17 @@ def compute_horizon_tiled(
     else:
         angles_q = np.memmap(scratch_dir / "angles_q.u8", dtype=np.uint8, mode="w+", shape=shape)
         blocker = np.memmap(scratch_dir / "blocker.u8", dtype=np.uint8, mode="w+", shape=shape)
+    tile_count = math.ceil((row1 - row0) / params.tile_size) * math.ceil(
+        (col1 - col0) / params.tile_size
+    )
+    tile_index = 0
     for t0 in range(row0, row1, params.tile_size):
         t1 = min(t0 + params.tile_size, row1)
         for u0 in range(col0, col1, params.tile_size):
             u1 = min(u0 + params.tile_size, col1)
+            tile_index += 1
+            if progress is not None:
+                progress(f"sweeping tile [{tile_index}/{tile_count}]")
             p0, p1 = max(0, t0 - pad), min(rows, t1 + pad)
             q0, q1 = max(0, u0 - pad), min(cols, u1 + pad)
             tile_angles, tile_blocker = compute_horizon_block(

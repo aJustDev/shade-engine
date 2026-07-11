@@ -20,7 +20,7 @@ overlap classes (7, 18, 12) and withheld-flagged points are dropped before
 binning; see the chunk loop for the details.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +61,7 @@ def rasterize_lidar(
     resolution_m: float,
     *,
     chunk_size: int = 2_000_000,
+    progress: Callable[[str], None] | None = None,
 ) -> RasterStack:
     """Bin LAZ/LAS files into DSM, DTM and landcover over ``bbox``.
 
@@ -82,7 +83,9 @@ def rasterize_lidar(
     dtm_count = np.zeros(n, dtype=np.int64)
     point_counts: dict[str, int] = {}
 
-    for path in files:
+    for file_index, path in enumerate(files, start=1):
+        if progress is not None:
+            progress(f"binning [{file_index}/{len(files)}] {path.name}")
         total = 0
         with laspy.open(path) as reader:
             for points in reader.chunk_iterator(chunk_size):
