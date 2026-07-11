@@ -29,6 +29,7 @@ against the oracle at tight tolerance.
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Literal
 
 import numpy as np
@@ -159,6 +160,8 @@ def compute_horizon_tiled(
     resolution_m: float,
     params: HorizonParams,
     inner: tuple[int, int, int, int] | None = None,
+    *,
+    scratch_dir: Path | None = None,
 ) -> HorizonResult:
     """Sweep the ``inner`` window (default: everything) tile by tile.
 
@@ -166,6 +169,13 @@ def compute_horizon_tiled(
     (clipped at dataset edges), so results are independent of ``tile_size``;
     memory per tile stays bounded while cost stays proportional to inner
     pixels (buffer pixels are read, never swept).
+
+    With ``scratch_dir`` the two output cubes live in memory-mapped files
+    there instead of anonymous RAM. City-scale cubes are the build's largest
+    allocation (64 x 7000 x 8000 uint8 ~= 3.35 GB apiece for Cordoba) and the
+    access pattern is mmap-friendly -- written tile by tile, then read back
+    band by band exactly once -- so file-backed pages let the kernel evict
+    under pressure instead of OOMing. Results are bit-identical either way.
     """
     rows, cols = dsm.shape
     if inner is None:
@@ -173,8 +183,13 @@ def compute_horizon_tiled(
     row0, row1, col0, col1 = inner
     pad = buffer_pixels(params.max_distance_m, resolution_m)
 
-    angles_q = np.empty((params.sectors, row1 - row0, col1 - col0), dtype=np.uint8)
-    blocker = np.empty_like(angles_q)
+    shape = (params.sectors, row1 - row0, col1 - col0)
+    if scratch_dir is None:
+        angles_q = np.empty(shape, dtype=np.uint8)
+        blocker = np.empty(shape, dtype=np.uint8)
+    else:
+        angles_q = np.memmap(scratch_dir / "angles_q.u8", dtype=np.uint8, mode="w+", shape=shape)
+        blocker = np.memmap(scratch_dir / "blocker.u8", dtype=np.uint8, mode="w+", shape=shape)
     for t0 in range(row0, row1, params.tile_size):
         t1 = min(t0 + params.tile_size, row1)
         for u0 in range(col0, col1, params.tile_size):

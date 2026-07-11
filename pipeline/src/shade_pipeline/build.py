@@ -7,11 +7,10 @@ bbox -- every artifact shares one shape and georeference, as the engine's
 ``ShadeScene`` requires.
 """
 
+import tempfile
 from datetime import UTC, datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-
-import numpy as np
 
 from shade_core.artifacts import (
     BLOCKER_CLASS_FILENAME,
@@ -57,44 +56,50 @@ def build_city(
 
     rows, cols = grid_shape(config.bbox, resolution)
     inner = (pad, pad + rows, pad, pad + cols)
-    result = compute_horizon_tiled(
-        stack.dsm.astype(np.float64),
-        stack.dtm.astype(np.float64),
-        stack.landcover,
-        resolution,
-        params,
-        inner,
-    )
-
     out_dir = output_root / config.id / ARTIFACT_VERSION
     out_dir.mkdir(parents=True, exist_ok=True)
     crop = (slice(pad, pad + rows), slice(pad, pad + cols))
     transform = transform_from_bbox(config.bbox, resolution)
     common = {"city_id": config.id}
+    # Scratch inside out_dir: same (gitignored) filesystem as the output, so
+    # the memmapped cubes never land on a small tmpfs. float32 rasters go in
+    # as-is -- the sweep casts per tile, a whole-array float64 copy buys
+    # nothing but ~1.2 GB of peak RSS at city scale.
+    with tempfile.TemporaryDirectory(dir=out_dir, prefix=".horizon-") as scratch:
+        result = compute_horizon_tiled(
+            stack.dsm,
+            stack.dtm,
+            stack.landcover,
+            resolution,
+            params,
+            inner,
+            scratch_dir=Path(scratch),
+        )
+        write_cog(
+            out_dir / HORIZON_FILENAME,
+            result.angles_q,
+            transform,
+            config.crs,
+            tags={
+                **common,
+                "angle_max_deg": str(ANGLE_MAX_DEG),
+                "sectors": str(params.sectors),
+                "max_distance_m": str(params.max_distance_m),
+                "observer_height_m": str(params.observer_height_m),
+            },
+        )
+        write_cog(
+            out_dir / BLOCKER_CLASS_FILENAME,
+            result.blocker_class,
+            transform,
+            config.crs,
+            tags={**common, "no_blocker": str(NO_BLOCKER)},
+        )
+        del result
     write_cog(out_dir / DSM_FILENAME, stack.dsm[crop], transform, config.crs, tags=common)
     write_cog(out_dir / DTM_FILENAME, stack.dtm[crop], transform, config.crs, tags=common)
     write_cog(
         out_dir / LANDCOVER_FILENAME, stack.landcover[crop], transform, config.crs, tags=common
-    )
-    write_cog(
-        out_dir / HORIZON_FILENAME,
-        result.angles_q,
-        transform,
-        config.crs,
-        tags={
-            **common,
-            "angle_max_deg": str(ANGLE_MAX_DEG),
-            "sectors": str(params.sectors),
-            "max_distance_m": str(params.max_distance_m),
-            "observer_height_m": str(params.observer_height_m),
-        },
-    )
-    write_cog(
-        out_dir / BLOCKER_CLASS_FILENAME,
-        result.blocker_class,
-        transform,
-        config.crs,
-        tags={**common, "no_blocker": str(NO_BLOCKER)},
     )
 
     metadata = BuildMetadata(

@@ -56,7 +56,10 @@ def write_cog(
             blockysize=512,
             compress="deflate",
         ) as dst:
-            dst.write(cube)
+            # One band at a time: a single write(cube) would materialize the
+            # whole array, defeating memmapped horizon cubes at city scale.
+            for band in range(bands):
+                dst.write(cube[band], band + 1)
             if tags:
                 dst.update_tags(**tags)
         rasterio.shutil.copy(

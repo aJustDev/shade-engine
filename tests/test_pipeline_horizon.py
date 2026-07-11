@@ -1,5 +1,7 @@
 """The production horizon sweep against the brute-force oracle from core."""
 
+from pathlib import Path
+
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
@@ -57,6 +59,17 @@ def test_inner_window_equals_reference_crop(cube_grid: HorizonGrid) -> None:
 
     reference = compute_horizon_reference(dsm, dtm, 1.0, max_distance_m=20.0)
     assert_array_equal(result.angles_q, quantize_angles(reference.angles_deg[:, 20:100, 20:100]))
+
+
+def test_tiled_scratch_dir_matches_in_memory(tmp_path: Path) -> None:
+    """Memmapped output cubes are a storage detail: values stay bit-identical."""
+    dsm, dtm = synthetic.cube_scene()
+    in_memory = compute_horizon_tiled(dsm, dtm, synthetic.cube_landcover(), 1.0, CUBE_PARAMS)
+    mapped = compute_horizon_tiled(
+        dsm, dtm, synthetic.cube_landcover(), 1.0, CUBE_PARAMS, scratch_dir=tmp_path
+    )
+    assert_array_equal(np.asarray(mapped.angles_q), in_memory.angles_q)
+    assert_array_equal(np.asarray(mapped.blocker_class), in_memory.blocker_class)
 
 
 def test_blocker_class_cube() -> None:
