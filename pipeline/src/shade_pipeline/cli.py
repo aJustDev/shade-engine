@@ -1,5 +1,6 @@
 """Command line interface: ``shade-engine build <city>``."""
 
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -11,6 +12,13 @@ from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.sources import CoverageError, LocalDirectory
 
 app = typer.Typer(help="Offline pipeline that turns LiDAR into per-city shade artifacts.")
+
+
+class StepMode(StrEnum):
+    """CLI mirror of ``HorizonParams.step_mode`` (typer needs an Enum, not a Literal)."""
+
+    exact = "exact"
+    geometric = "geometric"
 
 
 @app.callback()
@@ -29,6 +37,10 @@ def build(
     ] = None,
     output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
     tile_size: Annotated[int, typer.Option(help="Horizon sweep tile size, pixels")] = 512,
+    step_mode: Annotated[
+        StepMode,
+        typer.Option(help="Horizon distance schedule: exact (half-pixel) or geometric (growing)"),
+    ] = StepMode.exact,
 ) -> None:
     """Build the raster artifacts for CITY from local LiDAR tiles."""
     config = load_city(cities_dir / f"{city}.yaml")
@@ -40,6 +52,7 @@ def build(
         max_distance_m=config.horizon_max_distance_m,
         observer_height_m=config.observer_height_m,
         tile_size=tile_size,
+        step_mode="exact" if step_mode is StepMode.exact else "geometric",
     )
     try:
         out_dir = build_city(config, LocalDirectory(lidar_dir), output_root, params)

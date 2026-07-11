@@ -70,6 +70,27 @@ Dos artefactos salen del mismo barrido:
   DSM+DTM+landcover (3 ventanas COG extra por consulta). Empates los gana el
   bloqueador mas cercano; sectores con horizonte 0 guardan 255 (cielo).
 
+## Modo geometric (Fase 4)
+
+El modo `exact` muestrea cada sector a paso constante de medio pixel: a
+1 m/px y 500 m de radio, ~1000 distancias por sector. La observacion que
+explota el modo `geometric`: el error angular de saltarse un obstaculo
+depende de la distancia RELATIVA, no absoluta. Medio metro importa a 5 m
+del observador (10% de la distancia) y es irrelevante a 400 m (0.125%).
+
+Por eso el paso crece multiplicativamente: `d = max(d + paso, d * 1.02)`.
+Denso cerca, ralo lejos, error relativo acotado ~2%. Las muestras caen de
+~1000 a ~350 (regimen exponencial: `ln(2 * max_d / res) / ln(growth)`), y
+el coste del barrido baja en esa proporcion.
+
+El precio: puede saltarse obstaculos FINOS lejanos (una chimenea a 300 m
+cabe entre dos muestras separadas 6 m). Por eso nunca se valida contra el
+oraculo bit a bit: dos discretizaciones correctas del mismo continuo
+discrepan legitimamente en pixeles sueltos (roce de esquina), y la
+validacion es por cuantiles de la diferencia angular. Se expone como
+`--step-mode` en el CLI; la eleccion exact/geometric para cada ciudad se
+decide midiendo (probe de Fase 4) y queda registrada en su metadata.json.
+
 ## Trampa tipica
 
 Confundir "el sol esta sobre el horizonte astronomico" (elevacion > 0, es de

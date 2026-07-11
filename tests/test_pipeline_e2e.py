@@ -104,6 +104,35 @@ def test_cli_smoke(tmp_path: Path) -> None:
         assert (output_root / "cube" / "v1" / name).exists(), name
 
 
+def test_cli_step_mode_geometric(tmp_path: Path) -> None:
+    cities_dir = tmp_path / "cities"
+    cities_dir.mkdir()
+    (cities_dir / "cube.yaml").write_text(CUBE_CITY_YAML)
+    lidar_dir = tmp_path / "lidar"
+    lidar_dir.mkdir()
+    laz_fixture.write_cube_laz(lidar_dir / "cube.laz")
+    output_root = tmp_path / "data"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "build",
+            "cube",
+            "--cities-dir",
+            str(cities_dir),
+            "--lidar-dir",
+            str(lidar_dir),
+            "--output-root",
+            str(output_root),
+            "--step-mode",
+            "geometric",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    metadata = artifacts.load_metadata(output_root / "cube" / "v1")
+    assert metadata.horizon.step_mode == "geometric"
+
+
 def test_cli_requires_lidar_dir(tmp_path: Path) -> None:
     cities_dir = tmp_path / "cities"
     cities_dir.mkdir()
