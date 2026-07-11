@@ -8,7 +8,8 @@ resolution_m: 1.0
 horizon_sectors: 64
 horizon_max_distance_m: 500 # radio del barrido; tambien buffer del bbox
 sources:
-  lidar: pnoa # driver de descarga
-  lidar_coverage: PNOA 2a cobertura # informativo: campana del vuelo
+  lidar: pnoa # driver de descarga (CnigSource)
+  pnoa_series: LIDA3 # codSerie del centro de descargas: 3a cobertura
+  lidar_coverage: PNOA 3a cobertura 2024, 5 pt/m2, clasificacion NPC01 # informativo
 attribution:
-  - LiDAR PNOA (c) Instituto Geografico Nacional de Espana
+  - Obra derivada de PNOA-cob3 2022-2025 CC-BY 4.0 scne.es

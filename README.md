@@ -49,9 +49,15 @@ implementation plan in [docs/plan.md](docs/plan.md) (both in Spanish).
 
 ## Data sources and attribution
 
-Raster artifacts are derived from LiDAR PNOA (c) Instituto Geografico
-Nacional de Espana (IGN), licensed CC BY 4.0. Any service built on them must
-retain this attribution; the API returns it in an `attribution` field.
+Raster artifacts are derived from PNOA LiDAR point clouds (third coverage,
+2022-2025) distributed by Spain's CNIG under CC-BY 4.0. The required
+derived-work attribution is:
+
+    Obra derivada de PNOA-cob3 2022-2025 CC-BY 4.0 scne.es
+
+Any service built on these artifacts must retain it; the API returns each
+city's attribution in an `attribution` field, sourced from the artifacts'
+build metadata.
 
 ## License
 
