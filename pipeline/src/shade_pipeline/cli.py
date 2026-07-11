@@ -1,15 +1,18 @@
-"""Command line interface: ``shade-engine build <city>``."""
+"""Command line interface: ``shade-engine build|predict <city>``."""
 
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from shade_core.artifacts import METADATA_FILENAME
 from shade_core.config import CityConfig, load_city
-from shade_pipeline.build import build_city
+from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.cnig import CnigError, CnigSource
 from shade_pipeline.horizon import HorizonParams
+from shade_pipeline.predict import prediction_table, read_points
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 
 app = typer.Typer(help="Offline pipeline that turns LiDAR into per-city shade artifacts.")
@@ -39,7 +42,7 @@ class StepMode(StrEnum):
 
 @app.callback()
 def main() -> None:
-    """Keep ``build`` a subcommand even while it is the only command."""
+    """Group callback so commands stay subcommands (build, predict)."""
 
 
 @app.command()
@@ -78,3 +81,25 @@ def build(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"artifacts written to {out_dir}")
+
+
+@app.command()
+def predict(
+    city: str,
+    points_csv: Annotated[Path, typer.Argument(help="CSV with id,name,lat,lon columns")],
+    day: Annotated[str, typer.Option(help="Local calendar day, YYYY-MM-DD")],
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+) -> None:
+    """Print the predicted shade timeline of each field point for DAY."""
+    config = load_city(cities_dir / f"{city}.yaml")
+    artifact_dir = output_root / config.id / ARTIFACT_VERSION
+    if not (artifact_dir / METADATA_FILENAME).exists():
+        typer.echo(
+            f"error: no artifacts under {artifact_dir}; run shade-engine build first", err=True
+        )
+        raise typer.Exit(1)
+    table = prediction_table(config, artifact_dir, read_points(points_csv), date.fromisoformat(day))
+    typer.echo(table)
