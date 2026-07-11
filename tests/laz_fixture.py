@@ -46,13 +46,17 @@ def write_laz(
     return len(x)
 
 
-def write_cube_laz(path: Path) -> int:
+def write_cube_laz(path: Path, origin: tuple[float, float] = (0.0, 0.0)) -> int:
     """The cube scene as a point cloud: one first return per cell center.
 
     Roof points (class 6, z = 20) on the cube footprint and ground points
     (class 2, z = 0) everywhere else. There are no ground points *under* the
     cube -- exactly like a real flight -- so the DTM gets a 20x20 hole that
     exercises gap filling for real.
+
+    ``origin`` translates the whole scene, e.g. to real UTM coordinates
+    (LAS scale 0.01 with zero offsets stores 4.2e6 m as 4.2e8 < 2^31, so
+    int32 headroom is fine).
     """
     size = synthetic.SIZE
     row, col = np.mgrid[0:size, 0:size]
@@ -66,4 +70,4 @@ def write_cube_laz(path: Path) -> int:
     )
     z = np.where(in_cube, synthetic.CUBE_HEIGHT, 0.0)
     classification = np.where(in_cube, LIDAR_CLASS_BUILDING, LIDAR_CLASS_GROUND)
-    return write_laz(path, x, y, z, classification.astype(np.uint8))
+    return write_laz(path, x + origin[0], y + origin[1], z, classification.astype(np.uint8))

@@ -13,6 +13,12 @@ from shade_core.shade import Landcover
 SIZE = 120
 RESOLUTION_M = 1.0
 
+# Where the built-city fixture places the scene's (0, 0) corner in EPSG:25830
+# (UTM 30N, meters). Chosen near real Cordoba (~37.87 N, 4.80 W) so the API's
+# lat/lon queries and the phase-1 golden sun positions both apply. Coordinates
+# around 4e6 also expose georef sign/precision bugs that a (0, 0) origin masks.
+UTM_ORIGIN = (341000.0, 4192000.0)
+
 # Cube building: 20 m tall, footprint x in [50, 70), y in [30, 50).
 CUBE_HEIGHT = 20.0
 CUBE_X = (50.0, 70.0)

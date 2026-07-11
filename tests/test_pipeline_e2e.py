@@ -16,7 +16,10 @@ from shade_core.solar import sun_position
 from shade_pipeline.cli import app
 
 CORDOBA_LAT, CORDOBA_LON = 37.88, -4.78
-NEAR = (synthetic.QUERY_X, synthetic.CUBE_NORTH_WALL_Y + 10.0)
+NEAR = (
+    synthetic.UTM_ORIGIN[0] + synthetic.QUERY_X,
+    synthetic.UTM_ORIGIN[1] + synthetic.CUBE_NORTH_WALL_Y + 10.0,
+)
 WINTER_NOON = datetime(2026, 12, 21, 13, 20, tzinfo=ZoneInfo("Europe/Madrid"))
 SUMMER_NOON = datetime(2026, 6, 21, 14, 20, tzinfo=ZoneInfo("Europe/Madrid"))
 
@@ -56,7 +59,7 @@ def test_loaded_horizon_matches_reference_crop(built_city: Path) -> None:
     grid = artifacts.load_horizon(built_city / artifacts.HORIZON_FILENAME)
     dsm, dtm = synthetic.cube_scene()
     reference = compute_horizon_reference(dsm, dtm, 1.0, max_distance_m=20.0)
-    assert grid.origin == (20.0, 100.0)
+    assert grid.origin == (synthetic.UTM_ORIGIN[0] + 20.0, synthetic.UTM_ORIGIN[1] + 100.0)
     assert_allclose(
         grid.angles_deg,
         reference.angles_deg[:, 20:100, 20:100],

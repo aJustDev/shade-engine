@@ -31,6 +31,28 @@ def tree_shade_scene() -> ShadeScene:
     return ShadeScene(horizon=grid, landcover=landcover, canopy=canopy, dsm=dsm, dtm=dtm)
 
 
+# The built-city fixture config, at real Cordoba UTM coordinates so lat/lon
+# queries through the API resolve into the scene. Single source of truth for
+# every test that needs the city's georeference or metadata.
+CUBE_CITY = CityConfig(
+    id="cube",
+    name="Cube",
+    country="ES",
+    timezone="Europe/Madrid",
+    crs="EPSG:25830",
+    bbox=(
+        synthetic.UTM_ORIGIN[0] + 20.0,
+        synthetic.UTM_ORIGIN[1] + 20.0,
+        synthetic.UTM_ORIGIN[0] + 100.0,
+        synthetic.UTM_ORIGIN[1] + 100.0,
+    ),
+    resolution_m=1.0,
+    horizon_sectors=64,
+    horizon_max_distance_m=20.0,
+    attribution=["Synthetic LiDAR (test fixture)"],
+)
+
+
 @pytest.fixture(scope="session")
 def built_city(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Full pipeline run over the cube LAZ; returns the artifact directory.
@@ -43,16 +65,5 @@ def built_city(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("built_city")
     lidar_dir = root / "lidar"
     lidar_dir.mkdir()
-    laz_fixture.write_cube_laz(lidar_dir / "cube.laz")
-    config = CityConfig(
-        id="cube",
-        name="Cube",
-        country="ES",
-        timezone="Europe/Madrid",
-        crs="EPSG:25830",
-        bbox=(20.0, 20.0, 100.0, 100.0),
-        resolution_m=1.0,
-        horizon_sectors=64,
-        horizon_max_distance_m=20.0,
-    )
-    return build_city(config, LocalDirectory(lidar_dir), root / "data")
+    laz_fixture.write_cube_laz(lidar_dir / "cube.laz", origin=synthetic.UTM_ORIGIN)
+    return build_city(CUBE_CITY, LocalDirectory(lidar_dir), root / "data")
