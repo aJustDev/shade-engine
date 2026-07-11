@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Offline CLI that turns LiDAR into per-city raster artifacts (DSM, DTM, horizon)"
 requires-python = ">=3.14"
 dependencies = [
+    "laspy[lazrs]>=2.5",
+    "numpy>=2",
+    "rasterio>=1.5",
     "shade-core",
 ]
 
