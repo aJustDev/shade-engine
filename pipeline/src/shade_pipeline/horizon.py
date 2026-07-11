@@ -34,10 +34,21 @@ from typing import Final, Literal
 import numpy as np
 import numpy.typing as npt
 
+from shade_core.shade import NO_BLOCKER
 from shade_pipeline.grid import buffer_pixels
 
-NO_BLOCKER: Final = 255
 ANGLE_MAX_DEG: Final = 90.0
+
+__all__ = [
+    "ANGLE_MAX_DEG",
+    "NO_BLOCKER",
+    "HorizonParams",
+    "HorizonResult",
+    "compute_horizon_block",
+    "compute_horizon_tiled",
+    "quantize_angles",
+    "sector_offsets",
+]
 
 
 @dataclass(frozen=True)

@@ -25,6 +25,7 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 from enum import IntEnum, StrEnum
+from typing import Final
 
 import numpy as np
 import numpy.typing as npt
@@ -39,6 +40,10 @@ class Landcover(IntEnum):
     GROUND = 0
     VEGETATION = 1
     BUILDING = 2
+
+
+NO_BLOCKER: Final = 255
+"""Sector-class value meaning open sky: nothing raises this sector's horizon."""
 
 
 class ShadeState(StrEnum):
@@ -62,11 +67,13 @@ _SHADE_TYPE_BY_LANDCOVER = {
 class ShadeScene:
     """A place the engine can answer questions about.
 
-    All optional arrays share the horizon grid's shape (rows, cols) and
-    georeference: ``landcover`` holds :class:`Landcover` codes, ``canopy``
-    marks pixels lying *under* vegetation, and ``dsm``/``dtm`` are only
-    needed to classify what casts the shade (ray-march). With just the
-    horizon, queries still work but shade comes back untyped.
+    All optional arrays share the horizon grid's georeference: ``landcover``
+    holds :class:`Landcover` codes, ``canopy`` marks pixels lying *under*
+    vegetation, ``sector_classes`` is the pipeline's per-sector blocker
+    class cube (same shape as the horizon, ``NO_BLOCKER`` = open sky), and
+    ``dsm``/``dtm`` feed the reference ray-march. Shade classification uses
+    ``sector_classes`` when present, else the ray-march; with neither,
+    queries still work but shade comes back untyped.
     """
 
     horizon: HorizonGrid
@@ -74,6 +81,7 @@ class ShadeScene:
     canopy: npt.NDArray[np.bool_] | None = None
     dsm: npt.NDArray[np.float64] | None = None
     dtm: npt.NDArray[np.float64] | None = None
+    sector_classes: npt.NDArray[np.uint8] | None = None
     observer_height_m: float = 1.6
 
 
@@ -106,38 +114,55 @@ def is_shaded(scene: ShadeScene, x: float, y: float, sun: SunPosition) -> ShadeR
 
 
 def classify_shade(scene: ShadeScene, x: float, y: float, sun: SunPosition) -> ShadeType | None:
-    """What casts the shade here? Reference ray-march toward the sun.
+    """What casts the shade here? Two strategies, picked by what the scene has.
 
-    Walk from the observer's eye (DTM + observer height) in the sun's azimuth
-    direction, one pixel per step; the first pixel whose surface top subtends
-    an angle >= the sun's elevation is the blocker, and its landcover class
-    is the answer.
+    **Per-sector blocker classes** (the production artifact): the pipeline's
+    horizon sweep already recorded which landcover class produced each
+    sector's max angle, so the answer is one lookup at the *contributing
+    sector* -- of the two sectors flanking the sun's azimuth, the one whose
+    skyline drove the interpolated shade verdict.
 
-    Near shade boundaries the exact ray can find nothing even though the
-    interpolated horizon says shade: azimuth interpolation smears obstacle
-    edges by up to half a sector (~2.8 degrees at 64 sectors). There the
-    shade verdict was produced by one of the two adjacent sectors' skylines,
-    so the blocker is attributed by re-marching along the azimuth of the
-    sector with the higher horizon angle. Returns None when the scene lacks
-    the needed arrays, or when the blocker is bare ground / beyond the grid.
+    **Reference ray-march** (needs dsm + dtm + landcover): walk from the
+    observer's eye (DTM + observer height) toward the sun's azimuth; the
+    first pixel whose surface top subtends an angle >= the sun's elevation
+    is the blocker. Near shade boundaries the exact ray can find nothing
+    even though the interpolated horizon says shade (azimuth interpolation
+    smears obstacle edges by up to half a sector, ~2.8 degrees at 64), so it
+    falls back to re-marching along the contributing sector's azimuth.
+
+    Returns None when the scene lacks the needed arrays, or when the blocker
+    is bare ground / open sky / beyond the grid.
     """
+    grid = scene.horizon
+    if scene.sector_classes is not None:
+        row, col = grid.rowcol(x, y)
+        sector = _contributing_sector(grid, x, y, sun.azimuth_deg)
+        value = int(scene.sector_classes[sector, row, col])
+        if value == NO_BLOCKER:
+            return None
+        return _SHADE_TYPE_BY_LANDCOVER.get(Landcover(value))
     if scene.dsm is None or scene.dtm is None or scene.landcover is None:
         return None
-    grid = scene.horizon
     row, col = grid.rowcol(x, y)
     observer_z = float(scene.dtm[row, col]) + scene.observer_height_m
 
     blocker = _ray_march_blocker(scene, x, y, sun.azimuth_deg, sun.elevation_deg, observer_z)
     if blocker is not None:
         return blocker
-    profile = grid.profile_at(x, y)
     sector_width = 360.0 / grid.sectors
-    lower = int((sun.azimuth_deg % 360.0) / sector_width) % grid.sectors
-    upper = (lower + 1) % grid.sectors
-    contributing = lower if profile[lower] >= profile[upper] else upper
+    contributing = _contributing_sector(grid, x, y, sun.azimuth_deg)
     return _ray_march_blocker(
         scene, x, y, contributing * sector_width, sun.elevation_deg, observer_z
     )
+
+
+def _contributing_sector(grid: HorizonGrid, x: float, y: float, azimuth_deg: float) -> int:
+    """Of the two sectors flanking ``azimuth_deg``, the one with the higher skyline."""
+    profile = grid.profile_at(x, y)
+    sector_width = 360.0 / grid.sectors
+    lower = int((azimuth_deg % 360.0) / sector_width) % grid.sectors
+    upper = (lower + 1) % grid.sectors
+    return lower if profile[lower] >= profile[upper] else upper
 
 
 def _ray_march_blocker(
