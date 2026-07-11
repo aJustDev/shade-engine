@@ -11,7 +11,7 @@ completarlos y anota decisiones en el registro del final. El spec de referencia 
 | 0    | Bootstrap del repo                 | hecha     |
 | 1    | core/: modelo solar + horizonte    | hecha     |
 | 2    | pipeline/: de LAZ a artefactos COG | hecha     |
-| 3    | api/: consulta de sombra (sin DB)  | pendiente |
+| 3    | api/: consulta de sombra (sin DB)  | hecha     |
 | 4    | Cordoba real + validacion de campo | pendiente |
 | 5    | Parking                            | pendiente |
 | 6    | Despliegue en cartagena            | pendiente |
@@ -101,17 +101,17 @@ Criterio de salida: CUMPLIDO 2026-07-11. `shade-engine build cube` sobre LAZ sin
 
 Objetivo: API publica de sombra leyendo COGs.
 
-- [ ] FastAPI + settings por env; sin Postgres todavia (apunte 4)
-- [ ] `GET /v1/cities` (desde YAMLs + metadatos de artefactos)
-- [ ] `GET /v1/shade` y `GET /v1/shade/timeline`
-- [ ] `/healthz` + endpoint de metadatos de artefactos cargados
-- [ ] Lectura COG por ventana con cache LRU acotado por config
-- [ ] CORS por env, rate limiting (slowapi), campo `attribution`, versionado `/v1`
-- [ ] Semantica de timezone: ISO 8601, sin offset -> TZ de la ciudad
-- [ ] Cache-Control: cacheable con `at` explicito, TTL corto o no-cache con "ahora" implicito
-- [ ] Tests de integracion contra artefactos del fixture; OpenAPI como doc publica
+- [x] FastAPI + settings por env (`SHADE_API_*`, pydantic-settings); sin Postgres (apunte 4); `create_app(settings)` como factory testeable
+- [x] `GET /v1/cities` (solo ciudades CON artefactos; YAML sin build se salta con warning) + `GET /v1/cities/{id}` con el BuildMetadata completo
+- [x] `GET /v1/shade` y `GET /v1/shade/timeline` (con `shaded_until` si la fecha es hoy, fusionando rachas de sombra contiguas)
+- [x] `/healthz` + endpoint de metadatos de artefactos cargados (es `/v1/cities/{id}`)
+- [x] Lectura COG por ventana con cache LRU acotado por config -> `shade_core.artifacts.SceneReader`: bloques alineados de 64 px como ShadeScene locales, snap a centro de pixel (ver registro)
+- [x] CORS por env, rate limiting, campo `attribution` (desde metadata.json), versionado `/v1` -> slowapi DESCARTADO en ejecucion: incompatible con fastapi >= 0.139 (ver registro); middleware propio sobre `limits`
+- [x] Semantica de timezone: ISO 8601, sin offset -> TZ de la ciudad (`resolve_at`, un unico punto de resolucion; core sigue rechazando naive)
+- [x] Cache-Control: `at` explicito y fechas no-hoy -> public max-age=86400; "ahora" implicito -> no-store; timeline de hoy -> max-age=60 (shaded_until se mueve con el reloj)
+- [x] Tests de integracion contra artefactos del fixture (movido a coordenadas UTM reales de Cordoba para que lat/lon funcione de verdad); OpenAPI como doc publica
 
-Criterio de salida: API respondiendo sobre los artefactos del fixture, tests de integracion verdes.
+Criterio de salida: CUMPLIDO 2026-07-11. API respondiendo sobre los artefactos del fixture (goldens invierno/verano/noche via lat/lon reales, timeline coherente, 429 y CORS verificados tambien con uvicorn+curl); 103 tests verdes.
 
 ## Fase 4 - Cordoba real + validacion de campo
 
@@ -187,6 +187,12 @@ Criterio de salida: mapa de sombra visible en ajustino.dev.
 | 2026-07-11 | Driver PNOA aplazado a Fase 4; Fase 2 usa driver de directorio local                    | CNIG sin API documentada (visor con endpoints internos jQuery, fragiles). No bloquea el criterio de salida de la fase; en Fase 4 se intenta el scraper con fallback manual                                                                                                    |
 | 2026-07-11 | Horizonte cuantizado a uint8 (90/255 deg) con la escala en tag del GeoTIFF              | Error <= ~0.18 deg, muy por debajo del medio pixel del barrido; mitad de disco que uint16; el fichero es autodescriptivo                                                                                                                                                      |
 | 2026-07-11 | Barrido de produccion: dedupe de offsets + tiling con buffer ceil(max_d/res)            | Exacto tras el floor a 0 (prueba en docstring): bit-identico al oraculo en modo exact, memoria acotada por tile. El modo geometric (paso creciente) queda como knob para Fase 4, validado solo por cuantil                                                                    |
+| 2026-07-11 | Lector por ventana en core (`SceneReader`), no en api                                   | Cada bloque LRU es una ShadeScene local: `is_shaded`/`shade_timeline` se reutilizan sin duplicar nada. Bloques de 64 px (dividen el tile COG de 512), ~1.3 MiB/bloque, techo por config                                                                                       |
+| 2026-07-11 | `scene_for` devuelve el centro del pixel como punto de consulta                         | El motor recalcula rowcol contra el origen LOCAL del bloque; en el borde el redondeo float puede dar indice -1 o fuera del bloque (500 en un punto valido). Con muestreo espacial nearest el snap es semanticamente gratis                                                    |
+| 2026-07-11 | Rate limiting: middleware propio sobre `limits`; slowapi DESCARTADO                     | slowapi 0.1.10 resuelve el handler buscando `.endpoint` en app.routes y fastapi >= 0.139 envuelve los routers en `_IncludedRouter` sin ese atributo: exime TODAS las rutas en silencio (lo cazo el test de 429). El middleware propio son ~15 lineas sobre el mismo motor     |
+| 2026-07-11 | Fixture `built_city` movido a coordenadas UTM reales de Cordoba                         | La API recibe lat/lon: con origen (0,0) ningun lat/lon real cae en el fixture. Coordenadas ~4e6 ademas destapan bugs de georef que el origen cero enmascara. Los goldens solares de Fase 1 siguen valiendo (~37.87N)                                                          |
+| 2026-07-11 | `/v1/cities` lista solo ciudades con artefactos; attribution desde metadata.json        | "Disponible" = consultable; un YAML sin build se salta con warning (cordoba hasta Fase 4). La atribucion sale del artefacto construido, no del YAML vivo: es la del dato que responde                                                                                         |
+| 2026-07-11 | CORS origins como CSV en env con `NoDecode`                                             | pydantic-settings decodifica los campos lista como JSON ANTES de los validators; CSV es lo menos sorprendente para ops y NoDecode permite el validator before que lo trocea                                                                                                   |
 
 Pendientes de decidir:
 
@@ -220,3 +226,20 @@ Pendientes de decidir:
     geometric se valida por cuantil, nunca contra el oraculo con tolerancia estricta.
   - El campo `sources.lidar: pnoa` del YAML de Cordoba es informativo todavia: el unico
     driver real es el directorio local (--lidar-dir). El scraper CNIG queda para Fase 4.
+- 2026-07-11: Fase 3 completada. Siguiente: Fase 4 (Cordoba real). Notas para entonces:
+  - Para servir Cordoba basta el build: la API ya la listara sola cuando exista
+    `data/cities/cordoba/v1/metadata.json` (el registry salta YAMLs sin artefactos).
+    Con el bbox real de 8x7 km habra que medir el coste del build y probar el modo
+    geometric del barrido (item ya en Fase 4).
+  - Defaults del cache de la API pensados para el fixture: `SHADE_API_BLOCK_SIZE=64` y
+    `SHADE_API_MAX_CACHED_BLOCKS=64` (~84 MiB/ciudad de techo). Revisar con la ciudad
+    real y la RAM del VPS (Fase 6 los baja por env si hace falta).
+  - Para Fase 6 (deploy): el rate limiting es en memoria y por worker, y la key es la IP
+    directa del socket -- detras de Caddy hace falta uvicorn --proxy-headers y
+    --forwarded-allow-ips (item ya en Fase 6). /healthz comparte el limite por defecto
+    (key por IP y path); si el monitoreo aprieta, eximirlo entonces.
+  - fastapi >= 0.139 rompio la integracion de slowapi (ver registro); si algun dia se
+    quiere slowapi de vuelta, verificar antes que su middleware encuentra los endpoints.
+  - Snapping de puntos que caen sobre edificio (item de Fase 4): la API responde hoy la
+    verdad del pixel (un lat/lon sobre tejado da el horizonte del tejado). El agregado
+    de vecindario/confianza sigue en roadmap, no MVP.
