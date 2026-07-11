@@ -42,6 +42,34 @@ se paga una vez por ciudad; la consulta es una comparacion de dos floats.
   correcta; la version vectorizada/tileada del pipeline (Fase 2) debe
   reproducir sus valores sobre los mismos fixtures.
 
+## La version de produccion (pipeline, Fase 2)
+
+El barrido del pipeline reproduce el muestreo del oraculo exactamente (mismas
+distancias de medio pixel, mismos offsets con `round()`, misma matematica en
+float64) con dos reestructuraciones que no cambian el resultado:
+
+- **Deduplicado de offsets**: varias distancias consecutivas caen en la misma
+  celda; basta conservar la menor (con dz >= 0 el atan2 decrece con la
+  distancia, y con dz < 0 el floor a 0 absorbe todo). Es exacto, no una
+  aproximacion: los tests exigen igualdad bit a bit con el oraculo.
+- **Tiling con buffer**: la ciudad se barre por tiles, cada uno leyendo una
+  ventana acolchada con `ceil(max_distance / resolucion)` pixeles. Como
+  ningun offset supera ese acolchado, el resultado es independiente del
+  tamano de tile y la memoria queda acotada (~10^8 pixeles x 64 sectores no
+  caben de una pieza).
+
+Dos artefactos salen del mismo barrido:
+
+- **Horizonte cuantizado a uint8**: angulo \* 255/90, paso ~0.353 grados,
+  error <= ~0.18 (muy por debajo de la discretizacion de medio pixel del
+  propio barrido). Mitad de disco que uint16 y la escala viaja como tag del
+  GeoTIFF (fichero autodescriptivo).
+- **Clase del bloqueador por sector**: cuando una muestra sube el maximo de
+  un sector, se apunta el landcover de esa celda. Asi "que da esta sombra"
+  cuesta una lectura de 1 pixel en runtime, en vez de un ray-march sobre
+  DSM+DTM+landcover (3 ventanas COG extra por consulta). Empates los gana el
+  bloqueador mas cercano; sectores con horizonte 0 guardan 255 (cielo).
+
 ## Trampa tipica
 
 Confundir "el sol esta sobre el horizonte astronomico" (elevacion > 0, es de
