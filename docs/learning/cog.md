@@ -33,6 +33,29 @@ Detalles de nuestros artefactos:
   Patron: GTiff temporal tileado -> copia con el driver COG. GDAL marca el
   resultado con el tag `LAYOUT=COG`, que es lo que asertan los tests.
 
+## Lectura por ventana en la practica (Fase 3)
+
+`rasterio.windows.Window(col, row, ancho, alto)` + `src.read(window=...)`
+lee solo los tiles internos que la ventana toca. Matiz importante: el coste
+de una lectura fria de 1 pixel NO es 1 pixel, es descomprimir el tile
+completo de 512x512 que lo contiene, por cada banda tocada (64 en
+`horizon.tif`). Por eso el `SceneReader` de core no cachea pixeles sino
+**bloques alineados** de 64x64 (64 divide a 512: un bloque alineado nunca
+cruza dos tiles), ya decuantizados y envueltos en una `ShadeScene` local:
+la consulta caliente es un lookup de diccionario, y el timeline de un dia
+(~288 consultas en el mismo punto) cae entero en un bloque.
+
+El LRU esta acotado: 64 bandas x 64x64 float32 (~1 MiB) + clases + canopy
+~ 1.3 MiB por bloque; con `max_blocks=64` el techo es ~84 MiB por ciudad.
+Dos detalles no obvios:
+
+- Los handles de rasterio no son thread-safe: las lecturas van bajo un
+  lock (los endpoints sync de FastAPI corren en un threadpool).
+- El motor recalcula (row, col) contra el origen LOCAL del bloque, y en el
+  borde ese redondeo float puede discrepar del calculo global (indice -1 o
+  fuera del bloque). `scene_for` devuelve el centro del pixel como punto de
+  consulta: con muestreo espacial nearest es identico y elimina el borde.
+
 ## Trampa tipica
 
 "Es un .tif y se abre" no significa que sea un COG: un GeoTIFF en strips
