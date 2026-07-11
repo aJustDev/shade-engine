@@ -33,9 +33,13 @@ class LocalDirectory:
     """LAZ/LAS files sitting in a directory, e.g. hand-downloaded PNOA tiles.
 
     File extents come from the LAS header (mins/maxs), which bound the
-    *points*, not the nominal tile: points sit up to roughly one point
-    spacing inside the tile edge. ``coverage_tolerance_m`` shrinks the
-    required area accordingly before the containment check.
+    *points*, not the nominal tile. Real PNOA tiles quantize coordinates to
+    millimeters and their last row of points sits just inside the nominal
+    edge, so adjacent tiles leave millimeter seams between their extents --
+    gaps a plain union never closes, no matter how the *outer* boundary is
+    relaxed. Each footprint is therefore buffered by
+    ``coverage_tolerance_m`` (mitre join keeps corners square) before the
+    union, absorbing both the perimeter shortfall and the internal seams.
     """
 
     directory: Path
@@ -52,9 +56,8 @@ class LocalDirectory:
             footprint = box(float(mins[0]), float(mins[1]), float(maxs[0]), float(maxs[1]))
             if footprint.intersects(target):
                 selected.append(path)
-                footprints.append(footprint)
-        required = target.buffer(-self.coverage_tolerance_m)
-        if not footprints or not unary_union(footprints).contains(required):
+                footprints.append(footprint.buffer(self.coverage_tolerance_m, join_style="mitre"))
+        if not footprints or not unary_union(footprints).contains(target):
             raise CoverageError(
                 f"LAZ files under {self.directory} do not cover bbox {bbox} "
                 f"plus a {buffer_m} m buffer (found {len(selected)} intersecting files)"
