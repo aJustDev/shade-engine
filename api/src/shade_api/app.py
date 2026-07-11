@@ -11,7 +11,10 @@ from contextlib import asynccontextmanager
 from importlib import metadata as importlib_metadata
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from limits import parse as parse_rate_limit
 
+from shade_api.ratelimit import RateLimitMiddleware
 from shade_api.registry import CityRegistry
 from shade_api.routes import health_router, router
 from shade_api.settings import ApiSettings
@@ -39,6 +42,15 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = app_settings
+    if app_settings.rate_limit_enabled:
+        app.add_middleware(RateLimitMiddleware, limit=parse_rate_limit(app_settings.rate_limit))
+    if app_settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=app_settings.cors_origins,
+            allow_methods=["GET"],
+            allow_headers=["*"],
+        )
     app.include_router(router)
     app.include_router(health_router)
     return app
