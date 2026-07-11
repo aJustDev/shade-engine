@@ -998,8 +998,10 @@ name = "shade-pipeline"
 version = "0.1.0"
 source = { editable = "pipeline" }
 dependencies = [
+    { name = "httpx" },
     { name = "laspy", extra = ["lazrs"] },
     { name = "numpy" },
+    { name = "pyproj" },
     { name = "rasterio" },
     { name = "shade-core" },
     { name = "shapely" },
@@ -1008,8 +1010,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
     { name = "laspy", extras = ["lazrs"], specifier = ">=2.5" },
     { name = "numpy", specifier = ">=2" },
+    { name = "pyproj", specifier = ">=3.7.2" },
     { name = "rasterio", specifier = ">=1.5" },
     { name = "shade-core", editable = "core" },
     { name = "shapely", specifier = ">=2.1" },

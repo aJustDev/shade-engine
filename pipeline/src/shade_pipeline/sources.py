@@ -1,11 +1,11 @@
 """Where LiDAR files come from.
 
 A :class:`LidarSource` yields the LAZ/LAS files covering a (padded) city
-bbox. The MVP ships only :class:`LocalDirectory` -- the user downloads PNOA
-tiles by hand from the CNIG download center. An automated CNIG driver is
-planned for the real-city phase; the download center publishes no API, so
-that driver will wrap its internal endpoints and must stay isolated behind
-this same interface.
+bbox. :class:`LocalDirectory` serves hand-downloaded tiles; the automated
+CNIG driver lives in :mod:`shade_pipeline.cnig` (it wraps the download
+center's contract-less internal endpoints, so it stays isolated behind this
+interface and ends by delegating selection and coverage checks back to
+:class:`LocalDirectory` over its cache).
 """
 
 from dataclasses import dataclass
