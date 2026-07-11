@@ -32,6 +32,10 @@ class CityConfig(BaseModel):
     bbox: Bbox = Field(description="(min_x, min_y, max_x, max_y) in the local CRS, meters")
     resolution_m: float = Field(default=1.0, gt=0)
     horizon_sectors: int = Field(default=64, gt=0)
+    horizon_max_distance_m: float = Field(
+        default=500.0, gt=0, description="Horizon sweep radius; also pads the bbox"
+    )
+    observer_height_m: float = Field(default=1.6, gt=0)
     sources: dict[str, str] = Field(default_factory=dict)
     layers: dict[str, str] = Field(default_factory=dict)
     attribution: list[str] = Field(default_factory=list)

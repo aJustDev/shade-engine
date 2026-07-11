@@ -8,7 +8,12 @@ dependencies = [
     "numpy>=2",
     "rasterio>=1.5",
     "shade-core",
+    "shapely>=2.1",
+    "typer>=0.15",
 ]
+
+[project.scripts]
+shade-engine = "shade_pipeline.cli:app"
 
 [tool.uv.sources]
 shade-core = { workspace = true }

@@ -34,7 +34,7 @@ explicit_package_bases = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pvlib.*", "pandas.*", "laspy.*", "rasterio.*", "affine.*"]
+module = ["pvlib.*", "pandas.*", "laspy.*", "rasterio.*", "affine.*", "shapely.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
