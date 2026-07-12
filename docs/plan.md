@@ -131,7 +131,9 @@ Objetivo: caso de uso aparcamiento completo.
 
 - [ ] PostGIS en compose + SQLAlchemy 2 + Alembic (primera migracion); verificar compat PostGIS<->Postgres antes de fijar imagen
 - [ ] `shade-engine import-layer <city> parking`
-- [ ] Digitalizar `parking.geojson` del centro de Cordoba (schema seccion 5.1 del spec)
+- [ ] Generar `parking.geojson` del centro de Cordoba (schema seccion 5.1 del spec) -> la
+      digitalizacion manual del spec NO hace falta: parsear el visor municipal archivado,
+      ver nota 2026-07-12 (fuentes Fase 5)
 - [ ] `GET /v1/parking/nearby` con estado de sombra en `at` y `shaded_until`
 
 Criterio de salida: consulta nearby devuelve tramos con sombra correcta contra timeline.
@@ -318,3 +320,33 @@ Pendientes de decidir:
     tamanos (~2.5 GB, horizon ~2 GB), `shade-engine predict` con el kit responde, y la
     API la lista (`uv run uvicorn shade_api.app:app` + `/v1/cities`).
   - Siguiente sesion: planificar Fase 5 (parking) cuando el usuario lo pida.
+- 2026-07-12 (investigacion fuentes Fase 5): la digitalizacion manual del parking NO es
+  necesaria. Tres barridos verificados en vivo (municipal, OSM via Overpass, supra-municipal):
+  - Mejor fuente de GEOMETRIA: el visor de trafico municipal retirado
+    (movilidad.cordoba.es/informaciontrafico, hoy enlace roto en el CKAN municipal) esta
+    archivado en Wayback Machine (captura 2024-09-03) con los datos inline en JS:
+    58 LineStrings de zona azul (trazo #007bfe) en EPSG:4326 + ~21 markers con calle,
+    plazas, bateria/cordon y horario completo en el popup. Verificado y descargado
+    (2.9 MB HTML). Parsear a parking.geojson: ~medio dia de script.
+  - ATRIBUTOS oficiales: Ordenanza Fiscal 407 ejercicio 2026 (tarifas: no residente
+    0.25-1.70 EUR, max 2 h; residente 0.10-0.80) y Ordenanza de Movilidad BOP 17-02-2023
+    arts. 91-93 (sin anexo de calles: delega zonas/horarios en acuerdos BOP + senal).
+    En Cordoba NO hay zona verde: residentes usan la azul con tarifa reducida.
+  - NO existe dataset abierto vivo: el CKAN municipal solo tiene un dataset
+    ("trafico-informacion") cuyo unico recurso es el enlace HTML roto al visor, licencia
+    sin especificar. Nada en NAP DGT (solo ocupacion off-street y ZBEs), ni DERA/IECA,
+    ni Overture (su tema transportation pierde justo los tags parking:\* de OSM), ni apps
+    (Parkopedia/Telpark/ElParking: propietarias). En Espana este dato solo lo publican
+    como open data Madrid, Pamplona, Vitoria y Zaragoza.
+  - OSM (medido, area 3600343207): off-street razonable (192 amenity=parking, mayoria
+    con poligono), en calzada ~1.2% del viario (78/6724 ways con parking real), zona
+    azul ausente (0 maxstay, 0 zone, 0 fees en calzada). Ojo ODbL: mezclar geometria
+    OSM en la capa arrastra share-alike; con la via Wayback no hace falta.
+  - Caveats para la sesion de Fase 5: la captura es de sept 2024 (contrastar altas
+    posteriores, p.ej. ampliacion Plaza de Toros dic 2025, contra acuerdos BOP y las
+    listas de zona-azul.es / ElParking); licencia municipal sin especificar (rellenar
+    source/last_verified del schema con la procedencia); zone_type comercial vs
+    administrativa se deriva del texto del horario. Ejes oficiales de apoyo si hay que
+    retocar geometria: CDAU WFS (cdau:v_tramo, callejerodeandalucia.es) o IGN IGR-RT
+    viario urbano (CC-BY). La copia descargada del HTML es efimera (scratchpad); el
+    parseo debe re-descargar de Wayback con la URL con timestamp fija.
