@@ -20,6 +20,7 @@ overlap classes (7, 18, 12) and withheld-flagged points are dropped before
 binning; see the chunk loop for the details.
 """
 
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ from affine import Affine
 from shade_core.config import Bbox
 from shade_core.shade import Landcover
 from shade_pipeline.grid import grid_shape, transform_from_bbox
+from shade_pipeline.progress import format_duration
 
 # ASPRS point classes as delivered by PNOA flights.
 LIDAR_CLASS_GROUND = 2
@@ -83,9 +85,18 @@ def rasterize_lidar(
     dtm_count = np.zeros(n, dtype=np.int64)
     point_counts: dict[str, int] = {}
 
+    binning_start = time.monotonic()
     for file_index, path in enumerate(files, start=1):
         if progress is not None:
-            progress(f"binning [{file_index}/{len(files)}] {path.name}")
+            if file_index == 1:
+                progress(f"binning [1/{len(files)}] {path.name}")
+            else:
+                average = (time.monotonic() - binning_start) / (file_index - 1)
+                eta = average * (len(files) - file_index + 1)
+                progress(
+                    f"binning [{file_index}/{len(files)}] {path.name} "
+                    f"(avg {format_duration(average)}/file, eta {format_duration(eta)})"
+                )
         total = 0
         with laspy.open(path) as reader:
             for points in reader.chunk_iterator(chunk_size):

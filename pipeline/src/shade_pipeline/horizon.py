@@ -28,6 +28,7 @@ against the oracle at tight tolerance.
 """
 
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,7 @@ import numpy.typing as npt
 
 from shade_core.shade import NO_BLOCKER
 from shade_pipeline.grid import buffer_pixels
+from shade_pipeline.progress import format_duration
 
 ANGLE_MAX_DEG: Final = 90.0
 
@@ -196,13 +198,22 @@ def compute_horizon_tiled(
         (col1 - col0) / params.tile_size
     )
     tile_index = 0
+    sweep_start = time.monotonic()
     for t0 in range(row0, row1, params.tile_size):
         t1 = min(t0 + params.tile_size, row1)
         for u0 in range(col0, col1, params.tile_size):
             u1 = min(u0 + params.tile_size, col1)
             tile_index += 1
             if progress is not None:
-                progress(f"sweeping tile [{tile_index}/{tile_count}]")
+                if tile_index == 1:
+                    progress(f"sweeping tile [1/{tile_count}]")
+                else:
+                    average = (time.monotonic() - sweep_start) / (tile_index - 1)
+                    eta = average * (tile_count - tile_index + 1)
+                    progress(
+                        f"sweeping tile [{tile_index}/{tile_count}] "
+                        f"(avg {format_duration(average)}/tile, eta {format_duration(eta)})"
+                    )
             p0, p1 = max(0, t0 - pad), min(rows, t1 + pad)
             q0, q1 = max(0, u0 - pad), min(cols, u1 + pad)
             tile_angles, tile_blocker = compute_horizon_block(
