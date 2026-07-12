@@ -67,10 +67,15 @@ def build_city(
     crop = (slice(pad, pad + rows), slice(pad, pad + cols))
     transform = transform_from_bbox(config.bbox, resolution)
     common = {"city_id": config.id}
+
     # Scratch inside out_dir: same (gitignored) filesystem as the output, so
     # the memmapped cubes never land on a small tmpfs. float32 rasters go in
     # as-is -- the sweep casts per tile, a whole-array float64 copy buys
     # nothing but ~1.2 GB of peak RSS at city scale.
+    def note(filename: str) -> None:
+        if progress is not None:
+            progress(f"writing {filename}")
+
     with tempfile.TemporaryDirectory(dir=out_dir, prefix=".horizon-") as scratch:
         result = compute_horizon_tiled(
             stack.dsm,
@@ -82,6 +87,7 @@ def build_city(
             scratch_dir=Path(scratch),
             progress=progress,
         )
+        note(HORIZON_FILENAME)
         write_cog(
             out_dir / HORIZON_FILENAME,
             result.angles_q,
@@ -95,6 +101,7 @@ def build_city(
                 "observer_height_m": str(params.observer_height_m),
             },
         )
+        note(BLOCKER_CLASS_FILENAME)
         write_cog(
             out_dir / BLOCKER_CLASS_FILENAME,
             result.blocker_class,
@@ -103,8 +110,11 @@ def build_city(
             tags={**common, "no_blocker": str(NO_BLOCKER)},
         )
         del result
+    note(DSM_FILENAME)
     write_cog(out_dir / DSM_FILENAME, stack.dsm[crop], transform, config.crs, tags=common)
+    note(DTM_FILENAME)
     write_cog(out_dir / DTM_FILENAME, stack.dtm[crop], transform, config.crs, tags=common)
+    note(LANDCOVER_FILENAME)
     write_cog(
         out_dir / LANDCOVER_FILENAME, stack.landcover[crop], transform, config.crs, tags=common
     )
