@@ -16,6 +16,7 @@ completarlos y anota decisiones en el registro del final. El spec de referencia 
 | 5    | Parking                            | pendiente |
 | 6    | Despliegue en cartagena            | pendiente |
 | 7    | Visualizacion + integracion Astro  | pendiente |
+| 8    | Rutas peatonales a la sombra       | pendiente |
 
 Estados: pendiente / en curso / hecha.
 
@@ -156,6 +157,44 @@ Objetivo: mapa de sombra consumible desde la web.
 
 Criterio de salida: mapa de sombra visible en ajustino.dev.
 
+## Fase 8 - Rutas peatonales a la sombra (boceto)
+
+Objetivo: "quiero pasear por esta zona a tal hora: dame el recorrido con mas
+sombra". En el spec era roadmap (seccion 11: A\* sobre grafo OSM con peso
+solar); se adelanta aqui como boceto para planificarla en su propia sesion.
+La parte cara ya existe: `SceneReader` responde punto+instante barato, asi
+que la fase es "solo" un grafo con un peso solar.
+
+- [ ] Grafo peatonal de Cordoba desde OSM (footway, pedestrian, path, steps,
+      living_street, residential): extraccion con osmnx o pyrosm, cacheado
+      como artefacto por ciudad (el grafo del casco cabe en memoria de sobra)
+- [ ] Coste solar por arista: muestrear cada arista cada ~5 m contra los
+      rasteres; coste = longitud \* (1 + alfa \* fraccion_al_sol(hora_salida))
+- [ ] A\* con ese peso; endpoint `GET /v1/routes/shaded?from&to&at` (y quiza
+      modo paseo: zona + duracion -> circuito)
+- [ ] MVP evalua la sombra a la hora de salida: en un paseo de 30 min el sol
+      se mueve ~7 grados; el coste variable durante el propio recorrido queda
+      para despues si el error molesta
+
+Decisiones abiertas (para la sesion de planificacion):
+
+- Motor de rutas: A\* en proceso (networkx/osmnx) vs pgRouting en PostGIS vs
+  router externo (Valhalla/GraphHopper). Inclinacion inicial: en proceso --
+  el peso depende de la hora y un callable lo expresa directo; pgRouting
+  obliga a materializar columnas de coste por franja horaria y un router
+  externo es infra nueva para una ciudad. PostGIS (Fase 5) sigue siendo el
+  sitio natural para persistir el grafo y las fracciones de sol.
+- Precalculo de fraccion de sol por arista y franja de 15-30 min (barato y
+  cacheable) vs calculo perezoso por peticion con LRU. Decidir con numeros
+  del grafo real.
+- DuckDB NO entra: PostGIS cubre los vectores en runtime y para extraer OSM
+  de una ciudad bastan osmnx/Overpass. Reevaluar solo si algun dia se ingiere
+  Overture/GeoParquet multi-ciudad (ahi si brilla duckdb-spatial).
+
+Criterio de salida (provisional): entre dos puntos del casco a media tarde,
+la ruta sombreada evita visiblemente las calles al sol frente al camino mas
+corto, comprobable sobre el mapa de Fase 7.
+
 ## Transversal (todas las fases)
 
 - Cada concepto geo nuevo: nota corta en `docs/learning/` en el mismo commit (spec seccion 10)
@@ -203,6 +242,7 @@ Criterio de salida: mapa de sombra visible en ajustino.dev.
 Pendientes de decidir:
 
 - PMTiles estaticos vs tiles PNG dinamicos (Fase 7)
+- Motor de rutas y estrategia de precalculo solar (Fase 8): boceto en su seccion
 
 ## Notas entre sesiones
 
@@ -255,7 +295,7 @@ Pendientes de decidir:
   - Lanzar el build completo: `uv run shade-engine build cordoba` (exact por defecto;
     ~11-12 h, mejor de noche; descarga ~90 tiles ~7 GB al cache `data/lidar/cordoba`,
     resumible si el limite de ~20/sesion corta: re-ejecutar reanuda; pico RAM ~4.5 GiB;
-    ~16 GB de disco en el pico del scratch; artefactos finales ~2.5 GB — la estimacion
+    ~16 GB de disco en el pico del scratch; artefactos finales ~2.5 GB -- la estimacion
     "cientos de MB" del spec seccion 3 se queda corta con dato real: el horizonte urbano
     comprime peor que el sintetico). La API listara cordoba sola al terminar.
   - Antes del paseo: los pins del kit ya estan afinados (OSM + landcover del probe;
