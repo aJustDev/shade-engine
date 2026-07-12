@@ -3,6 +3,12 @@
 #   sudo caddy validate --config /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
 # TLS is Caddy's job (Let's Encrypt); the app never sees certificates.
+#
+# /tiles/* serves the PMTiles pyramids (shade overlays + basemap) straight
+# from disk: file_server handles Range requests and ETags natively, which
+# is all a PMTiles client needs -- no tile server involved. The URL mirrors
+# the on-disk tree under data/cities, so adding a city or bumping the
+# artifact version never touches this file.
 shade.ajustino.dev {
 	encode gzip zstd
 	header {
@@ -15,5 +21,38 @@ shade.ajustino.dev {
 		protocols tls1.3
 		ciphers TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 TLS_CHACHA20_POLY1305_SHA256
 	}
-	reverse_proxy localhost:8003
+
+	# fetch() with a Range header is not a "simple" CORS request: browsers
+	# preflight it. Without this handler the map works same-origin and
+	# breaks cross-origin only.
+	@tiles_preflight {
+		method OPTIONS
+		path /tiles/*
+	}
+	handle @tiles_preflight {
+		header Access-Control-Allow-Origin "*"
+		header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		header Access-Control-Allow-Headers "Range, If-Match, If-None-Match"
+		header Access-Control-Max-Age "86400"
+		respond "" 204
+	}
+
+	handle_path /tiles/* {
+		root * /opt/shade/data/cities
+		# Public read-only data, no credentials: wildcard origin is fine.
+		header Access-Control-Allow-Origin "*"
+		header Access-Control-Expose-Headers "Content-Range, Content-Length, Accept-Ranges, ETag"
+		# A .pmtiles for a fixed instant is immutable; the manifest carries
+		# ?v= cache busting for regenerations. index.json stays short-lived
+		# so new instants show up without hard reloads.
+		@pmtiles path *.pmtiles
+		header @pmtiles Cache-Control "public, max-age=31536000, immutable"
+		@manifest path *.json
+		header @manifest Cache-Control "public, max-age=300"
+		file_server
+	}
+
+	handle {
+		reverse_proxy localhost:8003
+	}
 }

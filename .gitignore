@@ -4,6 +4,9 @@ __pycache__/
 *.egg-info/
 dist/
 
+# Secrets: compose credentials live only on each machine (.env.example is tracked)
+.env
+
 # Environments and tool caches
 .venv/
 .pytest_cache/
