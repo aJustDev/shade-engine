@@ -1,4 +1,4 @@
-"""Command line interface: ``shade-engine build|predict <city>``."""
+"""Command line interface: ``shade-engine build|predict|import-layer <city>``."""
 
 from datetime import date
 from enum import StrEnum
@@ -9,9 +9,11 @@ import typer
 
 from shade_core.artifacts import METADATA_FILENAME
 from shade_core.config import CityConfig, load_city
+from shade_core.db import make_engine
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.cnig import CnigError, CnigSource
 from shade_pipeline.horizon import HorizonParams
+from shade_pipeline.layers import import_parking_layer
 from shade_pipeline.predict import prediction_table, read_points
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 
@@ -103,3 +105,40 @@ def predict(
         raise typer.Exit(1)
     table = prediction_table(config, artifact_dir, read_points(points_csv), date.fromisoformat(day))
     typer.echo(table)
+
+
+@app.command("import-layer")
+def import_layer(
+    city: str,
+    layer: str,
+    database_url: Annotated[
+        str,
+        typer.Option(envvar="SHADE_DATABASE_URL", help="PostGIS URL, e.g. postgresql+psycopg://"),
+    ],
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+) -> None:
+    """Load CITY's LAYER (declared under ``layers:`` in its YAML) into PostGIS.
+
+    Layer paths in the YAML are resolved against the working directory,
+    like every other CLI path. Re-running replaces the city's rows.
+    """
+    config = load_city(cities_dir / f"{city}.yaml")
+    if layer != "parking":
+        typer.echo(f"error: unsupported layer {layer!r} (only 'parking' for now)", err=True)
+        raise typer.Exit(1)
+    declared = config.layers.get(layer)
+    if declared is None:
+        typer.echo(f"error: city {city!r} declares no {layer!r} layer in its YAML", err=True)
+        raise typer.Exit(1)
+    layer_path = Path(declared)
+    if not layer_path.exists():
+        typer.echo(f"error: layer file not found: {layer_path}", err=True)
+        raise typer.Exit(1)
+    engine = make_engine(database_url)
+    try:
+        count = import_parking_layer(config, layer_path, engine)
+    finally:
+        engine.dispose()
+    typer.echo(f"imported {count} {layer} zones for {config.id}")

@@ -11,5 +11,7 @@ sources:
   lidar: pnoa # driver de descarga (CnigSource)
   pnoa_series: LIDA3 # codSerie del centro de descargas: 3a cobertura
   lidar_coverage: PNOA 3a cobertura 2024, 5 pt/m2, clasificacion NPC01 # informativo
+layers:
+  parking: cities/cordoba/parking.geojson # relativo al CWD, como el resto del CLI
 attribution:
   - Obra derivada de PNOA-cob3 2022-2025 CC-BY 4.0 scne.es

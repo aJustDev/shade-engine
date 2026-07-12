@@ -138,7 +138,7 @@ contra shade.ajustino.dev mejora el protocolo). No bloquea ninguna fase.
 Objetivo: caso de uso aparcamiento completo.
 
 - [x] PostGIS en compose + SQLAlchemy 2 + Alembic (primera migracion); verificar compat PostGIS<->Postgres antes de fijar imagen -> HECHO 2026-07-12: `postgis/postgis:18-3.6` (tag verificado en Docker Hub, publicado 2026-07-06), modelo `ParkingZone` en `shade_core.db` tras extra `shade-core[db]`, migracion 0001 a mano, fixture de DB scratch + service container en CI
-- [ ] `shade-engine import-layer <city> parking`
+- [x] `shade-engine import-layer <city> parking` -> HECHO 2026-07-12: resuelve la capa via `layers:` del YAML (bloque nuevo en cordoba.yaml), EWKT + delete/insert transaccional idempotente; probado contra la DB dev (21 zonas)
 - [x] Generar `parking.geojson` del centro de Cordoba (schema seccion 5.1 del spec) ->
       HECHO adelantado 2026-07-12: `scripts/parse_cordoba_parking.py` parsea el visor
       municipal archivado (21 zonas, 51 tramos, 1152 plazas; ver nota de fuentes)
