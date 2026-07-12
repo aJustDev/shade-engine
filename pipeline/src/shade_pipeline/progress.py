@@ -1,4 +1,14 @@
-"""Human-readable durations for build progress lines."""
+"""Human-readable durations and sizes for build progress lines."""
+
+
+def format_bytes(size: int) -> str:
+    """Compact binary size: ``512 B``, ``66.2 MiB``, ``2.3 GiB``."""
+    value = float(size)
+    for unit in ("B", "KiB", "MiB"):
+        if value < 1024:
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
 
 
 def format_duration(seconds: float) -> str:

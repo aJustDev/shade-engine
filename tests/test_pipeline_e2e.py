@@ -104,7 +104,9 @@ def test_cli_smoke(tmp_path: Path) -> None:
     assert "sweeping tile [1/1]" in result.output
     assert "binning done in" in result.output
     assert "horizon sweep done in" in result.output
+    assert "horizon.tif written (" in result.output
     assert "build done in" in result.output
+    assert "of artifacts)" in result.output
     for name in ARTIFACT_FILES:
         assert (output_root / "cube" / "v1" / name).exists(), name
 
