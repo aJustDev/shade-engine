@@ -1,0 +1,52 @@
+name: Deploy
+
+# Fires when the CI workflow finishes on main. conclusion == 'success'
+# aborts if CI was red: a commit that breaks lint or tests never reaches
+# the server. SHADE_DEPLOY_ENABLED is the kill switch (repo variable);
+# keep it 'false' until the server side is provisioned.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-shade
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && vars.SHADE_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.SHADE_DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H -p "${{ secrets.SHADE_DEPLOY_PORT }}" \
+            "${{ secrets.SHADE_DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Trigger deploy
+        # No command is passed: the key is restricted on the server to a
+        # single deploy script (authorized_keys command=), so SSH runs it
+        # and returns its exit code.
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            -p "${{ secrets.SHADE_DEPLOY_PORT }}" \
+            "${{ secrets.SHADE_DEPLOY_USER }}@${{ secrets.SHADE_DEPLOY_HOST }}"
+
+      - name: Smoke test (public, through the reverse proxy)
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS -o /dev/null https://shade.ajustino.dev/healthz; then
+              echo "OK on attempt $i"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "FAIL: healthz did not answer in 30s"
+          exit 1
