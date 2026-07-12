@@ -29,7 +29,7 @@ select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
 strict = true
-files = ["core/src", "pipeline/src", "api/src", "tests"]
+files = ["core/src", "pipeline/src", "api/src", "tests", "scripts"]
 mypy_path = ["core/src", "pipeline/src", "api/src", "tests"]
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]

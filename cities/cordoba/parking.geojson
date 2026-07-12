@@ -1,0 +1,1251 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. DE AMERICA",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 103,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. DE AMERICA 103 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.787223,
+              37.888631
+            ],
+            [
+              -4.781282,
+              37.891302
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. DEL CONDE DE VALLELLANO",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 10,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. DEL CONDE DE VALLELLANO 10 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.78577,
+              37.879594
+            ],
+            [
+              -4.785672,
+              37.879576
+            ]
+          ],
+          [
+            [
+              -4.785672,
+              37.879576
+            ],
+            [
+              -4.7851,
+              37.879549
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. DEL CONDE DE VALLELLANO",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 81,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. DEL CONDE DE VALLELLANO 81 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS, SABADOS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.785117,
+              37.879253
+            ],
+            [
+              -4.785139,
+              37.878954
+            ]
+          ],
+          [
+            [
+              -4.785139,
+              37.878954
+            ],
+            [
+              -4.78525,
+              37.877932
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. DEL DOCTOR FLEMING",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 55,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. DEL DOCTOR FLEMING 55 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.785093,
+              37.879998
+            ],
+            [
+              -4.785125,
+              37.880155
+            ]
+          ],
+          [
+            [
+              -4.785125,
+              37.880155
+            ],
+            [
+              -4.785093,
+              37.880299
+            ]
+          ],
+          [
+            [
+              -4.785093,
+              37.880299
+            ],
+            [
+              -4.785002,
+              37.880371
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. DEL GRAN CAPITAN",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 70,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. DEL GRAN CAPITAN 70 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.785002,
+              37.880371
+            ],
+            [
+              -4.784905,
+              37.88043
+            ]
+          ],
+          [
+            [
+              -4.784905,
+              37.88043
+            ],
+            [
+              -4.784836,
+              37.880519
+            ]
+          ],
+          [
+            [
+              -4.784836,
+              37.880519
+            ],
+            [
+              -4.784819,
+              37.880616
+            ]
+          ],
+          [
+            [
+              -4.784819,
+              37.880616
+            ],
+            [
+              -4.784846,
+              37.880747
+            ]
+          ],
+          [
+            [
+              -4.784846,
+              37.880747
+            ],
+            [
+              -4.784878,
+              37.880904
+            ]
+          ],
+          [
+            [
+              -4.784878,
+              37.880904
+            ],
+            [
+              -4.784954,
+              37.881112
+            ]
+          ],
+          [
+            [
+              -4.78299,
+              37.890426
+            ],
+            [
+              -4.782518,
+              37.887649
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. DEL GRAN CAPITAN",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 52,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. DEL GRAN CAPITAN 52 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.783151,
+              37.892064
+            ],
+            [
+              -4.783264,
+              37.892894
+            ]
+          ],
+          [
+            [
+              -4.783264,
+              37.892894
+            ],
+            [
+              -4.783403,
+              37.8933
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. JESUS RESCATADO",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 82,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. JESUS RESCATADO 82 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.759202,
+              37.890572
+            ],
+            [
+              -4.763153,
+              37.8909
+            ]
+          ],
+          [
+            [
+              -4.763153,
+              37.8909
+            ],
+            [
+              -4.764006,
+              37.891283
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "AVDA. REPUBLICA ARGENTINA",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 171,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'AVDA. REPUBLICA ARGENTINA 171 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.785986,
+              37.886276
+            ],
+            [
+              -4.786389,
+              37.881423
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "C/ ALHAKEN II",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 38,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'C/ ALHAKEN II 38 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.784959,
+              37.888889
+            ],
+            [
+              -4.782878,
+              37.889406
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "C/ BENITO PEREZ GALDOS",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 20,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'C/ BENITO PEREZ GALDOS 20 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.781802,
+              37.890026
+            ],
+            [
+              -4.782777,
+              37.889592
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "C/ CERVANTES",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 25,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'C/ CERVANTES 25 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.784642,
+              37.886573
+            ],
+            [
+              -4.784524,
+              37.88698
+            ]
+          ],
+          [
+            [
+              -4.784524,
+              37.88698
+            ],
+            [
+              -4.785157,
+              37.889495
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "C/ FERNANDO DE CORDOBA",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 42,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'C/ FERNANDO DE CORDOBA 42 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.78828,
+              37.877254
+            ],
+            [
+              -4.787567,
+              37.877212
+            ]
+          ],
+          [
+            [
+              -4.787567,
+              37.877212
+            ],
+            [
+              -4.787523,
+              37.877233
+            ]
+          ],
+          [
+            [
+              -4.787523,
+              37.877233
+            ],
+            [
+              -4.787487,
+              37.877259
+            ]
+          ],
+          [
+            [
+              -4.787487,
+              37.877259
+            ],
+            [
+              -4.787464,
+              37.877293
+            ]
+          ],
+          [
+            [
+              -4.787464,
+              37.877293
+            ],
+            [
+              -4.787435,
+              37.877323
+            ]
+          ],
+          [
+            [
+              -4.787435,
+              37.877323
+            ],
+            [
+              -4.787401,
+              37.877343
+            ]
+          ],
+          [
+            [
+              -4.787401,
+              37.877343
+            ],
+            [
+              -4.787365,
+              37.877353
+            ]
+          ],
+          [
+            [
+              -4.787365,
+              37.877353
+            ],
+            [
+              -4.787295,
+              37.877354
+            ]
+          ],
+          [
+            [
+              -4.787295,
+              37.877354
+            ],
+            [
+              -4.787133,
+              37.877345
+            ]
+          ],
+          [
+            [
+              -4.78339,
+              37.88868
+            ],
+            [
+              -4.784597,
+              37.889782
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "C/ FRAY LUIS DE GRANADA",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 26,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'C/ FRAY LUIS DE GRANADA 26 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.784857,
+              37.888512
+            ],
+            [
+              -4.782786,
+              37.888707
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "C/ REYES CATOLICOS",
+        "zone_type": "blue",
+        "orientation": "cordon",
+        "capacity": 18,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'C/ REYES CATOLICOS 18 PLAZAS EN CORDON HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.781156,
+              37.889274
+            ],
+            [
+              -4.779541,
+              37.88988
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "C/ TOMAS DE AQUINO",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 112,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'C/ TOMAS DE AQUINO 112 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS, SABADOS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.788178,
+              37.878796
+            ],
+            [
+              -4.788392,
+              37.876564
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "GTA. CIUDADES HIROSHIMA Y NAGASHAKI",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 9,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'GTA. CIUDADES HIROSHIMA Y NAGASHAKI 9 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.787963,
+              37.877155
+            ],
+            [
+              -4.787995,
+              37.876579
+            ]
+          ],
+          [
+            [
+              -4.78476,
+              37.886442
+            ],
+            [
+              -4.785962,
+              37.886501
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "PASEO DE LA VICTORIA",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 49,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'PASEO DE LA VICTORIA 49 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.784771,
+              37.885159
+            ],
+            [
+              -4.784675,
+              37.886412
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "PZA. DE COLON",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 39,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'PZA. DE COLON 39 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.778017,
+              37.891332
+            ],
+            [
+              -4.778294,
+              37.891275
+            ]
+          ],
+          [
+            [
+              -4.778294,
+              37.891275
+            ],
+            [
+              -4.778597,
+              37.891186
+            ]
+          ],
+          [
+            [
+              -4.778597,
+              37.891186
+            ],
+            [
+              -4.77894,
+              37.891095
+            ]
+          ],
+          [
+            [
+              -4.77894,
+              37.891095
+            ],
+            [
+              -4.779764,
+              37.890805
+            ]
+          ],
+          [
+            [
+              -4.778001,
+              37.891112
+            ],
+            [
+              -4.779632,
+              37.890663
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "PZA. DE COLON",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 62,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'PZA. DE COLON 62 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.779273,
+              37.889304
+            ],
+            [
+              -4.778704,
+              37.889232
+            ]
+          ],
+          [
+            [
+              -4.778704,
+              37.889232
+            ],
+            [
+              -4.777642,
+              37.889046
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "PZA. DE COLON",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 70,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'PZA. DE COLON 70 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.777358,
+              37.8893
+            ],
+            [
+              -4.777894,
+              37.891095
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "PZA. DE LA COSTA DEL SOL",
+        "zone_type": "blue",
+        "orientation": "bateria",
+        "capacity": 18,
+        "schedule": [
+          {
+            "days": "mo-fr",
+            "from": "09:00",
+            "to": "14:00"
+          },
+          {
+            "days": "mo-fr",
+            "from": "17:00",
+            "to": "21:00"
+          },
+          {
+            "days": "sa",
+            "from": "09:00",
+            "to": "14:00"
+          }
+        ],
+        "max_minutes": 120,
+        "tariff_eur_hour": 0.9,
+        "notes": "Texto original del visor: 'PZA. DE LA COSTA DEL SOL 18 PLAZAS EN BATERIA HORARIO: LUNES A VIERNES DE 09:00 A 14:00 HORAS Y 17:00 A 21:00, SABADOS DE 09:00 A 14:00 HORAS, DOMINGOS Y FESTIVOS LIBRES'. tariff_eur_hour = tramo de la Tarifa 2 (Anexo I, OF 407/2026) que cubre 60 min (0.90 EUR llega a 1h03m; la tabla avanza en tramos de 3m43s, tope 2 h = 1.70 EUR)",
+        "source": "Visor de trafico movilidad.cordoba.es via Wayback Machine (2024-09-03); tarifas Ordenanza Fiscal 407 ejercicio 2026",
+        "last_verified": "2024-09-03"
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              -4.790731,
+              37.881573
+            ],
+            [
+              -4.79064,
+              37.881569
+            ]
+          ],
+          [
+            [
+              -4.79064,
+              37.881569
+            ],
+            [
+              -4.790576,
+              37.881607
+            ]
+          ],
+          [
+            [
+              -4.790576,
+              37.881607
+            ],
+            [
+              -4.790533,
+              37.881666
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

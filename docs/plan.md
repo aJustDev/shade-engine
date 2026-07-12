@@ -131,9 +131,9 @@ Objetivo: caso de uso aparcamiento completo.
 
 - [ ] PostGIS en compose + SQLAlchemy 2 + Alembic (primera migracion); verificar compat PostGIS<->Postgres antes de fijar imagen
 - [ ] `shade-engine import-layer <city> parking`
-- [ ] Generar `parking.geojson` del centro de Cordoba (schema seccion 5.1 del spec) -> la
-      digitalizacion manual del spec NO hace falta: parsear el visor municipal archivado,
-      ver nota 2026-07-12 (fuentes Fase 5)
+- [x] Generar `parking.geojson` del centro de Cordoba (schema seccion 5.1 del spec) ->
+      HECHO adelantado 2026-07-12: `scripts/parse_cordoba_parking.py` parsea el visor
+      municipal archivado (21 zonas, 51 tramos, 1152 plazas; ver nota de fuentes)
 - [ ] `GET /v1/parking/nearby` con estado de sombra en `at` y `shaded_until`
 
 Criterio de salida: consulta nearby devuelve tramos con sombra correcta contra timeline.
@@ -325,9 +325,12 @@ Pendientes de decidir:
   - Mejor fuente de GEOMETRIA: el visor de trafico municipal retirado
     (movilidad.cordoba.es/informaciontrafico, hoy enlace roto en el CKAN municipal) esta
     archivado en Wayback Machine (captura 2024-09-03) con los datos inline en JS:
-    58 LineStrings de zona azul (trazo #007bfe) en EPSG:4326 + ~21 markers con calle,
-    plazas, bateria/cordon y horario completo en el popup. Verificado y descargado
-    (2.9 MB HTML). Parsear a parking.geojson: ~medio dia de script.
+    51 LineStrings de zona azul (trazo #007bfe; otros 7 azules son accesos de parkings
+    off-street, se distinguen por el icono del marker que cierra cada grupo) en
+    EPSG:4326 + 21 markers con calle, plazas, bateria/cordon y horario completo en el
+    popup. Verificado, descargado (2.9 MB HTML) y parseado:
+    `scripts/parse_cordoba_parking.py` -> `cities/cordoba/parking.geojson` (21 zonas,
+    1152 plazas).
   - ATRIBUTOS oficiales: Ordenanza Fiscal 407 ejercicio 2026 (tarifas: no residente
     0.25-1.70 EUR, max 2 h; residente 0.10-0.80) y Ordenanza de Movilidad BOP 17-02-2023
     arts. 91-93 (sin anexo de calles: delega zonas/horarios en acuerdos BOP + senal).
