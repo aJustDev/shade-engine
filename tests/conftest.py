@@ -1,9 +1,16 @@
+import os
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import yaml
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 
 import laz_fixture
 import synthetic
@@ -98,3 +105,45 @@ def client(api_settings: ApiSettings) -> Iterator[TestClient]:
     """API test client; the context manager runs the lifespan (registry load)."""
     with TestClient(create_app(api_settings)) as instance:
         yield instance
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TEST_DATABASE_URL = "postgresql+psycopg://shade:shade@localhost:5432/shade"
+
+
+@pytest.fixture(scope="session")
+def parking_db() -> Iterator[Engine]:
+    """Engine bound to a scratch PostGIS database with migrations applied.
+
+    Skips when no server is reachable (local runs without the compose db);
+    in CI the postgis service container is mandatory, so unreachable there
+    is a hard failure, never a silent skip. A scratch database with a
+    unique name keeps pytest away from dev data imported into the compose
+    database on the same port, and running ``alembic upgrade head`` here
+    means every DB test also proves the migrations apply.
+    """
+    admin_url = os.environ.get("SHADE_TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
+    admin = create_engine(
+        admin_url, connect_args={"connect_timeout": 2}, isolation_level="AUTOCOMMIT"
+    )
+    try:
+        with admin.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except OperationalError as exc:
+        admin.dispose()
+        if os.environ.get("CI"):
+            raise RuntimeError(f"PostGIS unreachable in CI at {admin_url}") from exc
+        pytest.skip(f"no PostGIS server at {admin_url}")
+    scratch = f"shade_test_{uuid.uuid4().hex[:8]}"
+    with admin.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{scratch}"'))
+    scratch_url = make_url(admin_url).set(database=scratch).render_as_string(hide_password=False)
+    alembic_config = Config(str(REPO_ROOT / "alembic.ini"))
+    alembic_config.set_main_option("sqlalchemy.url", scratch_url)
+    command.upgrade(alembic_config, "head")
+    engine = create_engine(scratch_url)
+    yield engine
+    engine.dispose()
+    with admin.connect() as conn:
+        conn.execute(text(f'DROP DATABASE "{scratch}" WITH (FORCE)'))
+    admin.dispose()

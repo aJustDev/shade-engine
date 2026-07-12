@@ -1,0 +1,34 @@
+# Dev services for shade-engine. Only the database for now: the API runs on
+# the host (uvicorn) and its container arrives with the phase 6 deploy.
+#
+# Dev flow:
+#   docker compose up -d db
+#   uv run alembic upgrade head
+#   uv run shade-engine import-layer cordoba parking
+# Both commands read SHADE_DATABASE_URL; the dev default they assume is
+#   postgresql+psycopg://shade:shade@localhost:5432/shade
+# If port 5432 clashes on your machine, run with
+#   SHADE_DB_PORT=5544 docker compose up -d db
+# and point SHADE_DATABASE_URL at that port.
+services:
+  db:
+    # PostgreSQL 18 + PostGIS 3.6 (spec section 6). Tag verified 2026-07-12.
+    image: postgis/postgis:18-3.6
+    environment:
+      POSTGRES_USER: shade
+      POSTGRES_PASSWORD: shade
+      POSTGRES_DB: shade
+    ports:
+      - "${SHADE_DB_PORT:-5432}:5432"
+    volumes:
+      # postgres:18 moved the data directory up from /var/lib/postgresql/data;
+      # mounting the old path would silently lose persistence.
+      - shade-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shade -d shade"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  shade-db:

@@ -4,11 +4,12 @@ version = "0.1.0"
 description = "Public FastAPI service reading precomputed shade artifacts"
 requires-python = ">=3.14"
 dependencies = [
+    "alembic>=1.16",
     "fastapi>=0.115",
     "limits>=5",
     "pydantic-settings>=2.6",
     "pyproj>=3.7.2",
-    "shade-core",
+    "shade-core[db]",
     "uvicorn>=0.35",
 ]
 
