@@ -1,9 +1,10 @@
-"""Command line interface: ``shade-engine build|predict|import-layer <city>``."""
+"""Command line interface: ``shade-engine build|predict|import-layer|tiles <city>``."""
 
-from datetime import date
+from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 import typer
 
@@ -16,6 +17,12 @@ from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.layers import import_parking_layer
 from shade_pipeline.predict import prediction_table, read_points
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
+from shade_pipeline.tiles import (
+    DEFAULT_MAX_ZOOM,
+    DEFAULT_MIN_ZOOM,
+    build_tiles,
+    season_preset_instants,
+)
 
 app = typer.Typer(help="Offline pipeline that turns LiDAR into per-city shade artifacts.")
 
@@ -105,6 +112,61 @@ def predict(
         raise typer.Exit(1)
     table = prediction_table(config, artifact_dir, read_points(points_csv), date.fromisoformat(day))
     typer.echo(table)
+
+
+@app.command()
+def tiles(
+    city: str,
+    at: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--at",
+            help="Local ISO instant, repeatable (naive = city timezone); "
+            "default: the 2026 solstice/equinox preset",
+        ),
+    ] = None,
+    min_zoom: Annotated[int, typer.Option(help="Web Mercator min zoom")] = DEFAULT_MIN_ZOOM,
+    max_zoom: Annotated[
+        int, typer.Option(help="Web Mercator max zoom (17 ~ 1 m/px at lat 37.9)")
+    ] = DEFAULT_MAX_ZOOM,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+) -> None:
+    """Render CITY's per-instant shade overlay PMTiles plus their index manifest."""
+    config = load_city(cities_dir / f"{city}.yaml")
+    artifact_dir = output_root / config.id / ARTIFACT_VERSION
+    if not (artifact_dir / METADATA_FILENAME).exists():
+        typer.echo(
+            f"error: no artifacts under {artifact_dir}; run shade-engine build first", err=True
+        )
+        raise typer.Exit(1)
+    zone = ZoneInfo(config.timezone)
+    if at:
+        # Same rule as the API's ?at=: a naive instant means the city's local
+        # clock; an explicit offset is honored and converted.
+        instants = []
+        for value in at:
+            parsed = datetime.fromisoformat(value)
+            instants.append(
+                parsed.replace(tzinfo=zone) if parsed.tzinfo is None else parsed.astimezone(zone)
+            )
+    else:
+        instants = season_preset_instants(zone)
+    try:
+        out_dir = build_tiles(
+            config,
+            artifact_dir,
+            instants,
+            min_zoom=min_zoom,
+            max_zoom=max_zoom,
+            progress=typer.echo,
+        )
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"tiles written to {out_dir}")
 
 
 @app.command("import-layer")

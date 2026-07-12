@@ -35,8 +35,14 @@ explicit_package_bases = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pvlib.*", "pandas.*", "laspy.*", "rasterio.*", "affine.*", "shapely.*"]
+module = ["pvlib.*", "pandas.*", "laspy.*", "rasterio.*", "affine.*", "shapely.*", "mercantile.*"]
 ignore_missing_imports = true
+
+# pmtiles ships py.typed but its writer is unannotated, which strict mode's
+# disallow_untyped_calls rejects at every call site; treat it as untyped.
+[[tool.mypy.overrides]]
+module = ["pmtiles.*"]
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

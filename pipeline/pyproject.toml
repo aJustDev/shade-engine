@@ -6,7 +6,10 @@ requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.28",
     "laspy[lazrs]>=2.5",
+    "mercantile>=1.2",
     "numpy>=2",
+    "pillow>=12",
+    "pmtiles>=3.7",
     "pyproj>=3.7.2",
     "rasterio>=1.5",
     "shade-core[db]",
