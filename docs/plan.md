@@ -258,11 +258,23 @@ Pendientes de decidir:
     ~16 GB de disco en el pico del scratch; artefactos finales ~2.5 GB — la estimacion
     "cientos de MB" del spec seccion 3 se queda corta con dato real: el horizonte urbano
     comprime peor que el sintetico). La API listara cordoba sola al terminar.
-  - Antes del paseo: verificar los pins del kit sobre el mapa (varios caen bajo copa;
-    puerta-puente seguro que esta mal — el probe lo predice en sombra vegetal todo un
-    dia de julio en plena explanada) y regenerar la hoja con
+  - Antes del paseo: los pins del kit ya estan afinados (OSM + landcover del probe;
+    ver aviso en docs/validacion-cordoba.md con los 3 que quedan por confirmar a mano)
+    y la hoja se regenera con
     `uv run shade-engine predict cordoba docs/validacion-cordoba-puntos.csv --day <fecha>`.
   - La fase cierra contrastando fotos con la hoja (tabla de resultados en
     docs/validacion-cordoba.md) y decidiendo los ajustes de precision que salgan.
   - Los 16 tiles del probe quedan en `data/lidar/cordoba` (se reutilizan); los
     artefactos del probe estaban en el scratchpad de la sesion (efimeros, no cuentan).
+- 2026-07-12 (decision de secuencia): el paseo de validacion se retrasa unas semanas y
+  NO bloquea nada mas. La Fase 4 queda "en curso" solo por su cola de validacion
+  (fotos + ajustes de precision) y las fases siguientes arrancan sin esperar, en el
+  orden del plan: 5 (parking) -> 6 (deploy) -> 7 (visualizacion). Razones: ninguna
+  depende de la validacion, el contrato de la API no cambia aunque la validacion
+  fuerce un rebuild de artefactos, y desplegar ANTES del paseo lo mejora (validar
+  con el movil contra shade.ajustino.dev en vez de con hojas). Al retomar:
+  - El build completo de cordoba quedo lanzado por el usuario el 2026-07-12 (exact,
+    ~11-12 h). Verificar al abrir sesion: existe `data/cities/cordoba/v1/metadata.json`,
+    tamanos (~2.5 GB, horizon ~2 GB), `shade-engine predict` con el kit responde, y la
+    API la lista (`uv run uvicorn shade_api.app:app` + `/v1/cities`).
+  - Siguiente sesion: planificar Fase 5 (parking) cuando el usuario lo pida.
