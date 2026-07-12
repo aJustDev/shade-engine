@@ -178,17 +178,22 @@ que la fase es "solo" un grafo con un peso solar.
       se mueve ~7 grados; el coste variable durante el propio recorrido queda
       para despues si el error molesta
 
+Datos medidos (sondeo 2026-07-12, osmnx sobre el bbox de artefactos 8x7 km,
+network_type=walk): 12,951 nodos / 39,042 aristas, un solo componente conexo;
+descarga+construccion 18.3 s; +223 MiB de RSS; GraphML 15.6 MiB; A\* con
+networkx puro y heuristica de linea recta: mediana 10.1 ms, p90 39.1 ms
+(rutas mediana 2.8 km); 1976 km de aristas -> ~395k puntos de muestreo a 5 m
+para el precalculo solar.
+
 Decisiones abiertas (para la sesion de planificacion):
 
-- Motor de rutas: A\* en proceso (networkx/osmnx) vs pgRouting en PostGIS vs
-  router externo (Valhalla/GraphHopper). Inclinacion inicial: en proceso --
-  el peso depende de la hora y un callable lo expresa directo; pgRouting
-  obliga a materializar columnas de coste por franja horaria y un router
-  externo es infra nueva para una ciudad. PostGIS (Fase 5) sigue siendo el
-  sitio natural para persistir el grafo y las fracciones de sol.
-- Precalculo de fraccion de sol por arista y franja de 15-30 min (barato y
-  cacheable) vs calculo perezoso por peticion con LRU. Decidir con numeros
-  del grafo real.
+- Motor de rutas: RESUELTA por el sondeo -- A\* en proceso (networkx). Con
+  10 ms por ruta y el grafo entero en ~200 MiB no hay caso para pgRouting ni
+  router externo. PostGIS (Fase 5) sigue siendo el sitio natural para
+  persistir el grafo y las fracciones de sol si se precalculan.
+- Precalculo de fraccion de sol por arista y franja de 15-30 min (395k
+  consultas de pixel por franja, asumible) vs calculo perezoso por peticion
+  con LRU (una ruta toca cientos de aristas). Decidir al implementar.
 - DuckDB NO entra: PostGIS cubre los vectores en runtime y para extraer OSM
   de una ciudad bastan osmnx/Overpass. Reevaluar solo si algun dia se ingiere
   Overture/GeoParquet multi-ciudad (ahi si brilla duckdb-spatial).
