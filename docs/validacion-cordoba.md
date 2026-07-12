@@ -7,10 +7,22 @@ foto con hora vs prediccion.
 
 ## AVISO: verificar las coordenadas antes del paseo
 
-Las coordenadas de `validacion-cordoba-puntos.csv` son aproximadas (de
-conocimiento general, error posible de decenas de metros). Antes del paseo,
-abrir cada punto en un mapa, ajustar el pin al sitio exacto elegido y
-corregir el CSV. Reglas al ajustar:
+Los pins de `validacion-cordoba-puntos.csv` estan pre-afinados (2026-07-12):
+geocodificados contra OSM/Nominatim y contrastados con el landcover LiDAR
+del probe, moviendo cada uno al pixel de suelo abierto mas cercano (o, en
+los puntos vegetales, bajo una copa real de >= 2 m). El afinado cazo dos
+pins originales sobre tejado (potro, gran-capitan) y dos bajo copa por
+error (puerta-puente, deanes). Aun asi, antes del paseo conviene abrir cada
+punto en el mapa y confirmar; en particular:
+
+- `puerta-puente` quedo a 2 m del monumento (entre la puerta y los arboles
+  del Triunfo) y el probe lo predice en sombra casi todo el dia: arrastrar
+  el pin al centro abierto de la explanada si se quiere un punto "facil".
+- `victoria` quedo a 1 m de un edificio en el borde del jardin: comprobar.
+- `ribera` conserva la coordenada original (OSM devolvio otro sitio); el
+  pixel diagnostica bien (suelo abierto), pero confirmar sobre el mapa.
+
+Reglas si se ajusta algun pin:
 
 - Ningun punto sobre un edificio (el motor responde la verdad del pixel:
   un pin sobre tejado predice el horizonte del tejado).
