@@ -13,11 +13,14 @@ from importlib import metadata as importlib_metadata
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from limits import parse as parse_rate_limit
+from sqlalchemy.orm import sessionmaker
 
+from shade_api.parking import router as parking_router
 from shade_api.ratelimit import RateLimitMiddleware
 from shade_api.registry import CityRegistry
 from shade_api.routes import health_router, router
 from shade_api.settings import ApiSettings
+from shade_core.db import make_engine
 
 _DESCRIPTION = (
     "Public API of shade-engine: urban shade queries answered from "
@@ -32,7 +35,13 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.registry = CityRegistry.load(app_settings)
+        # No eager connect: shade endpoints must keep working with the
+        # database down or absent; /v1/parking answers 503 in that case.
+        engine = make_engine(app_settings.database_url) if app_settings.database_url else None
+        app.state.db_sessionmaker = sessionmaker(engine) if engine is not None else None
         yield
+        if engine is not None:
+            engine.dispose()
         app.state.registry.close()
 
     app = FastAPI(
@@ -52,6 +61,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             allow_headers=["*"],
         )
     app.include_router(router)
+    app.include_router(parking_router)
     app.include_router(health_router)
     return app
 

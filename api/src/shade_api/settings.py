@@ -8,15 +8,23 @@ the settings object programmatically and hand it to ``create_app``.
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class ApiSettings(BaseSettings):
     """Runtime configuration for the shade API."""
 
-    model_config = SettingsConfigDict(env_prefix="SHADE_API_")
+    # populate_by_name keeps programmatic construction working for aliased
+    # fields (tests build settings as ApiSettings(database_url=...)).
+    model_config = SettingsConfigDict(env_prefix="SHADE_API_", populate_by_name=True)
 
+    # PostGIS URL shared with the CLI, hence the alias: it reads
+    # SHADE_DATABASE_URL (one variable for both processes). populate_by_name
+    # also makes prefixed SHADE_API_DATABASE_URL work as a fallback; the
+    # alias wins when both are set. None disables the parking endpoint
+    # (503); everything else works without a database.
+    database_url: str | None = Field(default=None, validation_alias="shade_database_url")
     cities_dir: Path = Path("cities")
     artifacts_root: Path = Path("data/cities")
     artifact_version: str = "v1"
