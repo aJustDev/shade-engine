@@ -1,9 +1,10 @@
 # Validacion de campo: Cordoba
 
-Protocolo para contrastar las predicciones del motor con la realidad
-(criterio de salida de la Fase 4: predicciones correctas en la mayoria de
-puntos de contraste, documentado). El resultado es material para el README:
-foto con hora vs prediccion.
+Protocolo para contrastar las predicciones del motor con la realidad.
+Es la tarea diferida de la Fase 4 (cerrada 2026-07-12; ver seccion
+"Diferido" en plan.md): se ejecuta cuando el paseo sea posible, idealmente
+contra la API desplegada (Fase 6) desde el movil. El resultado es material
+para el README: foto con hora vs prediccion.
 
 ## AVISO: verificar las coordenadas antes del paseo
 
@@ -76,7 +77,8 @@ dos callejas de la Juderia que estresan resolucion de 1 m + snap de pixel.
 4. Veredicto observado: "sombra" si mas del 50% del metro alrededor del pin
    esta en sombra (evita discutir con la penumbra del borde).
 
-5. Rellenar la tabla de resultados y traerla a la sesion de cierre de fase.
+5. Rellenar la tabla de resultados y traerla a una sesion de trabajo para
+   registrar el contraste y decidir los ajustes de precision.
 
 ## Resultados
 
