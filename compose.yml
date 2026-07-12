@@ -1,0 +1,90 @@
+# Production stack for cartagena (dev keeps using docker-compose.yml, and
+# must pass it explicitly: compose.yml wins the default-file lookup).
+#
+#   docker compose -f docker-compose.yml up -d db   # dev database
+#   docker compose build && docker compose up -d    # prod stack
+#
+# Everything listens on 127.0.0.1 only: the host's Caddy is what exposes the
+# API to the internet. Memory limits are explicit because the VPS is small
+# and shared with other services.
+
+name: shade
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  db:
+    image: postgis/postgis:18-3.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    # Small instance on purpose: the database only holds vector layers
+    # (rasters never touch Postgres) and the API opens few connections.
+    command: postgres -c shared_buffers=128MB -c max_connections=30
+    ports:
+      - "127.0.0.1:5437:5432"
+    volumes:
+      # postgres:18 moved the data dir to /var/lib/postgresql (no /data
+      # suffix); the old path silently loses persistence.
+      - shade-db:/var/lib/postgresql
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?} -d ${POSTGRES_DB:?}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+    logging: *logging
+    networks: [shade-net]
+
+  # One-shot: applies migrations before the API is allowed to start.
+  migrate:
+    image: shade:prod
+    command: alembic upgrade head
+    environment:
+      SHADE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:?}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 256m
+    logging: *logging
+    networks: [shade-net]
+
+  api:
+    image: shade:prod
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      SHADE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:?}
+      # $$ escapes compose interpolation; the runtime value ends in one $.
+      SHADE_API_CORS_ORIGIN_REGEX: https://([a-z0-9-]+\.)?ajustino\.dev$$
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    ports:
+      - "127.0.0.1:8003:8000"
+    volumes:
+      # Raster artifacts (~2.4 GB) stay out of git and out of the image;
+      # they are rsync'd to the host and mounted read-only.
+      - ./data/cities:/app/data/cities:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 1g
+    logging: *logging
+    networks: [shade-net]
+
+volumes:
+  shade-db:
+
+networks:
+  shade-net:
+    name: shade-net

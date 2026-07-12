@@ -1,0 +1,23 @@
+# Keep the build context tiny: data/ alone holds ~2.4 GB of rasters that
+# must never reach the daemon (they are bind-mounted at runtime instead).
+.git
+.venv
+data/
+docs/
+tests/
+.github/
+.env
+.env.*
+!.env.example
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.pre-commit-config.yaml
+docker-compose.yml
+compose.yml
+Dockerfile
+.dockerignore
+README.md
+CLAUDE.md

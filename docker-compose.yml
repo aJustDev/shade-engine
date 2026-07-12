@@ -1,14 +1,15 @@
-# Dev services for shade-engine. Only the database for now: the API runs on
-# the host (uvicorn) and its container arrives with the phase 6 deploy.
+# Dev services for shade-engine: only the database. The production stack
+# lives in compose.yml, which WINS the default-file lookup -- dev commands
+# must always pass this file explicitly with -f.
 #
 # Dev flow:
-#   docker compose up -d db
+#   docker compose -f docker-compose.yml up -d db
 #   uv run alembic upgrade head
 #   uv run shade-engine import-layer cordoba parking
 # Both commands read SHADE_DATABASE_URL; the dev default they assume is
 #   postgresql+psycopg://shade:shade@localhost:5432/shade
 # If port 5432 clashes on your machine, run with
-#   SHADE_DB_PORT=5544 docker compose up -d db
+#   SHADE_DB_PORT=5544 docker compose -f docker-compose.yml up -d db
 # and point SHADE_DATABASE_URL at that port.
 services:
   db:
