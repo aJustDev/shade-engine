@@ -53,10 +53,11 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.state.settings = app_settings
     if app_settings.rate_limit_enabled:
         app.add_middleware(RateLimitMiddleware, limit=parse_rate_limit(app_settings.rate_limit))
-    if app_settings.cors_origins:
+    if app_settings.cors_origins or app_settings.cors_origin_regex:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=app_settings.cors_origins,
+            allow_origin_regex=app_settings.cors_origin_regex,
             allow_methods=["GET"],
             allow_headers=["*"],
         )

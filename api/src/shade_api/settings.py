@@ -32,6 +32,13 @@ class ApiSettings(BaseSettings):
     # NoDecode is required: pydantic-settings JSON-decodes list fields *before*
     # validators run, so a plain CSV string would be rejected without it.
     cors_origins: Annotated[list[str], NoDecode] = []
+    # Regex matched against the Origin header (Starlette allow_origin_regex),
+    # for patterns the exact-match list cannot express -- prod allows the apex
+    # plus wildcard subdomains. Anchor it with $: older Starlette used prefix
+    # matching, where https://ajustino.dev.evil.example would slip through.
+    # An invalid regex fails at startup (CORSMiddleware compiles it), which is
+    # the right time to fail.
+    cors_origin_regex: str | None = None
     rate_limit: str = "60/minute"
     rate_limit_enabled: bool = True
     block_size: int = 64
