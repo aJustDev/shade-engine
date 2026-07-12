@@ -119,7 +119,7 @@ Criterio de salida: CUMPLIDO 2026-07-11. API respondiendo sobre los artefactos d
 Objetivo: la mejor demo posible: prediccion vs realidad.
 
 - [x] Driver de descarga PNOA (movido desde Fase 2): envolver los endpoints internos del centro de descargas CNIG tras la interfaz `LidarSource`, con fallback documentado de descarga manual al directorio local -> `shade_pipeline.cnig` (CnigSource): resumible, probado en vivo (16 tiles, 965 MB, cero incidencias)
-- [ ] Ejecutar pipeline con bbox urbano de Cordoba; medir tamano/tiempos (validar estimacion seccion 3 del spec; fallback 2 m/pixel o 32 sectores si excesivo; probar el modo geometric del barrido) -> PARCIAL: probe 2x2 km del casco medido (exact 48.7 min / geometric 16.8 min, ver registro); build completo documentado en notas, pendiente de lanzar (~11-12 h exact)
+- [x] Ejecutar pipeline con bbox urbano de Cordoba; medir tamano/tiempos (validar estimacion seccion 3 del spec; fallback 2 m/pixel o 32 sectores si excesivo; probar el modo geometric del barrido) -> HECHO 2026-07-12: build completo exact en 11h21m (90 tiles, 738M puntos); artefactos 2.4 GB (horizon 1.8 GB); verificado con `predict` (hoja coherente para los 10 puntos) y API en vivo (/v1/cities lista cordoba, /v1/shade responde); probe y modo geometric en el registro
 - [ ] Validacion de campo: puntos conocidos, fotos con hora vs prediccion; material para README -> PARCIAL: kit listo (docs/validacion-cordoba.md, 10 puntos + `shade-engine predict`); paseo y fotos pendientes
 - [ ] Ajustar precision segun lo detectado (interpolacion, snapping de puntos que caen sobre edificio) -> PARCIAL: filtrado de ruido/solape/withheld y costuras mm de PNOA arreglados proactivamente; el resto espera datos de campo
 
@@ -358,3 +358,12 @@ Pendientes de decidir:
     retocar geometria: CDAU WFS (cdau:v_tramo, callejerodeandalucia.es) o IGN IGR-RT
     viario urbano (CC-BY). La copia descargada del HTML es efimera (scratchpad); el
     parseo debe re-descargar de Wayback con la URL con timestamp fija.
+- 2026-07-12 (build completo verificado): el build de cordoba termino a las 20:05
+  (lanzado 08:44, 11h21m, dentro de la extrapolacion 11-12 h del probe). Cifras
+  reales: 90 tiles LAZ / 738,284,408 puntos; artefactos 2.4 GB (horizon.tif 1.8 GB,
+  dtm 207 MB, blocker_class 206 MB, dsm 184 MB, landcover 8.8 MB). Verificacion:
+  metadata.json correcto (exact, 64 sectores, 500 m), `shade-engine predict` responde
+  con hoja coherente para los 10 puntos del kit, y la API lista cordoba y responde
+  /v1/shade en vivo. La Fase 4 queda "en curso" SOLO por el paseo de validacion
+  (fotos + ajustes de precision). Extras adelantados en esta misma sesion:
+  parking.geojson de Fase 5 (item marcado) y sondeo del grafo de Fase 8.
