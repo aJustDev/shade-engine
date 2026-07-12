@@ -35,7 +35,8 @@ next to buildings behave correctly.
 
 ## Status
 
-Early work in progress; nothing deployed yet. The spec lives in
+Live at [shade.ajustino.dev](https://shade.ajustino.dev/docs) with real data
+for Cordoba, Spain. The spec lives in
 [docs/shade-engine-mvp.md](docs/shade-engine-mvp.md) and the phased
 implementation plan in [docs/plan.md](docs/plan.md) (both in Spanish).
 
