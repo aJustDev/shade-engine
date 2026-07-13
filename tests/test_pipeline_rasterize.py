@@ -113,6 +113,23 @@ def test_overlap_flag_dropped(tmp_path: Path) -> None:
     assert stack.dsm[0, 0] == 0.0
 
 
+def test_rasterizes_old_format_without_overlap_dimension(tmp_path: Path) -> None:
+    # PNOA 2nd coverage ships LAS 1.2 point format 3, which has no `overlap`
+    # flag (overlap is classification 12 there). The rasterizer must not assume
+    # the LAS 1.4 dimension exists; overlap-as-class-12 is still dropped.
+    path = tmp_path / "old.laz"
+    laz_fixture.write_laz(
+        path,
+        np.array([0.5, 0.5], dtype=np.float64),
+        np.array([3.5, 3.5], dtype=np.float64),
+        np.array([0.0, 30.0], dtype=np.float64),
+        np.array([2, 12], dtype=np.uint8),
+        point_format=3,
+    )
+    stack = rasterize_lidar([path], BBOX, 1.0)
+    assert stack.dsm[0, 0] == 0.0  # the class-12 overlap point (z=30) is dropped
+
+
 def test_synthetic_ground_feeds_dtm(tmp_path: Path) -> None:
     # Hydro-flattened water ships as class 2 + synthetic; it must keep
     # feeding the DTM or rivers become unfillable holes.

@@ -4,11 +4,13 @@ Kept separate from tests/synthetic.py so core-only tests never import laspy.
 
 LAS format notes encoded here on purpose: point formats 0-5 pack the
 classification into 5 bits shared with flag bits, so class codes above 31
-cannot exist there; format 6 (LAS 1.4) gives classification a full byte and
-is what PNOA's second coverage actually ships. ``return_number`` is a 1-based
-4-bit subfield -- never write 0. No CRS goes into the header: the pipeline
-trusts the CRS declared in the city YAML (PNOA files already come in the
-local UTM zone).
+cannot exist there; format 6 (LAS 1.4) gives classification a full byte plus
+an ``overlap`` flag. PNOA's third coverage ships format 6, but the second
+coverage ships LAS 1.2 format 3, which has no ``overlap`` flag (overlap is
+classification 12 there), so ``write_laz`` takes ``point_format`` to
+reproduce either. ``return_number`` is a 1-based 4-bit subfield -- never
+write 0. No CRS goes into the header: the pipeline trusts the CRS declared in
+the city YAML (PNOA files already come in the local UTM zone).
 """
 
 from pathlib import Path
@@ -29,6 +31,7 @@ def write_laz(
     classification: npt.NDArray[np.uint8],
     return_number: npt.NDArray[np.uint8] | None = None,
     *,
+    point_format: int = 6,
     withheld: npt.NDArray[np.bool_] | None = None,
     overlap: npt.NDArray[np.bool_] | None = None,
     synthetic_flag: npt.NDArray[np.bool_] | None = None,
@@ -38,7 +41,8 @@ def write_laz(
     The keyword flags map to the LAS 1.4 per-point classification flags
     (``synthetic_flag`` avoids shadowing the ``synthetic`` module).
     """
-    header = laspy.LasHeader(version="1.4", point_format=6)
+    version = "1.4" if point_format >= 6 else "1.2"
+    header = laspy.LasHeader(version=version, point_format=point_format)
     header.scales = np.array([0.01, 0.01, 0.01])
     header.offsets = np.array([0.0, 0.0, 0.0])
     las = laspy.LasData(header)

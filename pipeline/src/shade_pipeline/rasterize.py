@@ -99,6 +99,11 @@ def rasterize_lidar(
                 )
         total = 0
         with laspy.open(path) as reader:
+            # `overlap` is a LAS 1.4 (point format 6+) flag; older PNOA tiles
+            # (2nd coverage ships LAS 1.2 format 3) lack the dimension and
+            # encode overlap as classification 12 instead, dropped below.
+            # Probe the header once per file, not per chunk.
+            has_overlap = "overlap" in reader.header.point_format.dimension_names
             for points in reader.chunk_iterator(chunk_size):
                 x = np.asarray(points.x)
                 y = np.asarray(points.y)
@@ -114,10 +119,15 @@ def rasterize_lidar(
                 # The synthetic flag stays: it marks valid points produced by
                 # another technique (hydro-flattened water is class 2 +
                 # synthetic; dropping it would hole the DTM across the river).
+                overlap = (
+                    np.asarray(points.overlap, dtype=bool)
+                    if has_overlap
+                    else np.zeros(len(x), dtype=bool)
+                )
                 keep = ~(
                     np.isin(classification, DROPPED_CLASSES)
                     | np.asarray(points.withheld, dtype=bool)
-                    | np.asarray(points.overlap, dtype=bool)
+                    | overlap
                 )
 
                 col = np.floor((x - min_x) / resolution_m).astype(np.int64)
