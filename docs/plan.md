@@ -17,8 +17,14 @@ completarlos y anota decisiones en el registro del final. El spec de referencia 
 | 6    | Despliegue en cartagena            | hecha     |
 | 7    | Visualizacion + integracion Astro  | hecha     |
 | 8    | Rutas peatonales a la sombra       | pendiente |
+| 9    | SVF + exposicion solar acumulada   | boceto    |
+| 10   | MRT / UTCI a nivel de peaton       | boceto    |
+| 11   | Rutas frescas + diagnostico        | boceto    |
 
-Estados: pendiente / en curso / hecha.
+Estados: pendiente / en curso / hecha / boceto.
+
+Las fases 9-11 son post-MVP: reposicionan el motor hacia confort termico (ver
+"Vision post-MVP: motor de confort termico"). Sin fechas ni prioridad todavia.
 
 ## Apuntes tecnicos incorporados al plan
 
@@ -234,6 +240,132 @@ Decisiones abiertas (para la sesion de planificacion):
 Criterio de salida (provisional): entre dos puntos del casco a media tarde,
 la ruta sombreada evita visiblemente las calles al sol frente al camino mas
 corto, comprobable sobre el mapa de Fase 7.
+
+## Vision post-MVP: motor de confort termico y refugios climaticos
+
+Reencuadre de producto (sesion 2026-07-13, explorado antes de comprometer
+fechas; las Fases 9-11 son bocetos). shade-engine no es solo una calculadora de
+sombra. El **horizon raster** que ya generamos (64 sectores de angulo de
+horizonte por pixel) es, casi literalmente, un **Sky View Factor (SVF)
+precomputado**: la fraccion de cielo visible desde cada punto, que es el input
+caro de todo modelo de confort termico radiativo. La parte computacionalmente
+costosa (la geometria de la escena urbana a 1 m) ya esta hecha; lo que falta para
+pasar de "sombra" a "confort" son datos meteo y un modelo de balance radiativo,
+no mas geometria.
+
+Cadena de valor del confort al calor (lo que se siente no es la temperatura del
+aire, sino la carga radiativa sobre el cuerpo):
+
+    geometria (sombra + SVF) -> carga radiativa onda corta/larga -> MRT ->
+    indice de confort (UTCI / PET) -> percepcion
+
+- **MRT** (Mean Radiant Temperature): temperatura radiante media que siente un
+  cuerpo; integra sol directo, difuso, reflejado por superficies y onda larga de
+  muros y asfalto calientes. Domina en verano (sol vs sombra pueden diferir
+  20-30 grados de MRT con la misma temperatura de aire).
+- **UTCI / PET**: indices normalizados (MRT + aire + humedad + viento) en grados
+  de sensacion; el lenguaje de la literatura y del urbanismo.
+
+Lo que dominamos: la geometria (sombra hoy; SVF casi gratis). Lo que falta para
+MRT: meteo (aire, humedad, viento, radiacion global/difusa) de AEMET para un
+punto de la ciudad, y propiedades de superficie (albedo/emisividad) aproximables
+desde nuestro propio landcover.
+
+Trampa central a no olvidar: **sombra != frescor**. Una calle en sombra con
+asfalto recalentado, muros que irradian y sin viento es un horno. Vender un mapa
+de sombra como mapa de confort sin MRT lo detecta cualquier tecnico y quema
+credibilidad; por eso el salto a MRT (Fase 10) no es cosmetico.
+
+Puente concreto: **SOLWEIG** (modelo de MRT urbano, parte de UMEP, plugin de
+QGIS, Universidad de Gotemburgo) toma exactamente nuestros rasteres: DSM, DEM/DTM
+y CDSM (canopy height model, que ya derivamos). Estrategia: validar contra
+SOLWEIG sobre un barrio de Cordoba para calibrar, y decidir despues si se depende
+de el o se reimplementa el nucleo radiativo aprovechando el SVF ya precomputado.
+
+Refugios climaticos: concepto ya institucionalizado en Espana (la red de refugios
+climaticos de Barcelona como referencia). NO los designamos nosotros (es decision
+municipal); aportamos (a) rutas frescas hacia ellos, (b) evaluacion de la calidad
+termica del espacio publico a resolucion de acera, (c) priorizacion de
+intervenciones (donde plantar o dar sombra rinde mas confort por euro).
+
+Encaje de negocio (a diferencia del aparcamiento): la adaptacion al calor tiene
+mandato y presupuesto (planes municipales de adaptacion al cambio climatico,
+fondos europeos/nacionales, olas de calor como agenda politica creciente). Ciclo
+B2G lento pero con comprador real. Diferenciacion defendible frente a
+shademap.app (sombra global desde footprints OSM extruidos): MRT/SVF a 1 m desde
+LiDAR real, con vegetacion y geometria de tejados reales, no prismas OSM.
+
+Tesis de posicionamiento: shade-engine = capa de datos + API + tiles de geometria
+radiativa y confort termico a resolucion de peaton; el aparcamiento y las rutas
+son demos de consumo encima.
+
+## Fase 9 - SVF + exposicion solar acumulada (boceto)
+
+Objetivo: los dos productos de confort "casi gratis", reutilizando artefactos y
+codigo que ya existen. Sin datos meteo todavia. Independiente de la Fase 8.
+
+- [ ] SVF por pixel derivado del horizon raster (integral azimutal de los 64
+      angulos de horizonte; no hay que re-barrer nada). Nuevo artefacto svf.tif +
+      capa. Valor propio: correlaciona con la isla de calor nocturna (el calor
+      atrapado de noche crece con 1 - SVF)
+- [ ] Exposicion solar acumulada: sumar minutos de sol vs sombra por pixel en un
+      dia tipo de verano barriendo `shade_timeline`; raster de "horas de sol/dia".
+      Proxy honesto de estres termico (dice exposicion, no grados)
+- [ ] Servir ambos como tiles (mismo patron PMTiles de Fase 7) + endpoint de
+      consulta puntual si aporta
+- [ ] docs/learning: sky-view-factor.md (que es, formula, por que el horizon
+      raster lo da gratis, trampa: SVF de superficie horizontal vs de pared)
+
+Criterio de salida (provisional): mapas de SVF y de exposicion acumulada de
+Cordoba visibles y coherentes con la intuicion (canones urbanos = SVF bajo;
+plazas abiertas = exposicion alta).
+
+## Fase 10 - MRT / UTCI a nivel de peaton (boceto)
+
+Objetivo: el salto de credibilidad: de exposicion a temperatura radiante y a
+indice de confort, validado. Depende de la Fase 9 (SVF).
+
+- [ ] Fuente meteo: AEMET (aire, humedad, viento, radiacion global/difusa) para
+      Cordoba; decidir estacion + interpolacion (el viento es el termino mas
+      incierto a escala de calle: documentar la asuncion)
+- [ ] Propiedades de superficie (albedo/emisividad) por clase de landcover
+- [ ] Modelo de balance radiativo -> MRT por pixel a un instante; UTCI/PET desde
+      MRT + meteo. Calibrar contra SOLWEIG sobre un barrio
+- [ ] Validacion de campo (sensores un dia de verano en Cordoba): la barrera real
+      de credibilidad ante un ayuntamiento. La sombra se valida con trigonometria;
+      el confort modelado, no
+- [ ] docs/learning: mean-radiant-temperature.md, utci-pet.md
+
+Decisiones abiertas (para su sesion de planificacion):
+
+- Motor: integrar SOLWEIG como dependencia (validas rapido contra literatura,
+  pero te atas a su implementacion/licencia) vs reimplementar el nucleo radiativo
+  sobre nuestro SVF precomputado (mas trabajo, es la diferenciacion, encaja en el
+  pipeline de artefactos). Decidir tras la calibracion
+- Escenarios "que pasa si planto arboles aqui" (modificar el CDSM y recalcular):
+  oro para un ayuntamiento pero es un producto en si; posponer
+
+Criterio de salida (provisional): mapa de MRT/UTCI de un barrio de Cordoba a una
+hora de ola de calor, contrastado contra SOLWEIG y contra medidas de campo.
+
+## Fase 11 - Rutas frescas + diagnostico urbanistico (boceto)
+
+Objetivo: los dos casos de uso encima del confort. Las rutas frescas dependen del
+grafo de la Fase 8; el diagnostico depende de la Fase 10.
+
+- [ ] Rutas frescas: el A\* de la Fase 8 con peso de arista = exposicion/MRT en
+      vez de (o ademas de) distancia. "Como llego al refugio sin cocerme".
+      Endpoint `GET /v1/routes/cool?from&to&at`
+- [ ] Diagnostico de calidad termica del espacio publico: capa para el
+      planificador (donde el espacio de estancia es habitable en verano)
+- [ ] Priorizacion de intervenciones: cruzar MRT + SVF + landcover para senalar
+      calles-canon expuestas sin vegetacion (mas confort por euro de arbol/toldo)
+- [ ] Conexion con refugios climaticos municipales (capa externa si el
+      ayuntamiento la publica; nosotros enrutamos y evaluamos, no designamos)
+
+Criterio de salida (provisional): entre dos puntos del casco en ola de calor, la
+ruta fresca evita las calles de MRT alto; un mapa de priorizacion senala calles
+concretas donde plantar.
 
 ## Transversal (todas las fases)
 
@@ -495,3 +627,16 @@ cordoba`. Tiles: 32 pmtiles (2 por instante x 16), 161 MB, ~15 min de
   (borra los 16 pmtiles viejos de schema 1), luego push, luego recaptura de
   fixtures de ajustinodev contra la API viva (los valores de sombra vegetal
   cambian) y commit web con el toggle de vegetacion.
+- 2026-07-13 (exploracion confort termico, SIN implementar): sesion de producto
+  sobre refugios climaticos y confort termico. Reencuadre acordado: el horizon
+  raster ya es un SVF (Sky View Factor) precomputado, asi que la parte cara del
+  confort radiativo esta hecha; falta meteo + balance radiativo, no geometria.
+  Documentado como seccion "Vision post-MVP: motor de confort termico" + Fases
+  9-11 boceto: 9 (SVF + exposicion solar acumulada, casi gratis e independiente
+  de la Fase 8), 10 (MRT/UTCI con AEMET + calibracion SOLWEIG + validacion de
+  campo; el salto de credibilidad), 11 (rutas frescas sobre el grafo de la Fase 8
+  - diagnostico urbanistico). Orden natural 9 -> 10 -> 11; sin fechas ni prioridad
+    todavia. Trampa clave anotada: sombra != frescor (la MRT de las superficies
+    recalentadas manda). Diferenciacion vs shademap.app: MRT/SVF a 1 m desde LiDAR
+    real, no footprints OSM. Encaje B2G (adaptacion al calor) mas defendible que el
+    aparcamiento. Siguiente si se retoma: planificar la Fase 9 (es la barata).
