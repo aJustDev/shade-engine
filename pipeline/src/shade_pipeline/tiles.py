@@ -13,9 +13,11 @@ is 156543/2^17 * cos(37.9) = 0.94 m/px -- our native 1 m resolution. Higher
 zooms would only upsample (the map client already overzooms past max_zoom);
 zoom 12 (~30 m/px) fits the whole city on two tiles.
 
-Each instant becomes one file: shade tiles for a fixed sun position are
-immutable, which is what makes the static approach work (and cacheable
-forever). The engine itself is never consulted at view time.
+Each instant becomes two files -- building+other shade and vegetation shade
+-- so the web client can toggle the vegetation layer independently. Tiles
+for a fixed sun position are immutable, which is what makes the static
+approach work (and cacheable forever). The engine itself is never consulted
+at view time.
 """
 
 import io
@@ -30,6 +32,7 @@ from typing import Final
 import mercantile
 import numpy as np
 import numpy.typing as npt
+import rasterio
 from affine import Affine
 from PIL import Image
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
@@ -41,10 +44,12 @@ from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window
 
-from shade_core.artifacts import load_metadata
+from shade_core.artifacts import LANDCOVER_FILENAME, load_metadata
 from shade_core.config import Bbox, CityConfig
+from shade_core.shade import Landcover
 from shade_core.solar import sun_position
 from shade_pipeline.grid import transform_from_bbox
+from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
     STATE_SHADE_BUILDING,
@@ -250,7 +255,13 @@ def build_tiles(
     max_zoom: int = DEFAULT_MAX_ZOOM,
     progress: Callable[[str], None] | None = None,
 ) -> Path:
-    """Render one shade PMTiles per instant plus the ``index.json`` manifest.
+    """Render two shade PMTiles per instant plus the ``index.json`` manifest.
+
+    Each instant splits into a *building* set (building + other shade) and a
+    *vegetation* set, so the web client can toggle the vegetation layer.
+    Building interiors are masked transparent in both -- nobody stands on a
+    roof, and the basemap already draws the buildings -- turning the overlay
+    into street-level shade only.
 
     The manifest is what the web client consumes: available instants (with
     the naive local ``at`` string ready for the API's ``?at=`` parameter),
@@ -271,8 +282,20 @@ def build_tiles(
         if when.tzinfo is None:
             raise ValueError(f"naive instant {when.isoformat()}; attach the city timezone")
 
+    # Roof mask, read once (instant-invariant). Applied AFTER
+    # compute_state_raster so that function stays in pixel parity with
+    # is_shaded: the mask is presentation only. Roofs become STATE_OUTSIDE
+    # (the warp nodata, alpha 0 in the palette) rather than STATE_SUN, so a
+    # decoded tile still distinguishes "roof" from "sunlit street".
+    with rasterio.open(Path(artifact_dir) / LANDCOVER_FILENAME) as src:
+        roof = src.read()[0] == Landcover.BUILDING
+
     tiles_dir = Path(artifact_dir) / TILES_DIRNAME
     tiles_dir.mkdir(parents=True, exist_ok=True)
+    build_start = time.monotonic()
+    total_written = 0
+    total_skipped = 0
+    total_bytes = 0
     version = int(time.time())
     entries: list[dict[str, object]] = []
     for index, when in enumerate(ordered, start=1):
@@ -284,26 +307,49 @@ def build_tiles(
                 f"{when.isoformat()}: sun elevation is {sun.elevation_deg:.1f} deg "
                 "(night); pick a daylight instant"
             )
-        state = compute_state_raster(artifact_dir, sun)
         instant_id = f"{when:%Y%m%dT%H%M}"
-        filename = f"shade-{instant_id}.pmtiles"
-        written, skipped = write_instant_pmtiles(
-            tiles_dir / filename,
-            state,
-            transform,
-            metadata.crs,
-            (west, south, east, north),
-            min_zoom=min_zoom,
-            max_zoom=max_zoom,
-            metadata={
-                "name": f"{config.name} shade {when.isoformat()}",
-                "attribution": " / ".join(metadata.attribution),
-            },
-        )
+        phase_start = time.monotonic()
+        state = compute_state_raster(artifact_dir, sun)
+        state[roof] = STATE_OUTSIDE
         echo(
-            f"[{index}/{len(ordered)}] {filename}: "
-            f"{written} tiles written, {skipped} transparent skipped"
+            f"[{index}/{len(ordered)}] {instant_id}: state raster in "
+            f"{format_duration(time.monotonic() - phase_start)}"
         )
+        # The building set keeps SHADE_OTHER too (ground/open-sky blockers);
+        # dropped states become STATE_SUN (transparent), keeping
+        # STATE_OUTSIDE strictly for roofs and out-of-coverage pixels.
+        building_state = state.copy()
+        building_state[state == STATE_SHADE_VEGETATION] = STATE_SUN
+        vegetation_state = state.copy()
+        vegetation_state[(state != STATE_SHADE_VEGETATION) & (state != STATE_OUTSIDE)] = STATE_SUN
+
+        urls: dict[str, str] = {}
+        for kind, layer_state in (("building", building_state), ("vegetation", vegetation_state)):
+            filename = f"shade-{instant_id}-{kind}.pmtiles"
+            phase_start = time.monotonic()
+            written, skipped = write_instant_pmtiles(
+                tiles_dir / filename,
+                layer_state,
+                transform,
+                metadata.crs,
+                (west, south, east, north),
+                min_zoom=min_zoom,
+                max_zoom=max_zoom,
+                metadata={
+                    "name": f"{config.name} shade ({kind}) {when.isoformat()}",
+                    "attribution": " / ".join(metadata.attribution),
+                },
+            )
+            size = (tiles_dir / filename).stat().st_size
+            total_written += written
+            total_skipped += skipped
+            total_bytes += size
+            urls[kind] = f"{filename}?v={version}"
+            echo(
+                f"[{index}/{len(ordered)}] {filename}: {written} tiles written, "
+                f"{skipped} transparent skipped ({format_bytes(size)}, "
+                f"{format_duration(time.monotonic() - phase_start)})"
+            )
         offset = f"{when:%z}"
         entries.append(
             {
@@ -312,7 +358,10 @@ def build_tiles(
                 "time": f"{when:%H:%M}",
                 "at": when.replace(tzinfo=None).isoformat(timespec="minutes"),
                 "utc_offset": f"{offset[:3]}:{offset[3:]}",
-                "url": f"{filename}?v={version}",
+                # Legacy single-url field (= the building set) so a deployed
+                # client still on schema 1 keeps rendering during the swap.
+                "url": urls["building"],
+                "urls": dict(urls),
                 "sun": {
                     "azimuth_deg": round(sun.azimuth_deg, 2),
                     "elevation_deg": round(sun.elevation_deg, 2),
@@ -321,7 +370,7 @@ def build_tiles(
         )
 
     manifest: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "city": config.id,
         "name": config.name,
         "timezone": config.timezone,
@@ -343,6 +392,11 @@ def build_tiles(
     }
     (tiles_dir / MANIFEST_FILENAME).write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    echo(
+        f"tiles done in {format_duration(time.monotonic() - build_start)} "
+        f"({len(ordered)} instants, {2 * len(ordered)} pmtiles, {format_bytes(total_bytes)}, "
+        f"{total_written} tiles written, {total_skipped} skipped)"
     )
     return tiles_dir
 

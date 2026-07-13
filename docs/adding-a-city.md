@@ -77,10 +77,16 @@ uv run shade-engine tiles <id>              # preset de estaciones 2026
 uv run shade-engine tiles <id> --at 2026-08-01T19:30   # o instantes sueltos
 ```
 
-Escribe `data/cities/<id>/v1/tiles/`: un `shade-<instante>.pmtiles` por
-instante (overlay raster, zooms 12-17) y el manifest `index.json` que la web
-consume. Instantes nocturnos se rechazan. Ver
-`docs/learning/map-tiles-pmtiles.md`.
+Escribe `data/cities/<id>/v1/tiles/`: DOS pmtiles por instante
+(`shade-<instante>-building.pmtiles`, que incluye tambien la sombra "other",
+y `shade-<instante>-vegetation.pmtiles`, conmutable en la web) y el manifest
+`index.json` (schema 2: `urls.{building,vegetation}` por instante mas un
+`url` legacy = building para clientes antiguos durante un despliegue).
+Los interiores de edificio van transparentes en ambos sets (mascara de
+tejados, solo presentacion: el raster de estados y la API no cambian).
+Instantes nocturnos se rechazan. Al regenerar, borrar antes los
+`shade-*.pmtiles` viejos del directorio local para que el rsync con
+`--delete` deje el servidor limpio. Ver `docs/learning/map-tiles-pmtiles.md`.
 
 El basemap NO lo genera el CLI: es un extract de OSM via Protomaps, una
 operacion manual unica por ciudad (CLI go de

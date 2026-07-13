@@ -26,6 +26,7 @@ from shade_pipeline.cli import app
 from shade_pipeline.cog import write_cog
 from shade_pipeline.grid import transform_from_bbox
 from shade_pipeline.shade_raster import (
+    STATE_OUTSIDE,
     STATE_SHADE_BUILDING,
     STATE_SHADE_OTHER,
     STATE_SHADE_VEGETATION,
@@ -33,6 +34,7 @@ from shade_pipeline.shade_raster import (
     compute_state_raster,
 )
 from shade_pipeline.tiles import (
+    _PALETTE_STATES,
     MANIFEST_FILENAME,
     SHADE_COLORS,
     bounds_wgs84,
@@ -58,6 +60,40 @@ _STATE_OF_RESULT = {
 
 def _expected_state(result: ShadeResult) -> int:
     return _STATE_OF_RESULT[(result.state, result.shade_type)]
+
+
+def _decode_tile(
+    reader: Reader, crs: str, x: float, y: float, zoom: int
+) -> tuple[Image.Image, int, int]:
+    """The decoded PNG tile containing projected (x, y), plus the pixel offsets."""
+    to_wgs84 = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    lon, lat = to_wgs84.transform(x, y)
+    tile = mercantile.tile(lon, lat, zoom)
+    data = reader.get(tile.z, tile.x, tile.y)
+    assert data is not None
+    image = Image.open(io.BytesIO(data))
+    merc_x, merc_y = mercantile.xy(lon, lat)
+    tile_bounds = mercantile.xy_bounds(tile.x, tile.y, tile.z)
+    resolution = (tile_bounds.right - tile_bounds.left) / image.width
+    px = int((merc_x - tile_bounds.left) / resolution)
+    py = int((tile_bounds.top - merc_y) / resolution)
+    return image, px, py
+
+
+def _rgba_at(reader: Reader, crs: str, x: float, y: float, zoom: int) -> tuple[int, int, int, int]:
+    image, px, py = _decode_tile(reader, crs, x, y, zoom)
+    pixel = image.convert("RGBA").getpixel((px, py))
+    assert isinstance(pixel, tuple) and len(pixel) == 4
+    return (pixel[0], pixel[1], pixel[2], pixel[3])
+
+
+def _state_at(reader: Reader, crs: str, x: float, y: float, zoom: int) -> int:
+    """The raw palette state code: distinguishes OUTSIDE from SUN (both alpha 0)."""
+    image, px, py = _decode_tile(reader, crs, x, y, zoom)
+    assert image.mode == "P"
+    index = image.getpixel((px, py))
+    assert isinstance(index, int)
+    return _PALETTE_STATES[index]
 
 
 @pytest.mark.parametrize("when", [WINTER_NOON, SUMMER_NOON], ids=["winter", "summer"])
@@ -128,33 +164,17 @@ def test_pmtiles_roundtrip(built_city: Path, tmp_path: Path) -> None:
     )
     assert written > 0
 
-    to_wgs84 = Transformer.from_crs(metadata.crs, "EPSG:4326", always_xy=True)
     with open(path, "rb") as handle:
         reader = Reader(MmapSource(handle))
         header = reader.header()
         assert header["tile_type"] == TileType.PNG
         assert header["tile_compression"] == Compression.NONE
 
-        def rgba_at(x: float, y: float, zoom: int) -> tuple[int, int, int, int]:
-            lon, lat = to_wgs84.transform(x, y)
-            tile = mercantile.tile(lon, lat, zoom)
-            data = reader.get(tile.z, tile.x, tile.y)
-            assert data is not None
-            image = Image.open(io.BytesIO(data)).convert("RGBA")
-            merc_x, merc_y = mercantile.xy(lon, lat)
-            tile_bounds = mercantile.xy_bounds(tile.x, tile.y, tile.z)
-            resolution = (tile_bounds.right - tile_bounds.left) / image.width
-            px = int((merc_x - tile_bounds.left) / resolution)
-            py = int((tile_bounds.top - merc_y) / resolution)
-            pixel = image.getpixel((px, py))
-            assert isinstance(pixel, tuple) and len(pixel) == 4
-            return (pixel[0], pixel[1], pixel[2], pixel[3])
-
         # NEAR sits deep in the cube's winter shadow: building color.
-        assert rgba_at(*NEAR, 17) == SHADE_COLORS[STATE_SHADE_BUILDING]
+        assert _rgba_at(reader, metadata.crs, *NEAR, 17) == SHADE_COLORS[STATE_SHADE_BUILDING]
         # A corner far from the cube is sunlit: fully transparent.
         sunny = (synthetic.UTM_ORIGIN[0] + 25.0, synthetic.UTM_ORIGIN[1] + 95.0)
-        assert rgba_at(*sunny, 17)[3] == 0
+        assert _rgba_at(reader, metadata.crs, *sunny, 17)[3] == 0
 
 
 def test_transparent_tiles_skipped(built_city: Path, tmp_path: Path) -> None:
@@ -213,15 +233,49 @@ def test_build_tiles_manifest(built_city: Path, tmp_path: Path) -> None:
     assert 37.8 < south < north < 38.0
 
     instants = manifest["instants"]
+    assert manifest["schema_version"] == 2
     assert [entry["id"] for entry in instants] == ["20260621T1420", "20261221T1320"]
     summer, winter = instants
     assert summer["at"] == "2026-06-21T14:20"
     assert summer["utc_offset"] == "+02:00"  # CEST
     assert winter["utc_offset"] == "+01:00"  # CET: the preset spans DST changes
     for entry in instants:
-        filename = str(entry["url"]).split("?")[0]
-        assert (tiles_dir / filename).exists()
+        urls = entry["urls"]
+        assert set(urls) == {"building", "vegetation"}
+        # Legacy field kept for schema-1 clients during the deploy swap.
+        assert entry["url"] == urls["building"]
+        for url in urls.values():
+            assert (tiles_dir / str(url).split("?")[0]).exists()
         assert entry["sun"]["elevation_deg"] > 0
+
+
+def test_roof_mask_and_split_tilesets(built_city: Path, tmp_path: Path) -> None:
+    """Roofs are transparent nodata in both sets; each set keeps only its states."""
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    tiles_dir = build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=16)
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    urls = manifest["instants"][0]["urls"]
+    metadata = artifacts.load_metadata(target)
+    cube_center = (
+        synthetic.UTM_ORIGIN[0] + synthetic.CUBE_CENTER_X,
+        synthetic.UTM_ORIGIN[1] + (synthetic.CUBE_Y[0] + synthetic.CUBE_Y[1]) / 2.0,
+    )
+
+    with open(tiles_dir / str(urls["building"]).split("?")[0], "rb") as handle:
+        reader = Reader(MmapSource(handle))
+        # NEAR is street in the cube's winter shadow: building color survives.
+        assert _rgba_at(reader, metadata.crs, *NEAR, 16) == SHADE_COLORS[STATE_SHADE_BUILDING]
+        # The cube interior (landcover BUILDING) is masked to OUTSIDE, not
+        # SUN: both are transparent, but the palette index proves the roof
+        # mask ran (unmasked it would be building shade, seen from inside).
+        assert _state_at(reader, metadata.crs, *cube_center, 16) == STATE_OUTSIDE
+
+    with open(tiles_dir / str(urls["vegetation"]).split("?")[0], "rb") as handle:
+        reader = Reader(MmapSource(handle))
+        # Building shade is excluded from the vegetation set. The cube city
+        # has no vegetation at all, so only min_zoom tiles exist (all blank).
+        assert _rgba_at(reader, metadata.crs, *NEAR, 14)[3] == 0
 
 
 def test_build_tiles_rejects_night_instant(built_city: Path, tmp_path: Path) -> None:
@@ -256,10 +310,14 @@ def test_cli_tiles_smoke(built_city: Path, tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "shade-20261221T1320.pmtiles" in result.output
+    assert "shade-20261221T1320-building.pmtiles" in result.output
+    assert "shade-20261221T1320-vegetation.pmtiles" in result.output
+    assert "state raster in" in result.output
+    assert "tiles done in" in result.output
     assert "tiles written to" in result.output
     tiles_dir = output_root / "cube" / "v1" / "tiles"
-    assert (tiles_dir / "shade-20261221T1320.pmtiles").exists()
+    assert (tiles_dir / "shade-20261221T1320-building.pmtiles").exists()
+    assert (tiles_dir / "shade-20261221T1320-vegetation.pmtiles").exists()
     assert (tiles_dir / MANIFEST_FILENAME).exists()
 
     night = CliRunner().invoke(
