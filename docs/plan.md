@@ -15,7 +15,7 @@ completarlos y anota decisiones en el registro del final. El spec de referencia 
 | 4    | Cordoba real + validacion de campo | hecha     |
 | 5    | Parking                            | hecha     |
 | 6    | Despliegue en cartagena            | hecha     |
-| 7    | Visualizacion + integracion Astro  | pendiente |
+| 7    | Visualizacion + integracion Astro  | hecha     |
 | 8    | Rutas peatonales a la sombra       | pendiente |
 
 Estados: pendiente / en curso / hecha.
@@ -171,11 +171,26 @@ zona-vs-punto contrastada) y rate limit activo. Push-to-deploy via GH Actions op
 
 Objetivo: mapa de sombra consumible desde la web.
 
-- [ ] PMTiles estaticos de sombra a horas clave (o tiles PNG dinamicos; decidir y documentar)
-- [ ] Integracion en la web Astro externa
-- [ ] docs: como anadir una ciudad, formato de capas
+- [x] PMTiles estaticos de sombra a horas clave (o tiles PNG dinamicos; decidir y documentar)
+      HECHO: decidido PMTiles estaticos (registro). `shade-engine tiles cordoba` genera 16
+      instantes (solsticios + equinoccios 2026, 4 horas locales cada uno, ~10 MB por
+      instante, zooms 12-17) + manifest index.json; Caddy los sirve estaticos bajo
+      /tiles/\* con CORS, Range y cache immutable. Basemap Protomaps autoalojado
+      (extract OSM 3 MB + glyphs/sprites, sin API keys)
+- [x] Integracion en la web Astro externa
+      HECHO: caso de estudio en ajustino.dev/case-studies/shade-engine (en/es) con
+      consola MapLibre: overlay conmutable por estacion/hora, click -> estado +
+      timeline del dia contra la API en vivo, capa de parking coloreada por
+      shade_fraction; todo con fallback a fixtures (el build nunca toca la red)
+- [x] docs: como anadir una ciudad, formato de capas
+      HECHO: docs/adding-a-city.md (YAML campo a campo, schema del parking.geojson,
+      build/import-layer/tiles, basemap manual, rsync y verificacion)
 
 Criterio de salida: mapa de sombra visible en ajustino.dev.
+
+CUMPLIDO 2026-07-13: https://ajustino.dev/case-studies/shade-engine pinta el mapa con
+basemap OSM autoalojado y overlay de sombra por instante; tiles verificados por HTTPS
+(manifest 200 + ACAO \*, Range 206 immutable sin content-encoding, preflight OPTIONS 204) y API consultada en vivo desde la pagina (CORS apex verificado).
 
 ## Fase 8 - Rutas peatonales a la sombra (boceto)
 
@@ -272,10 +287,13 @@ corto, comprobable sobre el mapa de Fase 7.
 | 2026-07-12 | Prod en cartagena: puertos loopback 8003 (api) / 5437 (db), migrate one-shot antes de servir, workers via WEB_CONCURRENCY, --forwarded-allow-ips "\*", COGs por rsync + bind mount :ro       | Todo se publica solo en 127.0.0.1: Caddy es el unico cliente, lo que hace seguro el "\*" (la IP origen dentro del contenedor es la gateway del bridge, no fijable). migrate corre como servicio con service_completed_successfully: la api nunca arranca contra un schema viejo. WEB_CONCURRENCY (default uvicorn de --workers) cumple "limites por config" sin rebuild; OJO: el rate limit es por worker (60/min x 2), y en la practica las conexiones secuenciales las gana casi siempre el mismo worker (accept race), asi que un cliente solo ve ~60/min. compose.yml GANA la precedencia a docker-compose.yml: el flujo dev lleva -f docker-compose.yml SIEMPRE (el ${VAR:?} del prod falla en seco sin .env como red de seguridad) |
 | 2026-07-12 | DNS: Cloudflare DNS-only (nube gris), NO CloudFront (error del spec) ni proxied                                                                                                              | La infra real es Cloudflare; el spec se escribio pensando en AWS. DNS-only replica apsis/geohazard y deja a Caddy emitir Let's Encrypt sin interferencias. Sin CDN delante el item "verificar cache" se cumplio sobre las cabeceras (86400/no-store llegan intactas); si algun dia se activa proxied: cache real en el edge, pero Caddy vera la IP del edge de CF (trusted_proxies para el rate limit) y el cert inicial conviene emitirlo en gris                                                                                                                                                                                                                                                                                       |
 | 2026-07-12 | Push-to-deploy con GH Actions calcado de la convencion del VPS: workflow_run sobre CI verde en main + gate SHADE_DEPLOY_ENABLED + clave ssh con forced command a /usr/local/bin/deploy_shade | La clave dedicada (restrict, no-pty, ...) solo puede ejecutar el script de deploy (fuente de verdad: deploy/deploy.sh; se instala con sudo install en el aprovisionamiento): fetch+reset a origin/main, build, migrate bloqueante, up api, smoke local; el workflow remata con smoke publico. Los DATOS quedan fuera de la pipeline (rsync de COGs e import-layer son operaciones manuales): la pipeline mueve codigo, no gigas                                                                                                                                                                                                                                                                                                          |
+| 2026-07-13 | Visualizacion: PMTiles raster ESTATICOS por instante clave, no tiles PNG dinamicos; preset = solsticios + equinoccios 2026 x 4 horas locales (16 instantes)                                  | La sombra de un instante fijo es inmutable: cacheable para siempre y servible como fichero por Caddy, cero carga en la API del VPS compartido (el spec 9.1 ya inclinaba aqui; TiTiler/dinamico queda como roadmap si el servido crece). El raster de estado se calcula vectorizado con UN sol en el centro del bbox (variacion en 8 km ~0.07 deg, bajo el medio-quantum de 0.176) leyendo solo las 2 bandas de horizonte adyacentes al azimut (el cubo float32 entero serian ~14 GB); paridad pixel a pixel con is_shaded testeada (float64 en la comparacion, empates de sector en uint8 crudo). Equinoccios comparten horas a proposito: declinacion ~0 en ambos, el mapa lo hace visible                                              |
+| 2026-07-13 | Piramide 12-17 (z17 = 0.94 m/px a lat 37.9 ~ nativo), PNG paleta con sol transparente, tiles en blanco omitidos salvo en min_zoom, tile_compression NONE                                     | z18 seria upsampling (el cliente ya overzooma). Trampas reales del writer pmtiles: finalize revienta con 0 entries (por eso min_zoom se escribe siempre; el dedupe guarda el PNG en blanco una vez), el orden ascendente de tileid mantiene clustered=True, y marcar GZIP en tiles PNG haria a los clientes "descomprimir" bytes que no lo estan. ~10 MB por instante, 158 MB los 16                                                                                                                                                                                                                                                                                                                                                     |
+| 2026-07-13 | Servido de tiles: Caddy file_server bajo /tiles/\* replicando el arbol de data/cities (sin v1 hardcodeado), CORS \* con handler explicito de preflight OPTIONS, immutable + ?v= en manifest  | file_server da Range y ETag nativos, que es todo lo que un cliente PMTiles necesita. La trampa que justifica el handler: fetch() con cabecera Range NO es peticion CORS simple y dispara preflight, asi que sin OPTIONS el mapa funciona same-origin y falla SOLO cross-origin. Los .pmtiles se cachean un ano immutable; regenerar tiles no purga nada porque el manifest (max-age 300) lleva ?v=<epoch> en cada URL                                                                                                                                                                                                                                                                                                                    |
+| 2026-07-13 | Basemap: extract Protomaps (OSM) autoalojado + glyphs/sprites self-hosted en /tiles/assets; en la web, @protomaps/basemaps tema black (protomaps-themes-base esta deprecado)                 | A escala de ciudad hacen falta calles y nombres; el land-110m de apsis/geohazard es escala mundial. El extract (build 20260712, bbox cordoba + margen, 3 MB) mantiene la regla de la web: sin tile servers de terceros ni API keys en runtime, atribucion OSM en el mapa. Vector y no raster para tenirlo con la estetica del sitio sin regenerar nada. Operacion manual unica por ciudad, documentada en adding-a-city.md                                                                                                                                                                                                                                                                                                               |
 
 Pendientes de decidir:
 
-- PMTiles estaticos vs tiles PNG dinamicos (Fase 7)
 - Motor de rutas y estrategia de precalculo solar (Fase 8): boceto en su seccion
 
 ## Notas entre sesiones
@@ -425,3 +443,16 @@ Pendientes de decidir:
 shade-engine import-layer <city> <layer>` tras cambiar un geojson. Pendiente
   diferido: el paseo de validacion de campo ya puede hacerse contra la API publica.
   Siguiente: Fase 7 (visualizacion + Astro).
+- 2026-07-13 (Fase 7 completa): mapa de sombra en
+  https://ajustino.dev/case-studies/shade-engine (en/es). Tres commits aqui
+  (pipeline tiles + learning notes, caddy /tiles/\*, docs) y uno en ajustinodev
+  (consola + caso de estudio + fixtures). Ops de tiles: regenerar =
+  `uv run shade-engine tiles cordoba` (~15 min los 16 instantes) + rsync de
+  `data/cities/cordoba/v1/tiles/` al VPS; el manifest lleva ?v= asi que no hay
+  que purgar caches. El basemap y los assets (fonts/sprites) NO se regeneran:
+  viven en el VPS (`data/cities/{cordoba/v1/tiles/basemap.pmtiles,assets/}`).
+  La web se despliega sola al pushear ajustinodev (Cloudflare Pages); sus
+  fixtures de fallback en public/data/shade-\*.json se recapturan con curl si
+  cambia el contrato de la API. Pendiente diferido: paseo de validacion de
+  campo (ahora con el mapa como apoyo visual). Siguiente: Fase 8 (rutas
+  peatonales a la sombra), boceto en su seccion.

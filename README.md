@@ -36,8 +36,10 @@ next to buildings behave correctly.
 ## Status
 
 Live at [shade.ajustino.dev](https://shade.ajustino.dev/docs) with real data
-for Cordoba, Spain. The spec lives in
-[docs/shade-engine-mvp.md](docs/shade-engine-mvp.md) and the phased
+for Cordoba, Spain, and an interactive shade map at
+[ajustino.dev/case-studies/shade-engine](https://ajustino.dev/case-studies/shade-engine)
+(precomputed PMTiles overlays for the 2026 solstices and equinoxes). The spec
+lives in [docs/shade-engine-mvp.md](docs/shade-engine-mvp.md) and the phased
 implementation plan in [docs/plan.md](docs/plan.md) (both in Spanish).
 
 ## Roadmap (post-MVP)
@@ -46,7 +48,8 @@ implementation plan in [docs/plan.md](docs/plan.md) (both in Spanish).
 - Climate shelters / thermal comfort index
 - Canopy porosity and a seasonal factor for deciduous trees
 - Real-time parking availability
-- More cities: the design already allows it (one YAML + one pipeline run)
+- More cities: the design already allows it (one YAML + one pipeline run,
+  see [docs/adding-a-city.md](docs/adding-a-city.md))
 
 ## Data sources and attribution
 
