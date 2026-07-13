@@ -481,3 +481,17 @@ shade-engine import-layer <city> <layer>` tras cambiar un geojson. Pendiente
   OJO: el umbral de canopy cambia tambien /v1/shade, timeline y las
   shade_fraction del parking (bajaran); recapturar fixtures de ajustinodev
   tras regenerar. Siguiente sesion: planificar esta tanda en plan mode.
+- 2026-07-13 (revision del visor implementada): dos commits de pipeline
+  (canopy.tif + tiles divididos) y regeneracion completa en local. Numeros
+  reales de Cordoba: la mascara de copa retiene el 43.2% de los pixeles de
+  vegetacion (vegetacion cruda 40.7% de la ciudad -> copa 17.6%; cae el
+  56.8% que era cesped/setos/cultivos, en linea con el 55% estimado en la
+  revision). canopy.tif = 4.3 MB, deriva en ~1 min con `shade-engine canopy
+cordoba`. Tiles: 32 pmtiles (2 por instante x 16), 161 MB, ~15 min de
+  build (el split apenas encarece: la mascara de tejados y la copa reducida
+  disparan los tiles transparentes omitidos). Orden ops OBLIGATORIO al
+  desplegar: rsync de canopy.tif ANTES del push (el SceneReader lo exige al
+  arrancar y el push autodespliega), luego rsync de tiles/ con --delete
+  (borra los 16 pmtiles viejos de schema 1), luego push, luego recaptura de
+  fixtures de ajustinodev contra la API viva (los valores de sombra vegetal
+  cambian) y commit web con el toggle de vegetacion.
