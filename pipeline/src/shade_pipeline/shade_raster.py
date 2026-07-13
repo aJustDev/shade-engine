@@ -31,7 +31,7 @@ import numpy as np
 import numpy.typing as npt
 import rasterio
 
-from shade_core.artifacts import BLOCKER_CLASS_FILENAME, HORIZON_FILENAME, LANDCOVER_FILENAME
+from shade_core.artifacts import BLOCKER_CLASS_FILENAME, CANOPY_FILENAME, HORIZON_FILENAME
 from shade_core.shade import NO_BLOCKER, Landcover
 from shade_core.solar import SunPosition
 
@@ -48,7 +48,7 @@ def compute_state_raster(artifact_dir: str | Path, sun: SunPosition) -> npt.NDAr
     """Shade state code per pixel of a city's artifacts under a given sun.
 
     Mirrors :func:`shade_core.shade.is_shaded` decision by decision: canopy
-    overrides everything (a pixel under vegetation is vegetation-shaded
+    overrides everything (a pixel under the canopy mask is vegetation-shaded
     whenever the sun is up), then the horizon comparison, then the blocker
     classification at the contributing sector. Night has no raster: callers
     must not ask (raises ``ValueError``), since every pixel would be NIGHT.
@@ -104,7 +104,13 @@ def compute_state_raster(artifact_dir: str | Path, sun: SunPosition) -> npt.NDAr
     # horizon, and an unconditional overwrite here yields the same result.
     # read()[0] instead of read(1): rasterio's single-band path reshapes in
     # place, which numpy 2.5 deprecates.
-    with rasterio.open(directory / LANDCOVER_FILENAME) as src:
-        landcover = src.read()[0]
-    state[landcover == Landcover.VEGETATION] = STATE_SHADE_VEGETATION
+    canopy_path = directory / CANOPY_FILENAME
+    if not canopy_path.exists():
+        raise FileNotFoundError(
+            f"{canopy_path} missing; artifacts predate the canopy mask -- "
+            "run `shade-engine canopy <city>` to derive it"
+        )
+    with rasterio.open(canopy_path) as src:
+        canopy = src.read()[0]
+    state[canopy != 0] = STATE_SHADE_VEGETATION
     return state

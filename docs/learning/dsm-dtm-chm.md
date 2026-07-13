@@ -11,7 +11,9 @@ Tres modelos rasterizados de elevacion derivados de la misma nube LiDAR:
   construye con los puntos clasificados como **suelo (clase LiDAR 2)**,
   interpolando bajo edificios y copas donde el laser no llego al suelo.
 - **CHM** (Canopy Height Model): altura de la vegetacion sobre el suelo.
-  No es un dato nuevo: CHM = DSM - DTM (sobre pixeles de vegetacion).
+  No es un dato nuevo: CHM = DSM - DTM (sobre pixeles de vegetacion). El CHM
+  alimenta la mascara de copa del motor (umbral de 2.5 m + sieve; ver
+  canopy-sieve.md).
 
 ## Por que lo usamos aqui
 

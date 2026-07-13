@@ -1,5 +1,6 @@
-"""Command line interface: ``shade-engine build|predict|import-layer|tiles <city>``."""
+"""Command line interface: ``shade-engine build|predict|canopy|import-layer|tiles <city>``."""
 
+import time
 from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -12,10 +13,12 @@ from shade_core.artifacts import METADATA_FILENAME
 from shade_core.config import CityConfig, load_city
 from shade_core.db import make_engine
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
+from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, derive_canopy
 from shade_pipeline.cnig import CnigError, CnigSource
 from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.layers import import_parking_layer
 from shade_pipeline.predict import prediction_table, read_points
+from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 from shade_pipeline.tiles import (
     DEFAULT_MAX_ZOOM,
@@ -112,6 +115,43 @@ def predict(
         raise typer.Exit(1)
     table = prediction_table(config, artifact_dir, read_points(points_csv), date.fromisoformat(day))
     typer.echo(table)
+
+
+@app.command()
+def canopy(
+    city: str,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+) -> None:
+    """Derive CITY's canopy mask artifact (canopy.tif) from its existing rasters.
+
+    ``build`` writes the mask itself; this backfills artifact directories
+    built before the mask existed, without re-running the horizon sweep.
+    """
+    config = load_city(cities_dir / f"{city}.yaml")
+    artifact_dir = output_root / config.id / ARTIFACT_VERSION
+    if not (artifact_dir / METADATA_FILENAME).exists():
+        typer.echo(
+            f"error: no artifacts under {artifact_dir}; run shade-engine build first", err=True
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        f"deriving canopy mask (vegetation with height >= {CANOPY_MIN_HEIGHT_M} m, "
+        f"sieve {CANOPY_SIEVE_PX} px)"
+    )
+    start = time.monotonic()
+    try:
+        path, canopy_px, total_px = derive_canopy(artifact_dir)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(
+        f"{path.name} written ({format_bytes(path.stat().st_size)}, "
+        f"{format_duration(time.monotonic() - start)}): "
+        f"{canopy_px:,} of {total_px:,} px under canopy ({100.0 * canopy_px / total_px:.1f}%)"
+    )
 
 
 @app.command()

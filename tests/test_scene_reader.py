@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import synthetic
-from shade_core.artifacts import LANDCOVER_FILENAME, SceneReader, load_scene
+from shade_core.artifacts import CANOPY_FILENAME, SceneReader, load_scene
 from shade_core.shade import ShadeScene, is_shaded, shade_timeline
 from shade_core.solar import SunPosition, sun_position
 from shade_pipeline.cog import write_cog
@@ -128,7 +128,15 @@ def test_mixed_georeference_raises(built_city: Path, tmp_path: Path) -> None:
     tampered = tmp_path / "v1"
     shutil.copytree(built_city, tampered)
     shifted = transform_from_bbox((X_MIN + 5.0, Y_MIN, X_MAX + 5.0, Y_MAX), 1.0)
-    landcover = np.zeros((80, 80), dtype=np.uint8)
-    write_cog(tampered / LANDCOVER_FILENAME, landcover, shifted, "EPSG:25830")
+    canopy = np.zeros((80, 80), dtype=np.uint8)
+    write_cog(tampered / CANOPY_FILENAME, canopy, shifted, "EPSG:25830")
     with pytest.raises(ValueError, match="georeference"):
         SceneReader(tampered)
+
+
+def test_missing_canopy_raises(built_city: Path, tmp_path: Path) -> None:
+    stripped = tmp_path / "v1"
+    shutil.copytree(built_city, stripped)
+    (stripped / CANOPY_FILENAME).unlink()
+    with pytest.raises(FileNotFoundError, match="shade-engine canopy"):
+        SceneReader(stripped)

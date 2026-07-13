@@ -13,7 +13,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 import synthetic
 from shade_core import artifacts
 from shade_core.horizon import compute_horizon_reference
-from shade_core.shade import Landcover, ShadeState, ShadeType, is_shaded
+from shade_core.shade import ShadeState, ShadeType, is_shaded
 from shade_core.solar import sun_position
 from shade_pipeline.cog import write_cog
 from shade_pipeline.grid import transform_from_bbox
@@ -77,6 +77,12 @@ def artifact_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         crs,
         tags={"no_blocker": "255"},
     )
+    # Canopy deliberately decoupled from the landcover (one pixel, far from
+    # the golden queries): proves the loaders read the artifact, not the old
+    # landcover-derived formula.
+    canopy = np.zeros((120, 120), dtype=np.uint8)
+    canopy[5, 7] = 1
+    write_cog(directory / artifacts.CANOPY_FILENAME, canopy, transform, crs)
     (directory / artifacts.METADATA_FILENAME).write_text(json.dumps(METADATA))
     return directory
 
@@ -100,7 +106,9 @@ def test_load_scene_arrays(artifact_dir: Path) -> None:
     assert scene.sector_classes.shape == (64, 120, 120)
     assert scene.dsm.dtype == np.float64 and scene.landcover.dtype == np.uint8
     assert scene.observer_height_m == 1.6
-    assert_array_equal(scene.canopy, scene.landcover == Landcover.VEGETATION)
+    expected_canopy = np.zeros((120, 120), dtype=bool)
+    expected_canopy[5, 7] = True
+    assert_array_equal(scene.canopy, expected_canopy)
     assert_array_equal(scene.landcover, synthetic.cube_landcover())
 
 
@@ -129,3 +137,12 @@ def test_mismatched_georeference_raises(artifact_dir: Path, tmp_path: Path) -> N
     write_cog(tampered / artifacts.DSM_FILENAME, dsm.astype(np.float32), shifted, "EPSG:25830")
     with pytest.raises(ValueError, match="georeference"):
         artifacts.load_scene(tampered)
+
+
+def test_missing_canopy_raises(artifact_dir: Path, tmp_path: Path) -> None:
+    """Pre-canopy artifact dirs fail loudly, naming the backfill command."""
+    stripped = tmp_path / "v1"
+    shutil.copytree(artifact_dir, stripped)
+    (stripped / artifacts.CANOPY_FILENAME).unlink()
+    with pytest.raises(FileNotFoundError, match="shade-engine canopy"):
+        artifacts.load_scene(stripped)

@@ -27,6 +27,7 @@ ARTIFACT_FILES = (
     artifacts.DSM_FILENAME,
     artifacts.DTM_FILENAME,
     artifacts.LANDCOVER_FILENAME,
+    artifacts.CANOPY_FILENAME,
     artifacts.HORIZON_FILENAME,
     artifacts.BLOCKER_CLASS_FILENAME,
     artifacts.METADATA_FILENAME,

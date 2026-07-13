@@ -60,8 +60,15 @@ uv run shade-engine build <id>              # descarga LiDAR (pnoa) o --lidar-di
 ```
 
 Deja en `data/cities/<id>/v1/`: `dsm.tif`, `dtm.tif`, `landcover.tif`,
-`horizon.tif`, `blocker_class.tif` (COGs) y `metadata.json`. Los rasteres
-nunca van a git.
+`canopy.tif`, `horizon.tif`, `blocker_class.tif` (COGs) y `metadata.json`.
+Los rasteres nunca van a git.
+
+Artefactos construidos antes de que existiera la mascara de copa se
+actualizan sin re-barrer el horizonte:
+
+```sh
+uv run shade-engine canopy <id>             # deriva canopy.tif de dsm/dtm/landcover
+```
 
 ## 4. Tiles de visualizacion (opcional, Fase 7)
 

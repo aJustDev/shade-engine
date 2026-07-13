@@ -1,6 +1,6 @@
 """Read per-city raster artifacts back into the in-memory engine types.
 
-The pipeline writes five COGs plus a metadata JSON per city version
+The pipeline writes six COGs plus a metadata JSON per city version
 (``data/cities/<id>/v1/``); this module is the reading side. Two paths:
 :func:`load_scene` reads whole arrays (tests, small fixtures) and
 :class:`SceneReader` serves point queries through windowed reads with a
@@ -33,11 +33,12 @@ from rasterio.windows import Window
 
 from shade_core.config import Bbox
 from shade_core.horizon import HorizonGrid
-from shade_core.shade import Landcover, ShadeScene
+from shade_core.shade import ShadeScene
 
 DSM_FILENAME: Final = "dsm.tif"
 DTM_FILENAME: Final = "dtm.tif"
 LANDCOVER_FILENAME: Final = "landcover.tif"
+CANOPY_FILENAME: Final = "canopy.tif"
 HORIZON_FILENAME: Final = "horizon.tif"
 BLOCKER_CLASS_FILENAME: Final = "blocker_class.tif"
 METADATA_FILENAME: Final = "metadata.json"
@@ -95,9 +96,9 @@ def load_horizon(path: str | Path) -> HorizonGrid:
 def load_scene(artifact_dir: str | Path) -> ShadeScene:
     """Everything the engine needs to answer queries about one city version.
 
-    The canopy mask falls out of the landcover: a VEGETATION cell is one
-    whose surface top is vegetation, i.e. a street-level observer there
-    stands *under* the canopy.
+    The canopy mask is its own artifact (``canopy.tif``): vegetation pixels
+    tall enough to stand under, per the pipeline's height threshold and
+    speckle sieve (params recorded as COG tags; see shade_pipeline.canopy).
     """
     directory = Path(artifact_dir)
     metadata = load_metadata(directory)
@@ -108,7 +109,7 @@ def load_scene(artifact_dir: str | Path) -> ShadeScene:
     dsm = _read_single_band(directory / DSM_FILENAME, georef).astype(np.float64)
     dtm = _read_single_band(directory / DTM_FILENAME, georef).astype(np.float64)
     sector_classes, _, _, _ = _read_north_up(directory / BLOCKER_CLASS_FILENAME, georef)
-    canopy: npt.NDArray[np.bool_] = landcover == Landcover.VEGETATION
+    canopy: npt.NDArray[np.bool_] = _read_single_band(_canopy_path(directory), georef) != 0
     return ShadeScene(
         horizon=horizon,
         landcover=landcover,
@@ -160,11 +161,11 @@ class SceneReader:
         self.metadata = load_metadata(directory)
         self._horizon = rasterio.open(directory / HORIZON_FILENAME)
         self._blocker = rasterio.open(directory / BLOCKER_CLASS_FILENAME)
-        self._landcover = rasterio.open(directory / LANDCOVER_FILENAME)
+        self._canopy = rasterio.open(_canopy_path(directory))
         georef = _georef_of(self._horizon, directory / HORIZON_FILENAME)
         for src, name in (
             (self._blocker, BLOCKER_CLASS_FILENAME),
-            (self._landcover, LANDCOVER_FILENAME),
+            (self._canopy, CANOPY_FILENAME),
         ):
             if _georef_of(src, directory / name) != georef:
                 raise ValueError(
@@ -247,8 +248,7 @@ class SceneReader:
         sector_classes = self._blocker.read(window=window).astype(np.uint8)
         # read()[0] instead of read(1): rasterio's single-band path reshapes in
         # place, which numpy 2.5 deprecates.
-        landcover = self._landcover.read(window=window)[0].astype(np.uint8)
-        canopy: npt.NDArray[np.bool_] = landcover == Landcover.VEGETATION
+        canopy: npt.NDArray[np.bool_] = self._canopy.read(window=window)[0] != 0
         return ShadeScene(
             horizon=grid,
             canopy=canopy,
@@ -259,7 +259,7 @@ class SceneReader:
     def close(self) -> None:
         self._horizon.close()
         self._blocker.close()
-        self._landcover.close()
+        self._canopy.close()
 
     def __enter__(self) -> SceneReader:
         return self
@@ -271,6 +271,17 @@ class SceneReader:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+def _canopy_path(directory: Path) -> Path:
+    """The canopy artifact, pointing at the backfill command when absent."""
+    path = directory / CANOPY_FILENAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} missing; artifacts predate the canopy mask -- "
+            "run `shade-engine canopy <city>` to derive it"
+        )
+    return path
 
 
 def _read_single_band(

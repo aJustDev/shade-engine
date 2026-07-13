@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 import synthetic
 from conftest import CUBE_CITY
 from shade_core import artifacts
-from shade_core.shade import Landcover, ShadeResult, ShadeState, ShadeType, is_shaded
+from shade_core.shade import ShadeResult, ShadeState, ShadeType, is_shaded
 from shade_core.solar import sun_position
 from shade_pipeline.cli import app
 from shade_pipeline.cog import write_cog
@@ -91,16 +91,19 @@ def test_state_raster_rejects_night(built_city: Path) -> None:
 
 
 def test_state_raster_canopy_overrides_sun(built_city: Path, tmp_path: Path) -> None:
-    """A pixel under vegetation is vegetation-shaded even where the horizon says sun."""
+    """A pixel under the canopy mask is vegetation-shaded even where the horizon says sun."""
     target = tmp_path / "city"
     shutil.copytree(built_city, target)
-    with rasterio.open(target / artifacts.LANDCOVER_FILENAME) as src:
-        landcover = src.read()[0]
+    with rasterio.open(target / artifacts.CANOPY_FILENAME) as src:
+        canopy = src.read()[0]
         transform = src.transform
         crs = str(src.crs)
     row, col = 5, 7  # far from the cube: sunlit at both golden instants
-    landcover[row, col] = Landcover.VEGETATION
-    write_cog(target / artifacts.LANDCOVER_FILENAME, landcover, transform, crs)
+    # Written directly: at this flat pixel dsm == dtm, so the height-threshold
+    # formula would say False. The file, not the formula, must drive the
+    # override.
+    canopy[row, col] = 1
+    write_cog(target / artifacts.CANOPY_FILENAME, canopy, transform, crs)
 
     sun = sun_position(CORDOBA_LAT, CORDOBA_LON, SUMMER_NOON)
     state = compute_state_raster(target, sun)

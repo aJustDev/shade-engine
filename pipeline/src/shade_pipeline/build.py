@@ -19,6 +19,7 @@ import numpy.typing as npt
 
 from shade_core.artifacts import (
     BLOCKER_CLASS_FILENAME,
+    CANOPY_FILENAME,
     DSM_FILENAME,
     DTM_FILENAME,
     HORIZON_FILENAME,
@@ -30,6 +31,7 @@ from shade_core.artifacts import (
 )
 from shade_core.config import CityConfig
 from shade_core.shade import NO_BLOCKER, Landcover
+from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, canopy_mask
 from shade_pipeline.cog import write_cog
 from shade_pipeline.grid import buffer_pixels, grid_shape, padded_bbox, transform_from_bbox
 from shade_pipeline.horizon import ANGLE_MAX_DEG, HorizonParams, compute_horizon_tiled
@@ -142,6 +144,15 @@ def build_city(
     timed_cog(out_dir / DSM_FILENAME, stack.dsm[crop], tags=common)
     timed_cog(out_dir / DTM_FILENAME, stack.dtm[crop], tags=common)
     timed_cog(out_dir / LANDCOVER_FILENAME, stack.landcover[crop], tags=common)
+    timed_cog(
+        out_dir / CANOPY_FILENAME,
+        canopy_mask(stack.dsm[crop], stack.dtm[crop], stack.landcover[crop]),
+        tags={
+            **common,
+            "min_height_m": str(CANOPY_MIN_HEIGHT_M),
+            "sieve_px": str(CANOPY_SIEVE_PX),
+        },
+    )
 
     metadata = BuildMetadata(
         schema_version=1,
