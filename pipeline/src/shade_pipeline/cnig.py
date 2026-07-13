@@ -191,7 +191,13 @@ class CnigSource:
         """
         cached: set[tuple[int, int]] = set()
         expected = expected_tiles(bbox, buffer_m, self.tile_km)
-        for path in [*self.cache_dir.glob("*.laz"), *self.cache_dir.glob("*.las")]:
+        # Case-insensitive: the center serves .LAZ (2nd coverage) and .laz
+        # (3rd); a case-sensitive glob would re-download every cached tile.
+        cached_files = [
+            *self.cache_dir.glob("*.laz", case_sensitive=False),
+            *self.cache_dir.glob("*.las", case_sensitive=False),
+        ]
+        for path in cached_files:
             key = parse_tile_name(path.name)
             if key is None or key not in expected:
                 continue

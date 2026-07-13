@@ -33,6 +33,15 @@ def test_seam_gaps_between_tiles_are_absorbed(tmp_path: Path) -> None:
     assert [path.name for path in files] == ["east.laz", "west.laz"]
 
 
+def test_matches_uppercase_extension(tmp_path: Path) -> None:
+    # The CNIG serves 2nd-coverage tiles as .LAZ; Linux globbing is
+    # case-sensitive, so a lowercase-only glob would silently find zero files.
+    _write_tile(tmp_path / "tile.laz", 0.5, 0.5, 119.5, 119.5)
+    (tmp_path / "tile.laz").rename(tmp_path / "TILE.LAZ")
+    files = LocalDirectory(tmp_path).files_covering((10.0, 10.0, 110.0, 110.0), 5.0)
+    assert [path.name for path in files] == ["TILE.LAZ"]
+
+
 def test_raises_when_union_does_not_cover(tmp_path: Path) -> None:
     _write_tile(tmp_path / "west.laz", 0.5, 0.5, 59.5, 119.5)
     with pytest.raises(CoverageError, match="do not cover"):

@@ -50,7 +50,14 @@ class LocalDirectory:
         target = box(min_x - buffer_m, min_y - buffer_m, max_x + buffer_m, max_y + buffer_m)
         selected: list[Path] = []
         footprints = []
-        for path in sorted([*self.directory.glob("*.laz"), *self.directory.glob("*.las")]):
+        # Match the extension case-insensitively: the CNIG serves some blocks
+        # as .LAZ (2nd coverage) and others as .laz (3rd), and Linux globbing
+        # is case-sensitive -- a case mismatch silently finds zero files.
+        tiles = [
+            *self.directory.glob("*.laz", case_sensitive=False),
+            *self.directory.glob("*.las", case_sensitive=False),
+        ]
+        for path in sorted(tiles):
             with laspy.open(path) as reader:
                 mins, maxs = reader.header.mins, reader.header.maxs
             footprint = box(float(mins[0]), float(mins[1]), float(maxs[0]), float(maxs[1]))
