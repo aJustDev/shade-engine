@@ -101,6 +101,16 @@ CANOPY_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
 
 CANOPY_TILES_FILENAME: Final = "canopy.pmtiles"
 
+BUILDINGS_COLOR: Final = (61, 67, 80, OVERLAY_ALPHA)  # slate grey: LiDAR footprint
+BUILDINGS_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
+    STATE_SUN: (0, 0, 0, 0),
+    STATE_SHADE_BUILDING: BUILDINGS_COLOR,
+    STATE_SHADE_VEGETATION: (0, 0, 0, 0),
+    STATE_SHADE_OTHER: (0, 0, 0, 0),
+    STATE_OUTSIDE: (0, 0, 0, 0),
+}
+BUILDINGS_TILES_FILENAME: Final = "buildings.pmtiles"
+
 # The 2026 declination-ladder preset: 7 canonical dates at ~even solar
 # declination steps (-23.4 to +23.4 in ~7.8 deg rungs), each rendered hourly
 # within safe daylight (both boundary hours verified > 1.4 deg of apparent
@@ -384,34 +394,43 @@ def build_tiles(
     total_bytes = 0
     version = int(time.time())
 
-    # Static canopy set: the crowns' vertical projection, hour-independent.
-    # No roof mask here -- a crown overhanging a roof is still a tree.
-    phase_start = time.monotonic()
+    # Static (hour-independent) sets, one file per city each: the crowns'
+    # vertical projection and the LiDAR building footprint (the same mask
+    # the shade sets punch out as roofs -- the layers tile together). No
+    # roof mask on the canopy: a crown overhanging a roof is still a tree.
     canopy_state = np.where(canopy, STATE_SHADE_VEGETATION, STATE_SUN).astype(np.uint8)
-    written, skipped = write_instant_pmtiles(
-        tiles_dir / CANOPY_TILES_FILENAME,
-        canopy_state,
-        transform,
-        metadata.crs,
-        (west, south, east, north),
-        min_zoom=min_zoom,
-        max_zoom=max_zoom,
-        metadata={
-            "name": f"{config.name} tree canopy",
-            "attribution": " / ".join(metadata.attribution),
-        },
-        colors=CANOPY_COLORS,
+    buildings_state = np.where(roof, STATE_SHADE_BUILDING, STATE_SUN).astype(np.uint8)
+    static_sets = (
+        (CANOPY_TILES_FILENAME, "tree canopy", canopy_state, CANOPY_COLORS),
+        (BUILDINGS_TILES_FILENAME, "buildings (lidar)", buildings_state, BUILDINGS_COLORS),
     )
-    canopy_size = (tiles_dir / CANOPY_TILES_FILENAME).stat().st_size
-    total_written += written
-    total_skipped += skipped
-    total_bytes += canopy_size
+    for filename, label, static_state, colors in static_sets:
+        phase_start = time.monotonic()
+        written, skipped = write_instant_pmtiles(
+            tiles_dir / filename,
+            static_state,
+            transform,
+            metadata.crs,
+            (west, south, east, north),
+            min_zoom=min_zoom,
+            max_zoom=max_zoom,
+            metadata={
+                "name": f"{config.name} {label}",
+                "attribution": " / ".join(metadata.attribution),
+            },
+            colors=colors,
+        )
+        size = (tiles_dir / filename).stat().st_size
+        total_written += written
+        total_skipped += skipped
+        total_bytes += size
+        echo(
+            f"{filename}: {written} tiles written, {skipped} transparent "
+            f"skipped ({format_bytes(size)}, "
+            f"{format_duration(time.monotonic() - phase_start)})"
+        )
     canopy_url = f"{CANOPY_TILES_FILENAME}?v={version}"
-    echo(
-        f"{CANOPY_TILES_FILENAME}: {written} tiles written, {skipped} transparent "
-        f"skipped ({format_bytes(canopy_size)}, "
-        f"{format_duration(time.monotonic() - phase_start)})"
-    )
+    buildings_url = f"{BUILDINGS_TILES_FILENAME}?v={version}"
 
     entries: list[dict[str, object]] = []
     for index, when in enumerate(ordered, start=1):
@@ -505,6 +524,7 @@ def build_tiles(
         "colors": {
             "shade": _hex(SHADE_COLOR),
             "canopy": _hex(CANOPY_COLOR),
+            "buildings": _hex(BUILDINGS_COLOR),
             # Legacy keys for schema-2 clients: building/other equal the
             # unified shade color; shade_vegetation is the color of the file
             # their vegetation toggle now points at (the static canopy).
@@ -514,6 +534,7 @@ def build_tiles(
             "alpha": round(OVERLAY_ALPHA / 255.0, 2),
         },
         "canopy_url": canopy_url,
+        "buildings_url": buildings_url,
         "ladder": declination_ladder(),
         "basemap_url": BASEMAP_FILENAME,
         "instants": entries,
@@ -525,7 +546,7 @@ def build_tiles(
     )
     echo(
         f"tiles done in {format_duration(time.monotonic() - build_start)} "
-        f"({len(ordered)} instants, {2 * len(ordered) + 1} pmtiles, "
+        f"({len(ordered)} instants, {2 * len(ordered) + 2} pmtiles, "
         f"{format_bytes(total_bytes)}, {total_written} tiles written, "
         f"{total_skipped} skipped)"
     )

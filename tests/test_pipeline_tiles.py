@@ -35,6 +35,8 @@ from shade_pipeline.shade_raster import (
 )
 from shade_pipeline.tiles import (
     _PALETTE_STATES,
+    BUILDINGS_COLORS,
+    BUILDINGS_TILES_FILENAME,
     CANOPY_COLORS,
     CANOPY_TILES_FILENAME,
     MANIFEST_FILENAME,
@@ -246,6 +248,9 @@ def test_build_tiles_manifest(built_city: Path, tmp_path: Path) -> None:
     canopy_url = manifest["canopy_url"]
     assert str(canopy_url).split("?")[0] == CANOPY_TILES_FILENAME
     assert (tiles_dir / CANOPY_TILES_FILENAME).exists()
+    assert str(manifest["buildings_url"]).split("?")[0] == BUILDINGS_TILES_FILENAME
+    assert (tiles_dir / BUILDINGS_TILES_FILENAME).exists()
+    assert manifest["colors"]["buildings"] == "#3d4350"
     assert manifest["colors"]["shade"] == manifest["colors"]["shade_building"]
     # Legacy vegetation color = the static canopy's color (see build_tiles).
     assert manifest["colors"]["shade_vegetation"] == manifest["colors"]["canopy"]
@@ -327,6 +332,13 @@ def test_roof_mask_and_canopy_split(built_city: Path, tmp_path: Path) -> None:
         expected = CANOPY_COLORS[STATE_SHADE_VEGETATION]
         assert _rgba_at(reader, metadata.crs, *crown_center, 18) == expected
         # Cast building shade never leaks into the canopy set.
+        assert _rgba_at(reader, metadata.crs, *NEAR, 16)[3] == 0
+
+    with open(tiles_dir / BUILDINGS_TILES_FILENAME, "rb") as handle:
+        reader = Reader(MmapSource(handle))
+        # The LiDAR footprint paints the cube itself and nothing else.
+        expected = BUILDINGS_COLORS[STATE_SHADE_BUILDING]
+        assert _rgba_at(reader, metadata.crs, *cube_center, 16) == expected
         assert _rgba_at(reader, metadata.crs, *NEAR, 16)[3] == 0
 
 

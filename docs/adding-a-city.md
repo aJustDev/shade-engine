@@ -80,12 +80,14 @@ uv run shade-engine tiles <id> --at 2026-08-01T19:30   # o instantes sueltos
 Escribe `data/cities/<id>/v1/tiles/`: DOS pmtiles de sombra proyectada por
 instante en el mismo color (`shade-<instante>-building.pmtiles`, que incluye
 la clase "other", y `shade-<instante>-trees.pmtiles`, conmutables por
-separado: apagar trees = "la calle sin arbolado"), UN `canopy.pmtiles`
-estatico por ciudad (la proyeccion vertical de las copas desde `canopy.tif`,
-identica a cualquier hora) y el manifest `index.json` (schema 2 con campos
-aditivos: `urls.{building,trees}` por instante, `canopy_url` y `ladder`
-globales; `url` = alias del set building y `urls.vegetation` apunta al
-canopy estatico para clientes schema-2 desplegados). Los interiores de
+separado: apagar trees = "la calle sin arbolado"), DOS estaticos por ciudad
+(`canopy.pmtiles`, la proyeccion vertical de las copas desde `canopy.tif`, y
+`buildings.pmtiles`, la huella de edificios del landcover LiDAR -- la misma
+mascara que los sets de sombra recortan como tejados, asi que encajan sin
+solaparse) y el manifest `index.json` (schema 2 con campos aditivos:
+`urls.{building,trees}` por instante, `canopy_url`, `buildings_url` y
+`ladder` globales; `url` = alias del set building y `urls.vegetation` apunta
+al canopy estatico para clientes schema-2 desplegados). Los interiores de
 edificio van transparentes en los sets de sombra (mascara de tejados, solo
 presentacion: el raster de estados y la API no cambian); las copas se
 pintan tambien sobre tejado (un arbol que cuelga sobre un edificio sigue
