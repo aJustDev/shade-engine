@@ -432,8 +432,18 @@ concretas donde plantar.
 | 2026-08-13 | Montilla segunda ciudad (EPSG:25830, bbox 3x2.5 km del casco, LIDA3 vuelo AND 2024, cobertura 25/25 tiles verificada en catalogo), decidida local + prod; y fix del driver CNIG: `archivosSerie` exige ahora POST                                       | Ensayo del pipeline endurecido con datos reales frescos ANTES de gastar las ~11 h del rebuild de cordoba: build corto (~2 h) que ejercita descarga, binning, barrido, verify y tiles end-to-end. Tecnicamente no valida nada nuevo (mismo huso y serie que cordoba), el valor es de producto + ensayo. El sondeo de catalogo cazo el cambio del centro CNIG (GET -> 403 desde 2026-08): fix de una linea + mock actualizado para rechazar GET como el servicio real. El case study de ajustino.dev sigue ligado a cordoba; montilla queda servida por API + tiles                                                                                                                                                                        |
 | 2026-08-13 | Comando `shade-engine verify <city>` (invariante horizonte-vs-blocker + layout + sanidad por ventanas); build_city lo ejecuta al final de cada build                                                                                                    | Invariante de dominio en vez de checksums: q > 0 exige blocker real (exacto, 0 tolerancia) y q == 0 con blocker solo es legitimo bajo medio quantum (45/255 ~ 0.176 deg; umbral 5% por banda, la corrupcion real daba 30-100%). Sirve para auditar artefactos ya desplegados (rsync incluidos), no solo builds frescos; habria cazado la corrupcion en segundos. Streaming por ventanas de 512 px: ~1 min y memoria acotada a escala ciudad                                                                                                                                                                                                                                                                                              |
 
+| 2026-08-13 | Tiles v2: UN set de sombra por instante (edificios + arboles proyectada + other, un solo color indigo; los indices de clase sobreviven en la paleta PNG) + `canopy.pmtiles` ESTATICO por ciudad (proyeccion vertical de copas, checkbox propio) + preset con 21-jun a paso horario (26 instantes) | La capa verde mezclaba dos semanticas: "bajo copa" (estatico, dominaba el peso: ~7 MB constantes por instante) y "sombra proyectada" (movil). El corte sigue la fisica: lo que no se mueve se sirve una vez. A pie de calle importa "sombra si/no", no quien la proyecta. Manifest sigue en schema 2 con campos aditivos (`urls.shade`, `canopy_url`) y alias legacy (`urls.building` = set de sombra, `urls.vegetation` = canopy estatico, colores legacy remapeados): la consola desplegada de ajustino.dev sigue pintando coherente sin cambios; migrarla al contrato nuevo queda anotado. Instantes extra: coste lineal (~1 min y ~5-10 MB cada uno), el solsticio horario es el demo "mira la sombra moverse" |
+
 Pendientes de decidir:
 
+- Subir de 64 a 128 sectores de horizonte (anotado 2026-08-13, sin fecha): el
+  mejor ratio coste/precision si la validacion de campo señala el borde
+  azimutal de las sombras (~5.6 deg por sector hoy; el borde de una sombra de
+  20 m baila ~1 m). Coste: x2 barrido (~22 h el rebuild exact de cordoba) y
+  x2 el horizon.tif (~3.6 GB). Decidir DESPUES del paseo de validacion; no
+  pagar computo antes de medir el error real. Bajar de 1 m/px queda
+  descartado salvo dato nuevo: LIDA3 (5 pt/m2) no soporta 0.5 m reales y el
+  barrido seria x8.
 - Motor de rutas y estrategia de precalculo solar (Fase 8): boceto en su seccion
 - Cobertura de parking mas alla de las 21 zonas azules (roadmap, sin fecha): las
   fuentes ya se agotaron en la investigacion de Fase 5 (visor municipal roto,
@@ -693,3 +703,17 @@ data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
   local (viewer/, fuera de git) queda con fallback [cordoba, montilla].
   RECORDATORIO: el rebuild nocturno de cordoba sigue PENDIENTE (runbook en la
   nota anterior); su horizonte corrupto sigue en prod hasta entonces.
+- 2026-08-13 (tiles v2 + preset horario): implementado y desplegado para
+  montilla en la misma sesion (registro: fila "Tiles v2"). El set de sombra
+  por instante queda unificado en un color (la proyectada de arboles incluida)
+  y las copas pasan a `canopy.pmtiles` estatico con checkbox propio; el
+  solsticio de verano va a paso horario (26 instantes en total, 1m56s y 30 MB
+  para montilla, regenerado y rsync-eado con --delete). El viewer local lee el
+  contrato nuevo con fallback legacy (cordoba sigue en el manifest viejo hasta
+  su rebuild y el visor la pinta igual). PENDIENTE ANOTADO: migrar la consola
+  del case study (repo ajustinodev) a `urls.shade` + `canopy_url`; mientras,
+  los alias legacy del manifest la mantienen coherente (su toggle de
+  vegetacion pinta ahora las copas estaticas). El runbook del rebuild
+  nocturno de cordoba NO cambia: `tiles cordoba` ya produce el formato nuevo.
+  Futuro apuntado en Pendientes de decidir: subir a 128 sectores tras la
+  validacion de campo; bajar de 1 m/px descartado.
