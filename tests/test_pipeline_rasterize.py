@@ -140,14 +140,25 @@ def test_synthetic_ground_feeds_dtm(tmp_path: Path) -> None:
 def test_fill_dtm_gaps_interior_hole() -> None:
     dtm = np.zeros((5, 5), dtype=np.float32)
     dtm[2, 2] = np.nan
-    filled = fill_dtm_gaps(dtm)
+    filled = fill_dtm_gaps(dtm, resolution_m=1.0)
     assert filled[2, 2] == pytest.approx(0.0)
     assert not np.isnan(filled).any()
 
 
+def test_fill_dtm_gaps_search_distance_is_metric() -> None:
+    # A 3-cell hole: reachable at 1 m/px (search = 200 px) but not at
+    # 100 m/px (search = 2 px) from the single valid pixel at the far end.
+    dtm = np.full((1, 5), np.nan, dtype=np.float32)
+    dtm[0, 0] = 7.0
+    filled = fill_dtm_gaps(dtm.copy(), resolution_m=1.0)
+    assert not np.isnan(filled).any()
+    with pytest.raises(ValueError, match="no ground point"):
+        fill_dtm_gaps(dtm.copy(), resolution_m=100.0)
+
+
 def test_fill_dtm_gaps_raises_when_unfillable() -> None:
     with pytest.raises(ValueError, match="no ground point"):
-        fill_dtm_gaps(np.full((5, 5), np.nan, dtype=np.float32))
+        fill_dtm_gaps(np.full((5, 5), np.nan, dtype=np.float32), resolution_m=1.0)
 
 
 def test_cube_scene_roundtrip(tmp_path: Path) -> None:

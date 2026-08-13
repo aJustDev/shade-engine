@@ -163,7 +163,7 @@ def rasterize_lidar(
     dtm = np.full(n, np.nan, dtype=np.float32)
     np.divide(dtm_sum, dtm_count, out=dtm, where=dtm_count > 0)
     del dtm_sum, dtm_count
-    dtm_filled = fill_dtm_gaps(dtm.reshape(rows, cols))
+    dtm_filled = fill_dtm_gaps(dtm.reshape(rows, cols), resolution_m=resolution_m)
 
     # Landcover = class of the point that set the cell's DSM; building wins
     # exact ties. Cells with no first return at all stay GROUND.
@@ -188,15 +188,24 @@ def rasterize_lidar(
 
 
 def fill_dtm_gaps(
-    dtm: npt.NDArray[np.float32], *, max_search_distance_px: float = 100.0
+    dtm: npt.NDArray[np.float32],
+    *,
+    resolution_m: float,
+    max_search_distance_m: float = 200.0,
 ) -> npt.NDArray[np.float32]:
     """Fill NaN holes by inverse-distance interpolation from valid pixels.
 
     Wraps ``rasterio.fill.fillnodata`` (GDALFillNodata): pixels where the mask
     is False are interpolated from surrounding valid ones, searching up to
-    ``max_search_distance_px`` *pixels* away. Holes wider than that would
-    survive as NaN and poison every observer height downstream, so any
-    remainder raises instead of shipping a broken DTM.
+    ``max_search_distance_m`` away. The guard is against *physical* hole
+    width, so the reach is meters, not pixels: an earlier pixel-denominated
+    limit made the same dataset fill at 2 m resolution and fail at 1 m.
+    Holes wider than this would survive as NaN and poison every observer
+    height downstream, so any remainder raises instead of shipping a broken
+    DTM. 200 m covers the widest real void seen so far: the coverage wedge
+    between the GAL-E 2016 and CYL-NW 2021 PNOA flight blocks, which are
+    clipped to their regional border and leave a sliver with no points at
+    all (labana, ~450 x 150 m).
     """
     valid = ~np.isnan(dtm)
     if valid.all():
@@ -204,13 +213,13 @@ def fill_dtm_gaps(
     filled: npt.NDArray[np.float32] = rasterio.fill.fillnodata(
         dtm.copy(),
         mask=valid,
-        max_search_distance=max_search_distance_px,
+        max_search_distance=max_search_distance_m / resolution_m,
         smoothing_iterations=0,
     )
     remaining = int(np.isnan(filled).sum())
     if remaining:
         raise ValueError(
             f"DTM has {remaining} cells with no ground point within "
-            f"{max_search_distance_px} px; widen max_search_distance_px or check the input"
+            f"{max_search_distance_m} m; widen max_search_distance_m or check the input"
         )
     return filled
