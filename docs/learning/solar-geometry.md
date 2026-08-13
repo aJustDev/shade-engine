@@ -31,6 +31,25 @@ mismas magnitudes. pvlib (algoritmo SPA de NREL) calcula la posicion con
 precision de fracciones de grado y vectorizado, y ya esta validado: no
 reimplementamos efemerides.
 
+## La declinacion y la escalera de fechas (tiles)
+
+La declinacion solar (el angulo del sol sobre el plano del ecuador) es lo
+UNICO que cambia entre dias: fijada la declinacion y la hora solar, la
+posicion del sol -- y por tanto la sombra -- es la misma. Recorre +-23.44
+grados en el año y es simetrica alrededor de los solsticios: el 4 de mayo y
+el 9 de agosto tienen la misma declinacion y sombras practicamente
+identicas. Por eso los tiles no muestrean el calendario (52 semanas serian
+~27 patrones utiles, con vecinos casi iguales) sino la declinacion: 7
+fechas canonicas a pasos de ~7.8 grados cubren el año entero, y el manifest
+publica el mapeo dia -> "gemela de declinacion" (campo `ladder`). Error
+maximo en el peor dia del rango de un peldaño: ~4 grados de declinacion,
+por debajo de lo que se aprecia en un overlay urbano.
+
+Trampa asociada: la declinacion NO es simetrica alrededor de los
+equinoccios en el calendario (la orbita es eliptica; el otoño llega ~3 dias
+"tarde"): los rangos del mapeo se calculan con la serie de Spencer, no
+restando fechas a mano.
+
 ## Trampa tipica
 
 Timezone vs hora solar. El huso Europe/Madrid va adelantado respecto al sol

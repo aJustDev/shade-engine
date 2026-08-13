@@ -77,23 +77,29 @@ uv run shade-engine tiles <id>              # preset de estaciones 2026
 uv run shade-engine tiles <id> --at 2026-08-01T19:30   # o instantes sueltos
 ```
 
-Escribe `data/cities/<id>/v1/tiles/`: UN pmtiles por instante
-(`shade-<instante>.pmtiles`: toda la sombra proyectada -- edificios, arboles
-y "other" -- en un solo color), UN `canopy.pmtiles` estatico por ciudad (la
-proyeccion vertical de las copas desde `canopy.tif`, identica a cualquier
-hora, conmutable en la web) y el manifest `index.json` (schema 2 con campos
-aditivos: `urls.shade` por instante y `canopy_url` global son el contrato
-nuevo; `url`/`urls.building` = alias del set de sombra y `urls.vegetation`
-apunta al canopy estatico para que un cliente schema-2 desplegado siga
-pintando algo coherente sin cambios). Los interiores de edificio van
-transparentes en el set de sombra (mascara de tejados, solo presentacion:
-el raster de estados y la API no cambian); las copas se pintan tambien
-sobre tejado (un arbol que cuelga sobre un edificio sigue siendo un arbol).
-El preset 2026 trae el solsticio de verano a paso horario (08:00-21:00) y 4
-horas por estacion restante: 26 instantes. Instantes nocturnos se rechazan.
-Al regenerar, borrar antes los `shade-*.pmtiles` viejos del directorio
-local para que el rsync con `--delete` deje el servidor limpio. Ver
-`docs/learning/map-tiles-pmtiles.md`.
+Escribe `data/cities/<id>/v1/tiles/`: DOS pmtiles de sombra proyectada por
+instante en el mismo color (`shade-<instante>-building.pmtiles`, que incluye
+la clase "other", y `shade-<instante>-trees.pmtiles`, conmutables por
+separado: apagar trees = "la calle sin arbolado"), UN `canopy.pmtiles`
+estatico por ciudad (la proyeccion vertical de las copas desde `canopy.tif`,
+identica a cualquier hora) y el manifest `index.json` (schema 2 con campos
+aditivos: `urls.{building,trees}` por instante, `canopy_url` y `ladder`
+globales; `url` = alias del set building y `urls.vegetation` apunta al
+canopy estatico para clientes schema-2 desplegados). Los interiores de
+edificio van transparentes en los sets de sombra (mascara de tejados, solo
+presentacion: el raster de estados y la API no cambian); las copas se
+pintan tambien sobre tejado (un arbol que cuelga sobre un edificio sigue
+siendo un arbol).
+
+El preset 2026 es la ESCALERA DE DECLINACION: 7 fechas canonicas a pasos de
+~7.8 grados de declinacion solar, cada una a paso horario dentro de sus
+horas de luz seguras (83 instantes, 167 pmtiles). El campo `ladder` del
+manifest mapea CUALQUIER dia del año a su fecha gemela de declinacion (el 9
+de agosto usa los tiles del 4 de mayo); ver
+`docs/learning/solar-geometry.md`. Instantes nocturnos se rechazan. Al
+regenerar, borrar antes los `shade-*.pmtiles` y `canopy.pmtiles` viejos del
+directorio local para que el rsync con `--delete` deje el servidor limpio.
+Ver `docs/learning/map-tiles-pmtiles.md`.
 
 El basemap NO lo genera el CLI: es un extract de OSM via Protomaps, una
 operacion manual unica por ciudad (CLI go de

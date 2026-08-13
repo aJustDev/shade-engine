@@ -13,16 +13,15 @@ is 156543/2^17 * cos(37.9) = 0.94 m/px -- our native 1 m resolution. Higher
 zooms would only upsample (the map client already overzooms past max_zoom);
 zoom 12 (~30 m/px) fits the whole city on two tiles.
 
-Each instant becomes ONE shade file: building, "other" and *cast* tree
-shadow share a single color (what matters at street level is "shaded or
-not", not who blocks the sun). What used to be the per-instant vegetation
-layer is now a single static ``canopy.pmtiles`` per city -- the vertical
-projection of the tree crowns from ``canopy.tif``, identical at every hour
--- toggled independently by the client. The split follows the physics:
-under-canopy shade never moves (opaque-crown assumption), cast shadows
-rotate with the sun. Tiles for a fixed sun position are immutable, which
-is what makes the static approach work (and cacheable forever). The engine
-itself is never consulted at view time.
+Each instant becomes TWO cast-shade files sharing one color -- buildings
+(plus "other") and tree shadow -- independently toggleable (hiding the
+trees set shows the streets-without-trees scenario), while the crowns
+themselves live in a single static ``canopy.pmtiles`` per city: the
+vertical projection of ``canopy.tif``, identical at every hour. The split
+follows the physics: under-canopy shade never moves (opaque-crown
+assumption), cast shadows rotate with the sun. Tiles for a fixed sun
+position are immutable, which is what makes the static approach work (and
+cacheable forever). The engine itself is never consulted at view time.
 
 The PNG palette keeps a distinct index per state even where colors
 coincide, so a decoded tile still knows which pixels are tree shadow;
@@ -30,11 +29,12 @@ recoloring is a palette edit away, no re-render needed.
 """
 
 import io
+import itertools
 import json
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Final
 
@@ -46,6 +46,7 @@ from affine import Affine
 from PIL import Image
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
+from pvlib.solarposition import declination_spencer71
 from pyproj import Transformer
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
@@ -100,19 +101,26 @@ CANOPY_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
 
 CANOPY_TILES_FILENAME: Final = "canopy.pmtiles"
 
-# The 2026 solstice/equinox preset, civil local hours per date. Hours are
-# picked to stay within daylight at Iberian latitudes (Cordoba's winter
-# sunset is ~18:05 local); the two equinoxes share hours on purpose -- solar
-# declination is ~0 at both, so their shade patterns nearly coincide, which
-# the map makes visible. The summer solstice runs hourly (08:00-21:00,
-# sunset ~21:45): it is the canonical "watch the shadow move" demo day and
-# each extra instant costs only generation time and a few MB of static
-# files.
-SEASON_PRESET_2026: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
-    ("2026-03-20", ("09:00", "12:00", "15:00", "18:00")),  # spring equinox (CET)
-    ("2026-06-21", tuple(f"{hour:02d}:00" for hour in range(8, 22))),  # summer (CEST)
-    ("2026-09-22", ("09:00", "12:00", "15:00", "18:00")),  # autumn equinox (CEST)
-    ("2026-12-21", ("10:00", "12:00", "14:00", "16:00")),  # winter solstice (CET)
+# The 2026 declination-ladder preset: 7 canonical dates at ~even solar
+# declination steps (-23.4 to +23.4 in ~7.8 deg rungs), each rendered hourly
+# within safe daylight (both boundary hours verified > 1.4 deg of apparent
+# elevation at Cordoba and Montilla; more-eastern cities would shift solar
+# time and should re-check). Why declination and not calendar weeks: a fixed
+# instant's shade depends only on the sun's (azimuth, elevation), which
+# depend only on declination and local solar time -- and declination is
+# SYMMETRIC around the solstices (May 4 == Aug 9, Mar 21 == Sep 22...), so 7
+# rungs cover the whole year and any calendar date maps to its declination
+# twin with < ~4 deg of error at the rung midpoint (see the manifest
+# ``ladder`` field, which ships that mapping). Entries: (date, first hour,
+# last hour), civil local hours; ZoneInfo resolves each date's DST offset.
+LADDER_PRESET_2026: Final[tuple[tuple[str, int, int], ...]] = (
+    ("2026-02-07", 9, 18),  # decl -15.6 (CET)
+    ("2026-03-01", 8, 18),  # decl -7.9 (CET)
+    ("2026-03-21", 8, 19),  # decl ~0: equinox (CET)
+    ("2026-04-10", 8, 20),  # decl +7.7 (CEST)
+    ("2026-05-04", 8, 21),  # decl +15.7 (CEST)
+    ("2026-06-21", 8, 21),  # decl +23.4: summer solstice (CEST)
+    ("2026-12-21", 9, 17),  # decl -23.4: winter solstice (CET)
 )
 
 # PNG palette: state code -> palette index; colors and per-index alpha (tRNS
@@ -145,7 +153,7 @@ _INDEX_OF_STATE: Final = _palette_index()
 
 
 def season_preset_instants(tz: tzinfo) -> list[datetime]:
-    """The 2026 season preset as aware datetimes in the city's zone.
+    """The 2026 declination-ladder preset as aware datetimes in the city's zone.
 
     DST trap: the preset straddles the March/October changes (Spain runs
     UTC+1 in March/December, UTC+2 in June/September). ``ZoneInfo`` resolves
@@ -153,9 +161,44 @@ def season_preset_instants(tz: tzinfo) -> list[datetime]:
     that crosses a DST boundary.
     """
     return [
-        datetime.fromisoformat(f"{day}T{hhmm}").replace(tzinfo=tz)
-        for day, hours in SEASON_PRESET_2026
-        for hhmm in hours
+        datetime.fromisoformat(f"{day}T{hour:02d}:00").replace(tzinfo=tz)
+        for day, first, last in LADDER_PRESET_2026
+        for hour in range(first, last + 1)
+    ]
+
+
+def declination_ladder() -> list[dict[str, object]]:
+    """The manifest ``ladder``: each rung's declination and the dates it covers.
+
+    Every 2026 calendar day is assigned to the rung with the closest solar
+    declination (Spencer 1971 series, the same approximation family pvlib
+    uses for fast solar position). Because declination is symmetric around
+    the solstices, most rungs cover two date ranges (one per half-year):
+    August 9 maps to the May 4 rung, October days to the March ones. The
+    client resolves any picked date to its rung through ``covers``.
+    """
+
+    def decl(day: date) -> float:
+        return float(np.degrees(declination_spencer71(day.timetuple().tm_yday)))
+
+    rungs = [date.fromisoformat(day) for day, _first, _last in LADDER_PRESET_2026]
+    rung_decl = {day: decl(day) for day in rungs}
+    year = [date(2026, 1, 1) + timedelta(days=n) for n in range(365)]
+    assigned = {day: min(rungs, key=lambda rung: abs(decl(day) - rung_decl[rung])) for day in year}
+    covers: dict[date, list[list[str]]] = {day: [] for day in rungs}
+    run_start = year[0]
+    for previous, day in itertools.pairwise(year):
+        if assigned[day] is not assigned[previous]:
+            covers[assigned[previous]].append([run_start.isoformat(), previous.isoformat()])
+            run_start = day
+    covers[assigned[year[-1]]].append([run_start.isoformat(), year[-1].isoformat()])
+    return [
+        {
+            "date": day.isoformat(),
+            "declination_deg": round(rung_decl[day], 2),
+            "covers": covers[day],
+        }
+        for day in rungs
     ]
 
 
@@ -287,27 +330,29 @@ def build_tiles(
     max_zoom: int = DEFAULT_MAX_ZOOM,
     progress: Callable[[str], None] | None = None,
 ) -> Path:
-    """Render one shade PMTiles per instant, a static canopy set, and the manifest.
+    """Render two cast-shade PMTiles per instant, a static canopy set, and the manifest.
 
-    The per-instant *shade* set carries every cast shadow (building, tree,
-    other) in one color; under-canopy pixels are excluded -- they belong to
-    the static *canopy* set, the crowns' vertical projection, written once
-    per city because it is identical at every hour. Building interiors are
-    masked transparent in the shade set -- nobody stands on a roof, and the
-    basemap already draws the buildings -- turning the overlay into
-    street-level shade only.
+    The per-instant sets carry cast shadow only -- ``building`` (plus
+    "other") and ``trees`` -- in one shared color; under-canopy pixels are
+    excluded from both: they belong to the static *canopy* set, the crowns'
+    vertical projection, written once per city because it is identical at
+    every hour. Building interiors are masked transparent in the cast sets
+    -- nobody stands on a roof, and the basemap already draws the buildings
+    -- turning the overlay into street-level shade only.
 
     The manifest is what the web client consumes: available instants (with
     the naive local ``at`` string ready for the API's ``?at=`` parameter),
     relative tile URLs with a ``?v=`` epoch (cache busting against
-    long-lived immutable caching), bounds, colors and attribution. It stays
-    ``schema_version`` 2 with additive fields: ``urls.shade`` and the
-    top-level ``canopy_url`` are the new contract, while the legacy
-    ``urls.building`` (alias of the shade set) and ``urls.vegetation``
-    (now pointing at the static canopy) keep a deployed schema-2 client
-    rendering sensibly without changes. Output lands under
-    ``<artifact_dir>/tiles/``; the basemap referenced by ``basemap_url`` is
-    produced out of band (see docs/adding-a-city.md).
+    long-lived immutable caching), bounds, colors, the declination
+    ``ladder`` (any calendar date -> its rung) and attribution. It stays
+    ``schema_version`` 2 with additive fields: ``urls.{building,trees}``,
+    ``canopy_url`` and ``ladder`` are the current contract, while the
+    legacy ``url``/``urls.building`` (cast building shade, same semantics
+    as the original split) and ``urls.vegetation`` (pointing at the static
+    canopy) keep a deployed schema-2 client rendering sensibly without
+    changes. Output lands under ``<artifact_dir>/tiles/``; the basemap
+    referenced by ``basemap_url`` is produced out of band (see
+    docs/adding-a-city.md).
     """
     echo = progress if progress is not None else lambda _message: None
     metadata = load_metadata(artifact_dir)
@@ -383,7 +428,7 @@ def build_tiles(
         state = compute_state_raster(artifact_dir, sun)
         state[roof] = STATE_OUTSIDE
         # Under-canopy pixels move to the static canopy layer: the
-        # per-instant set keeps only *cast* shade. Dropped pixels become
+        # per-instant sets keep only *cast* shade. Dropped pixels become
         # STATE_SUN (transparent), keeping STATE_OUTSIDE strictly for roofs
         # and out-of-coverage pixels.
         state[canopy & (state == STATE_SHADE_VEGETATION)] = STATE_SUN
@@ -392,31 +437,41 @@ def build_tiles(
             f"{format_duration(time.monotonic() - phase_start)}"
         )
 
-        filename = f"shade-{instant_id}.pmtiles"
-        phase_start = time.monotonic()
-        written, skipped = write_instant_pmtiles(
-            tiles_dir / filename,
-            state,
-            transform,
-            metadata.crs,
-            (west, south, east, north),
-            min_zoom=min_zoom,
-            max_zoom=max_zoom,
-            metadata={
-                "name": f"{config.name} shade {when.isoformat()}",
-                "attribution": " / ".join(metadata.attribution),
-            },
-        )
-        size = (tiles_dir / filename).stat().st_size
-        total_written += written
-        total_skipped += skipped
-        total_bytes += size
-        shade_url = f"{filename}?v={version}"
-        echo(
-            f"[{index}/{len(ordered)}] {filename}: {written} tiles written, "
-            f"{skipped} transparent skipped ({format_bytes(size)}, "
-            f"{format_duration(time.monotonic() - phase_start)})"
-        )
+        # Two independently toggleable cast-shade sets, same color: hiding
+        # the trees set answers "how much street shade does the canopy add"
+        # (the streets-without-trees scenario, intervention-planning bait).
+        building_state = state.copy()
+        building_state[state == STATE_SHADE_VEGETATION] = STATE_SUN
+        trees_state = state.copy()
+        trees_state[(state != STATE_SHADE_VEGETATION) & (state != STATE_OUTSIDE)] = STATE_SUN
+
+        urls: dict[str, str] = {"vegetation": canopy_url}
+        for kind, layer_state in (("building", building_state), ("trees", trees_state)):
+            filename = f"shade-{instant_id}-{kind}.pmtiles"
+            phase_start = time.monotonic()
+            written, skipped = write_instant_pmtiles(
+                tiles_dir / filename,
+                layer_state,
+                transform,
+                metadata.crs,
+                (west, south, east, north),
+                min_zoom=min_zoom,
+                max_zoom=max_zoom,
+                metadata={
+                    "name": f"{config.name} shade ({kind}) {when.isoformat()}",
+                    "attribution": " / ".join(metadata.attribution),
+                },
+            )
+            size = (tiles_dir / filename).stat().st_size
+            total_written += written
+            total_skipped += skipped
+            total_bytes += size
+            urls[kind] = f"{filename}?v={version}"
+            echo(
+                f"[{index}/{len(ordered)}] {filename}: {written} tiles written, "
+                f"{skipped} transparent skipped ({format_bytes(size)}, "
+                f"{format_duration(time.monotonic() - phase_start)})"
+            )
         offset = f"{when:%z}"
         entries.append(
             {
@@ -425,15 +480,11 @@ def build_tiles(
                 "time": f"{when:%H:%M}",
                 "at": when.replace(tzinfo=None).isoformat(timespec="minutes"),
                 "utc_offset": f"{offset[:3]}:{offset[3:]}",
-                # url and urls.building are legacy aliases of the shade set;
-                # urls.vegetation points a schema-2 client's toggle at the
-                # static canopy, which is exactly what that layer means now.
-                "url": shade_url,
-                "urls": {
-                    "shade": shade_url,
-                    "building": shade_url,
-                    "vegetation": canopy_url,
-                },
+                # url is the legacy alias of the building set (same semantics
+                # as the original split); urls.vegetation points a schema-2
+                # client's toggle at the static canopy.
+                "url": urls["building"],
+                "urls": dict(urls),
                 "sun": {
                     "azimuth_deg": round(sun.azimuth_deg, 2),
                     "elevation_deg": round(sun.elevation_deg, 2),
@@ -463,6 +514,7 @@ def build_tiles(
             "alpha": round(OVERLAY_ALPHA / 255.0, 2),
         },
         "canopy_url": canopy_url,
+        "ladder": declination_ladder(),
         "basemap_url": BASEMAP_FILENAME,
         "instants": entries,
         "generated_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
@@ -473,8 +525,9 @@ def build_tiles(
     )
     echo(
         f"tiles done in {format_duration(time.monotonic() - build_start)} "
-        f"({len(ordered)} instants, {len(ordered) + 1} pmtiles, {format_bytes(total_bytes)}, "
-        f"{total_written} tiles written, {total_skipped} skipped)"
+        f"({len(ordered)} instants, {2 * len(ordered) + 1} pmtiles, "
+        f"{format_bytes(total_bytes)}, {total_written} tiles written, "
+        f"{total_skipped} skipped)"
     )
     return tiles_dir
 

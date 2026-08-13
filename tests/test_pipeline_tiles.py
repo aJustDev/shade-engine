@@ -3,7 +3,7 @@
 import io
 import json
 import shutil
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -249,14 +249,31 @@ def test_build_tiles_manifest(built_city: Path, tmp_path: Path) -> None:
     assert manifest["colors"]["shade"] == manifest["colors"]["shade_building"]
     # Legacy vegetation color = the static canopy's color (see build_tiles).
     assert manifest["colors"]["shade_vegetation"] == manifest["colors"]["canopy"]
+    # Declination ladder: 7 rungs whose covers partition the whole year.
+    ladder = manifest["ladder"]
+    assert [rung["date"] for rung in ladder] == [
+        "2026-02-07",
+        "2026-03-01",
+        "2026-03-21",
+        "2026-04-10",
+        "2026-05-04",
+        "2026-06-21",
+        "2026-12-21",
+    ]
+    covered = sum(
+        (date.fromisoformat(b) - date.fromisoformat(a)).days + 1
+        for rung in ladder
+        for a, b in rung["covers"]
+    )
+    assert covered == 365
     for entry in instants:
         urls = entry["urls"]
-        assert set(urls) == {"shade", "building", "vegetation"}
-        # Legacy aliases: url/building = the shade set; vegetation = canopy.
-        assert entry["url"] == urls["shade"]
-        assert urls["building"] == urls["shade"]
+        assert set(urls) == {"building", "trees", "vegetation"}
+        # Legacy aliases: url = the building cast set; vegetation = canopy.
+        assert entry["url"] == urls["building"]
         assert urls["vegetation"] == canopy_url
-        assert (tiles_dir / str(urls["shade"]).split("?")[0]).exists()
+        for kind in ("building", "trees"):
+            assert (tiles_dir / str(urls[kind]).split("?")[0]).exists()
         assert entry["sun"]["elevation_deg"] > 0
 
 
@@ -284,7 +301,7 @@ def test_roof_mask_and_canopy_split(built_city: Path, tmp_path: Path) -> None:
     )
     crown_center = (min_x + 6.5, max_y - 6.5)  # center of the planted patch
 
-    with open(tiles_dir / str(urls["shade"]).split("?")[0], "rb") as handle:
+    with open(tiles_dir / str(urls["building"]).split("?")[0], "rb") as handle:
         reader = Reader(MmapSource(handle))
         # NEAR is street in the cube's winter shadow: shade color survives.
         assert _rgba_at(reader, metadata.crs, *NEAR, 16) == SHADE_COLORS[STATE_SHADE_BUILDING]
@@ -292,9 +309,17 @@ def test_roof_mask_and_canopy_split(built_city: Path, tmp_path: Path) -> None:
         # SUN: both are transparent, but the palette index proves the roof
         # mask ran (unmasked it would be building shade, seen from inside).
         assert _state_at(reader, metadata.crs, *cube_center, 16) == STATE_OUTSIDE
-        # Under-canopy pixels are excluded from the per-instant set: SUN
+        # Under-canopy pixels are excluded from the per-instant sets: SUN
         # (transparent), not vegetation shade.
         assert _state_at(reader, metadata.crs, *crown_center, 18) == STATE_SUN
+
+    with open(tiles_dir / str(urls["trees"]).split("?")[0], "rb") as handle:
+        reader = Reader(MmapSource(handle))
+        # The planted crown sits on flat ground (no DSM bump), so it casts
+        # nothing: the trees set holds only blank min_zoom tiles. Building
+        # shade never leaks in, and the under-canopy crown stays out too.
+        assert _rgba_at(reader, metadata.crs, *NEAR, 14)[3] == 0
+        assert _state_at(reader, metadata.crs, *crown_center, 14) == STATE_SUN
 
     with open(tiles_dir / CANOPY_TILES_FILENAME, "rb") as handle:
         reader = Reader(MmapSource(handle))
@@ -305,12 +330,15 @@ def test_roof_mask_and_canopy_split(built_city: Path, tmp_path: Path) -> None:
         assert _rgba_at(reader, metadata.crs, *NEAR, 16)[3] == 0
 
 
-def test_season_preset_hourly_summer() -> None:
-    """26 instants: hourly summer solstice plus 4 per remaining season."""
+def test_declination_ladder_preset() -> None:
+    """83 hourly instants over 7 canonical declination dates."""
     instants = season_preset_instants(ZoneInfo("Europe/Madrid"))
-    assert len(instants) == 26
+    assert len(instants) == 83
+    assert len({when.date() for when in instants}) == 7
     june = [when for when in instants if when.month == 6]
     assert [when.hour for when in june] == list(range(8, 22))
+    december = [when for when in instants if when.month == 12]
+    assert [when.hour for when in december] == list(range(9, 18))
 
 
 def test_build_tiles_rejects_night_instant(built_city: Path, tmp_path: Path) -> None:
@@ -345,13 +373,15 @@ def test_cli_tiles_smoke(built_city: Path, tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "shade-20261221T1320.pmtiles" in result.output
+    assert "shade-20261221T1320-building.pmtiles" in result.output
+    assert "shade-20261221T1320-trees.pmtiles" in result.output
     assert CANOPY_TILES_FILENAME in result.output
     assert "state raster in" in result.output
     assert "tiles done in" in result.output
     assert "tiles written to" in result.output
     tiles_dir = output_root / "cube" / "v1" / "tiles"
-    assert (tiles_dir / "shade-20261221T1320.pmtiles").exists()
+    assert (tiles_dir / "shade-20261221T1320-building.pmtiles").exists()
+    assert (tiles_dir / "shade-20261221T1320-trees.pmtiles").exists()
     assert (tiles_dir / CANOPY_TILES_FILENAME).exists()
     assert (tiles_dir / MANIFEST_FILENAME).exists()
 
