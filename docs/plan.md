@@ -679,3 +679,17 @@ data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
      viva (los valores de tarde cambian todos) y commit en ese repo.
   6. Sanidad en vivo: /v1/shade de un punto de calle a las 20:00 de junio da
      sombra de edificio; visor publico con overlay en 17:00 y 20:00 de junio.
+- 2026-08-13 (montilla en produccion): ensayo del pipeline endurecido COMPLETO
+  en la misma sesion del postmortem. Sondeo de catalogo 25/25 tiles LIDA3 (AND
+  2024), build exact 1h 35m (537 MiB; horizon.tif 442 MiB ya en interleave
+  BAND), verify 6/6, los 64 sectores poblados en toda la ciudad (92-96% no
+  nulos tambien en las bandas 45-64 que cordoba tenia muertas), timeline con
+  sombra vegetal a las 20:15 y de edificio a las 21:30 el 21 jun (az ~290, el
+  rango antes muerto), tiles 27 MiB con la firma sana (el building de las
+  20:00 de junio es el MAYOR de los 4 instantes, como manda la fisica),
+  basemap Protomaps build 20260812. En vivo tras rsync + restart de la api:
+  /v1/cities lista [cordoba, montilla], /v1/shade de montilla responde sombra
+  de tarde, manifest 200 con CORS y pmtiles Range 206 immutable. El viewer
+  local (viewer/, fuera de git) queda con fallback [cordoba, montilla].
+  RECORDATORIO: el rebuild nocturno de cordoba sigue PENDIENTE (runbook en la
+  nota anterior); su horizonte corrupto sigue en prod hasta entonces.
