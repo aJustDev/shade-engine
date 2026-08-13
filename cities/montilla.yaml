@@ -1,0 +1,15 @@
+id: montilla
+name: Montilla
+country: ES
+timezone: Europe/Madrid
+crs: EPSG:25830 # UTM 30N ETRS89, mismo huso que Cordoba
+bbox: [353600, 4159400, 356600, 4161900] # casco urbano + margen, en CRS local (metros)
+resolution_m: 1.0
+horizon_sectors: 64
+horizon_max_distance_m: 500 # radio del barrido; tambien buffer del bbox
+sources:
+  lidar: pnoa # driver de descarga (CnigSource)
+  pnoa_series: LIDA3 # 3a cobertura; sondeo 2026-08-13: 25/25 tiles en catalogo (vuelo AND 2024)
+  lidar_coverage: PNOA 3a cobertura 2024, 5 pt/m2, clasificacion NPC01 # informativo
+attribution:
+  - Obra derivada de PNOA-cob3 2022-2025 CC-BY 4.0 scne.es
