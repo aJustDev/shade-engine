@@ -38,6 +38,7 @@ from shade_pipeline.horizon import ANGLE_MAX_DEG, HorizonParams, compute_horizon
 from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.rasterize import rasterize_lidar
 from shade_pipeline.sources import LidarSource
+from shade_pipeline.verify import ensure_verified
 
 ARTIFACT_VERSION = "v1"
 _VERSIONED_PACKAGES = ("shade-pipeline", "shade-core", "laspy", "rasterio", "numpy")
@@ -179,6 +180,11 @@ def build_city(
         attribution=config.attribution,
     )
     (out_dir / METADATA_FILENAME).write_text(metadata.model_dump_json(indent=2))
+    # Verify the finished directory as a whole (write_cog already verified
+    # each file): the horizon-blocker invariant is the cross-cube check that
+    # a silent storage failure cannot survive.
+    say("verifying artifacts")
+    ensure_verified(out_dir, progress=progress)
     artifact_size = sum(path.stat().st_size for path in out_dir.iterdir() if path.is_file())
     say(
         f"build done in {format_duration(time.monotonic() - build_start)} "

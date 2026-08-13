@@ -1,4 +1,4 @@
-"""Command line interface: ``shade-engine build|predict|canopy|import-layer|tiles <city>``."""
+"""CLI: ``shade-engine build|predict|canopy|verify|import-layer|tiles <city>``."""
 
 import time
 from datetime import date, datetime
@@ -26,6 +26,7 @@ from shade_pipeline.tiles import (
     build_tiles,
     season_preset_instants,
 )
+from shade_pipeline.verify import VerificationError, format_report, verify_artifacts
 
 app = typer.Typer(help="Offline pipeline that turns LiDAR into per-city shade artifacts.")
 
@@ -89,7 +90,7 @@ def build(
     )
     try:
         out_dir = build_city(config, source, output_root, params, progress=typer.echo)
-    except (CoverageError, CnigError) as exc:
+    except (CoverageError, CnigError, VerificationError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"artifacts written to {out_dir}")
@@ -152,6 +153,35 @@ def canopy(
         f"{format_duration(time.monotonic() - start)}): "
         f"{canopy_px:,} of {total_px:,} px under canopy ({100.0 * canopy_px / total_px:.1f}%)"
     )
+
+
+@app.command()
+def verify(
+    city: str,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+) -> None:
+    """Audit CITY's artifacts: layout, value ranges and the horizon-blocker invariant.
+
+    ``build`` verifies its own output; this audits any artifact directory
+    after the fact -- a fresh build, or one already rsynced to a server. It
+    is the check that would have caught the corrupted horizon cube Cordoba's
+    first build shipped (western sectors silently zeroed).
+    """
+    config = load_city(cities_dir / f"{city}.yaml")
+    artifact_dir = output_root / config.id / ARTIFACT_VERSION
+    if not (artifact_dir / METADATA_FILENAME).exists():
+        typer.echo(
+            f"error: no artifacts under {artifact_dir}; run shade-engine build first", err=True
+        )
+        raise typer.Exit(1)
+    results = verify_artifacts(artifact_dir, progress=typer.echo)
+    typer.echo(format_report(results))
+    if any(not result.passed for result in results):
+        typer.echo("error: artifact verification failed", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()
