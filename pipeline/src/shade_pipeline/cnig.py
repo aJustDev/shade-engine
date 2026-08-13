@@ -1,13 +1,16 @@
 """Automated PNOA LiDAR downloads from the CNIG download center.
 
 The download center (https://centrodedescargas.cnig.es) publishes no API;
-its viewer calls internal endpoints that worked without session, cookies or
-captcha when verified on 2026-07-11:
+its viewer calls internal endpoints that work without session, cookies or
+captcha (verified 2026-07-11, re-verified 2026-08-13 after a change):
 
-- ``GET archivosSerie?numPagina=N&codSerie=...&coordenadas=<GeoJSON 4326>``
-  returns an HTML fragment listing files (name + a ``linkDescDir_<sec>``
-  download id) 20 per page, with the total in an ``id="totalArchivos"``
-  input. The ``sec`` id is not derivable from the file name.
+- ``POST archivosSerie`` with form fields ``numPagina=N``, ``codSerie=...``
+  and ``coordenadas=<GeoJSON 4326>`` returns an HTML fragment listing files
+  (name + a ``linkDescDir_<sec>`` download id) 20 per page, with the total
+  in an ``id="totalArchivos"`` input. The ``sec`` id is not derivable from
+  the file name. Until 2026-08 this endpoint accepted GET; it now returns
+  403 to GET regardless of headers or session -- the exact breakage this
+  driver was designed to fail loudly on.
 - ``POST descargaDir`` with form field ``secDescDirLA=<sec>`` streams the
   LAZ. GET is rejected with 403.
 
@@ -241,7 +244,9 @@ class CnigSource:
                 "coordenadas": coordinates,
             }
             try:
-                response = client.get(SEARCH_URL, params=params)
+                # POST, not GET: the center started rejecting GET here with
+                # 403 in 2026-08 (see module docstring).
+                response = client.post(SEARCH_URL, data=params)
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise CnigError(

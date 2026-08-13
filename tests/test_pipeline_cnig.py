@@ -64,8 +64,14 @@ class FakeCnig:
         self.downloads: list[str] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
+        # The real center rejects GET on both endpoints with 403 (the
+        # catalog one since 2026-08): the fake does too, so a regression
+        # back to GET fails these tests the same way it fails in the field.
+        if request.method != "POST":
+            return httpx.Response(403)
         if request.url.path.endswith("archivosSerie"):
-            page = int(request.url.params["numPagina"])
+            form = parse_qs(request.content.decode())
+            page = int(form["numPagina"][0])
             self.pages_requested.append(page)
             window = self.catalog[(page - 1) * self.page_size : page * self.page_size]
             entries = [(name, self.secs[name]) for name in window]
