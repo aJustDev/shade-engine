@@ -78,11 +78,17 @@ def rasterize_lidar(
     min_x, _, _, max_y = bbox
     n = rows * cols
 
-    dsm_max = np.full(n, -np.inf)
-    building_max = np.full(n, -np.inf)
-    vegetation_max = np.full(n, -np.inf)
-    dtm_sum = np.zeros(n)
-    dtm_count = np.zeros(n, dtype=np.int64)
+    # float32/int32 accumulators: the padded grid reaches hundreds of millions
+    # of cells at city scale (a 2x2 km bbox with a 6 km horizon buffer at 1 m
+    # is 196M), and five full-size float64 arrays alone OOM an 11 GB machine.
+    # float32 loses nothing real: the output COGs are float32 anyway, and its
+    # resolution near 2000 m of elevation (~0.1 mm) sits three orders of
+    # magnitude below LiDAR vertical accuracy (~10 cm).
+    dsm_max = np.full(n, -np.inf, dtype=np.float32)
+    building_max = np.full(n, -np.inf, dtype=np.float32)
+    vegetation_max = np.full(n, -np.inf, dtype=np.float32)
+    dtm_sum = np.zeros(n, dtype=np.float32)
+    dtm_count = np.zeros(n, dtype=np.int32)
     point_counts: dict[str, int] = {}
 
     binning_start = time.monotonic()
@@ -134,7 +140,10 @@ def rasterize_lidar(
                 row = np.floor((max_y - y) / resolution_m).astype(np.int64)
                 inside = keep & (row >= 0) & (row < rows) & (col >= 0) & (col < cols)
                 idx = (row * cols + col)[inside]
-                z = z[inside]
+                # z drops to float32 here (chunk-sized copy); x/y stay float64
+                # because cell indexing needs them (float32 at UTM easting
+                # ~7e5 quantizes to 6 cm and would misplace boundary points).
+                z = z[inside].astype(np.float32)
                 classification = classification[inside]
                 first = first[inside]
 
@@ -148,10 +157,13 @@ def rasterize_lidar(
                 np.add.at(dtm_count, idx[ground], 1)
         point_counts[path.name] = total
 
-    dtm = np.full(n, np.nan)
-    has_ground = dtm_count > 0
-    dtm[has_ground] = dtm_sum[has_ground] / dtm_count[has_ground]
-    dtm_filled = fill_dtm_gaps(dtm.reshape(rows, cols).astype(np.float32))
+    # where= writes the mean only on cells with ground points; the rest keep
+    # the NaN they were initialized with (no compressed fancy-index temps,
+    # which at this grid size would cost another couple of GB).
+    dtm = np.full(n, np.nan, dtype=np.float32)
+    np.divide(dtm_sum, dtm_count, out=dtm, where=dtm_count > 0)
+    del dtm_sum, dtm_count
+    dtm_filled = fill_dtm_gaps(dtm.reshape(rows, cols))
 
     # Landcover = class of the point that set the cell's DSM; building wins
     # exact ties. Cells with no first return at all stay GROUND.
@@ -159,8 +171,9 @@ def rasterize_lidar(
     landcover = np.full(n, Landcover.GROUND, dtype=np.uint8)
     landcover[has_surface & (vegetation_max >= dsm_max)] = Landcover.VEGETATION
     landcover[has_surface & (building_max >= dsm_max)] = Landcover.BUILDING
+    del building_max, vegetation_max
 
-    dsm = dsm_max.reshape(rows, cols).astype(np.float32)
+    dsm = dsm_max.reshape(rows, cols)
     surface = has_surface.reshape(rows, cols)
     dsm[~surface] = dtm_filled[~surface]
     dsm = np.maximum(dsm, dtm_filled)
