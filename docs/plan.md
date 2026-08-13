@@ -433,6 +433,7 @@ concretas donde plantar.
 | 2026-08-13 | Comando `shade-engine verify <city>` (invariante horizonte-vs-blocker + layout + sanidad por ventanas); build_city lo ejecuta al final de cada build                                                                                                    | Invariante de dominio en vez de checksums: q > 0 exige blocker real (exacto, 0 tolerancia) y q == 0 con blocker solo es legitimo bajo medio quantum (45/255 ~ 0.176 deg; umbral 5% por banda, la corrupcion real daba 30-100%). Sirve para auditar artefactos ya desplegados (rsync incluidos), no solo builds frescos; habria cazado la corrupcion en segundos. Streaming por ventanas de 512 px: ~1 min y memoria acotada a escala ciudad                                                                                                                                                                                                                                                                                              |
 
 | 2026-08-13 | Tiles v2: UN set de sombra por instante (edificios + arboles proyectada + other, un solo color indigo; los indices de clase sobreviven en la paleta PNG) + `canopy.pmtiles` ESTATICO por ciudad (proyeccion vertical de copas, checkbox propio) + preset con 21-jun a paso horario (26 instantes) | La capa verde mezclaba dos semanticas: "bajo copa" (estatico, dominaba el peso: ~7 MB constantes por instante) y "sombra proyectada" (movil). El corte sigue la fisica: lo que no se mueve se sirve una vez. A pie de calle importa "sombra si/no", no quien la proyecta. Manifest sigue en schema 2 con campos aditivos (`urls.shade`, `canopy_url`) y alias legacy (`urls.building` = set de sombra, `urls.vegetation` = canopy estatico, colores legacy remapeados): la consola desplegada de ajustino.dev sigue pintando coherente sin cambios; migrarla al contrato nuevo queda anotado. Instantes extra: coste lineal (~1 min y ~5-10 MB cada uno), el solsticio horario es el demo "mira la sombra moverse" |
+| 2026-08-13 | Tiles v3 (misma sesion que v2, a peticion del usuario): sombra proyectada DIVIDIDA en dos sets conmutables del mismo color (building+other / trees) y preset = ESCALERA DE DECLINACION: 7 fechas canonicas a pasos de ~7.8 deg (21-dic, 07-feb, 01-mar, 21-mar, 10-abr, 04-may, 21-jun) x paso horario en luz segura = 83 instantes; manifest con campo `ladder` (dia del año -> fecha gemela) | El split recupera un toggle con caso de uso real: apagar trees = "la calle sin arbolado" (aporte del arbolado a la sombra, semilla del diagnostico de intervenciones de Fase 11); el color compartido mantiene la lectura unificada de v2. La escalera sustituye a muestrear el calendario: la declinacion es lo unico que cambia entre dias y es simetrica alrededor de los solsticios (9-ago == 4-may), asi que 7 peldaños cubren el año con error < ~4 deg y cualquier fecha resuelve via `ladder.covers` (calculado con Spencer 71, la orbita eliptica desplaza los rangos ~3 dias del calendario naive). Limites horarios verificados con elevacion > 1.4 deg en cordoba y montilla; ciudad mas oriental debera re-verificar. Viewer local: sliders fecha+hora (rejilla queda para manifests legacy), 3 checkboxes y mini sol orbitando el bbox por azimut |
 
 Pendientes de decidir:
 
@@ -682,7 +683,8 @@ cordoba`. Tiles: 32 pmtiles (2 por instante x 16), 161 MB, ~15 min de
      comparar las tardes contra la hoja vieja (deben aparecer sombras nuevas).
   4. `cp data/cities/cordoba/v1.pre-rebuild/tiles/basemap.pmtiles
 data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
-     (~15 min; el basemap no se regenera).
+     (OJO: con la escalera de declinacion son 83 instantes x 2 sets, estimar
+     ~2 h y ~0.5-0.7 GB; el basemap no se regenera).
   5. Datos a prod (orden obligatorio): rsync de artefactos SIN tiles/ ->
      reiniciar la api del VPS (el SceneReader cachea bloques en RAM) -> rsync de
      tiles/ con --delete -> recapturar fixtures de ajustinodev contra la API
@@ -717,3 +719,17 @@ data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
   nocturno de cordoba NO cambia: `tiles cordoba` ya produce el formato nuevo.
   Futuro apuntado en Pendientes de decidir: subir a 128 sectores tras la
   validacion de campo; bajar de 1 m/px descartado.
+- 2026-08-13 (tiles v3 + viewer): tercera iteracion del dia, pedida por el
+  usuario tras ver v2: split de la sombra proyectada (building/trees, mismo
+  color, toggles independientes), escalera de declinacion de 7 fechas x paso
+  horario (83 instantes) con campo `ladder` en el manifest (dia del año ->
+  gemela; 365/365 dias cubiertos, verificado), y en el viewer local sliders de
+  fecha+hora (la rejilla queda para manifests legacy), 3 checkboxes y mini sol
+  orbitando el bbox por azimut con color/tamaño por elevacion. Montilla
+  regenerada (9m15s, 167 pmtiles, 137 MB) y en prod; verificado en vivo que
+  2026-08-09 resuelve al peldaño 2026-05-04 (+15.73) y que el sol aparece al
+  oeste a las 19:00. Docs: solar-geometry.md ampliado con declinacion y
+  escalera; adding-a-city.md al contrato nuevo; runbook de cordoba actualizado
+  (tiles ~2 h con 83 instantes). La consola de ajustinodev sigue via alias
+  legacy (url = building cast, vegetation = canopy); su migracion sigue
+  pendiente y ahora incluye sliders si se quiere paridad.
