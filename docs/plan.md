@@ -427,6 +427,9 @@ concretas donde plantar.
 | 2026-07-13 | Tiles por instante divididos en dos pmtiles (building, que incluye la sombra "other" / vegetation) + mascara de tejados (interior de edificio -> STATE_OUTSIDE, transparente); manifest schema 2 con urls.{building,vegetation} y url legacy = building | Capa de vegetacion conmutable en el visor sin recolor en cliente (dos sources raster y un toggle de visibilidad es lo robusto). La mascara de tejados convierte el overlay en sombra a nivel de calle: nadie pisa un tejado y el basemap ya dibuja los edificios; se aplica en build_tiles DESPUES de compute_state_raster para no romper la paridad pixel a pixel con is_shaded. OUTSIDE y no SUN para que un tile decodificado distinga tejado de calle soleada. El url legacy degrada con gracia al front viejo entre el rsync y el deploy de Pages                                                                                                                                                                                   |
 | 2026-07-14 | Acumuladores de rasterize en float32/int32 (antes float64/int64), z a float32 por chunk, division del DTM con where= sin temporales comprimidos, del de acumuladores agotados                                                                           | OOM real: el build de labana a 1 m (bbox 2x2 km + buffer de horizonte 6 km = grid 14x14 km, 196M celdas) murio a manos del OOM killer con 9.9 GB RSS en una WSL de 11 GB; cinco acumuladores float64 de tamano n eran ~7.8 GB. float32 no pierde nada real: los COG de salida ya son float32 y su resolucion a cota 2000 m (~0.1 mm) queda tres ordenes por debajo de la exactitud vertical LiDAR (~10 cm). x/y siguen en float64: a easting ~7e5 float32 cuantiza a 6 cm y movia puntos de celda en el borde. Pico estimado tras el cambio ~5 GB. 171 tests verdes sin tocar ninguno                                                                                                                                                    |
 | 2026-07-14 | fill_dtm_gaps: alcance de busqueda en METROS (default 200 m), no en pixeles                                                                                                                                                                             | El limite guardaba anchura fisica de agujero pero estaba denominado en pixeles: el mismo dataset rellenaba a 2 m (100 px = 200 m) y reventaba a 1 m (100 px = 100 m, 47022 celdas NaN). El agujero real localizado (binning de suelo reproducido + mask visual) es una cuna de ~450x150 m SIN NINGUN punto pegada a la costura del easting 688000: el hueco entre los bloques de vuelo PNOA GAL-E 2016 y CYL-NW 2021, cada uno recortado a su frontera autonomica (La Bana esta en el borde CyL/Galicia). Esta a 4.5 km del pueblo, solo afecta al skyline, y el IDW desde 200 m produce ladera lisa sin obstaculos fantasma (el fill no supera las cotas vecinas). Test nuevo: la misma malla rellena a 1 m/px y falla a 100 m/px       |
+| 2026-08-13 | POSTMORTEM: horizon.tif del build v1 de cordoba corrupto (bandas 45-64, az ~247-360, a cero en toda la ciudad); prod afectado. El barrido calculo BIEN: los datos se perdieron en la ruta scratch memmapped -> GTiff temporal -> COG                    | Detectado por el visor (tardes sin sombra). Prueba de que no es bug de computo: blocker_class.tif intacto en esas bandas, y el par (angulo 0, blocker real) es imposible por construccion del barrido. El corte de banda muerta varia por tile (39-47) derivando suavemente con el orden de escritura: fallo de I/O temporal e intermitente durante las 11 h en WSL2, no determinista (irreproducible con GDAL a pequena escala). Efecto: sin sombra con sol al oeste de ~250 deg en /v1/shade, timeline, shaded_until, parking y tiles; la demo "coherente al atardecer" de Fase 5 era en parte el bug. Ningun paso verificaba lo escrito                                                                                               |
+| 2026-08-13 | COGs con INTERLEAVE=BAND + BIGTIFF=IF_SAFER; write_cog relee el COG terminado y exige igualdad banda a banda; el barrido hace flush() (msync) de los cubos memmapped                                                                                    | Band interleave: leemos 2 de 64 bandas por consulta y pixel interleave descomprimia las 64 (32x de mas); ademas hace la escritura banda a banda estrictamente secuencial. IF_SAFER elimina el techo de 4 GB del TIFF clasico como clase de riesgo. El readback es el contrato "lo calculado es lo enviado": un build de horas no puede asumir que el stack de almacenamiento persiste cada pagina (WSL2 = VHD sobre NTFS). flush() convierte perdidas de writeback en OSError ruidoso                                                                                                                                                                                                                                                    |
+| 2026-08-13 | Comando `shade-engine verify <city>` (invariante horizonte-vs-blocker + layout + sanidad por ventanas); build_city lo ejecuta al final de cada build                                                                                                    | Invariante de dominio en vez de checksums: q > 0 exige blocker real (exacto, 0 tolerancia) y q == 0 con blocker solo es legitimo bajo medio quantum (45/255 ~ 0.176 deg; umbral 5% por banda, la corrupcion real daba 30-100%). Sirve para auditar artefactos ya desplegados (rsync incluidos), no solo builds frescos; habria cazado la corrupcion en segundos. Streaming por ventanas de 512 px: ~1 min y memoria acotada a escala ciudad                                                                                                                                                                                                                                                                                              |
 
 Pendientes de decidir:
 
@@ -642,3 +645,36 @@ cordoba`. Tiles: 32 pmtiles (2 por instante x 16), 161 MB, ~15 min de
     recalentadas manda). Diferenciacion vs shademap.app: MRT/SVF a 1 m desde LiDAR
     real, no footprints OSM. Encaje B2G (adaptacion al calor) mas defendible que el
     aparcamiento. Siguiente si se retoma: planificar la Fase 9 (es la barata).
+- 2026-08-13 (postmortem corrupcion + hardening): el usuario detecto en el visor
+  que los instantes de tarde no pintaban sombra. Diagnostico completo en el
+  registro (3 filas de hoy): horizon.tif de cordoba v1 corrupto en las bandas
+  45-64, prod incluido; el barrido era correcto y la perdida fue de I/O. Hecho en
+  esta sesion: labana ELIMINADA a peticion del usuario (yaml + doc + 9.3 GB de
+  datos; sus fixes de codigo se conservan), venv y hook pre-commit regenerados
+  (el repo se movio de ~/shade-engine a ~/proyectos/shade-engine y los shebangs
+  apuntaban a la ruta vieja), write_cog endurecido (INTERLEAVE=BAND,
+  BIGTIFF=IF_SAFER, readback banda a banda), flush de memmaps, comando
+  `shade-engine verify` integrado en build, tests (177 verdes) y cog.md ampliado.
+  OJO: PROD SIGUE SIRVIENDO EL HORIZONTE CORRUPTO hasta el rebuild. Siguiente:
+  montilla como segunda ciudad (ensayo del pipeline endurecido, decidido
+  local + prod) y despues el rebuild nocturno de cordoba.
+- 2026-08-13 (runbook rebuild nocturno de cordoba, lo lanza el usuario):
+  precondiciones: hardening pusheado con CI verde, montilla construida y
+  verificada, >= 30 GB libres en el disco fisico de Windows, sin cargas pesadas
+  en WSL. Pasos:
+  1. `mv data/cities/cordoba/v1 data/cities/cordoba/v1.pre-rebuild` (forense y
+     rollback; se borra al validar).
+  2. `uv run shade-engine build cordoba` (exact, ~11 h; los 90 LAZ ya estan en
+     data/lidar/cordoba, no re-descarga; el build ahora se auto-verifica).
+  3. Por la manana: `uv run shade-engine verify cordoba`; perfil de horizonte en
+     Tendillas/Corredera/Potro con sectores oeste poblados; `predict` del kit y
+     comparar las tardes contra la hoja vieja (deben aparecer sombras nuevas).
+  4. `cp data/cities/cordoba/v1.pre-rebuild/tiles/basemap.pmtiles
+data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
+     (~15 min; el basemap no se regenera).
+  5. Datos a prod (orden obligatorio): rsync de artefactos SIN tiles/ ->
+     reiniciar la api del VPS (el SceneReader cachea bloques en RAM) -> rsync de
+     tiles/ con --delete -> recapturar fixtures de ajustinodev contra la API
+     viva (los valores de tarde cambian todos) y commit en ese repo.
+  6. Sanidad en vivo: /v1/shade de un punto de calle a las 20:00 de junio da
+     sombra de edificio; visor publico con overlay en 17:00 y 20:00 de junio.
