@@ -1,0 +1,13 @@
+[Unit]
+Description=Ejecuta el backup de shade a diario
+
+[Timer]
+# Escalonado a proposito: ductual y geohazard corren sobre las 00:10 y apsis a
+# la 01:20; cuatro pg_dump con subida a R2 a la vez no aportan nada.
+OnCalendar=*-*-* 01:50:00
+# Persistent: si la maquina estaba apagada a la hora, lo lanza al arrancar.
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
