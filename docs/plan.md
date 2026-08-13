@@ -435,6 +435,8 @@ concretas donde plantar.
 | 2026-08-13 | Tiles v2: UN set de sombra por instante (edificios + arboles proyectada + other, un solo color indigo; los indices de clase sobreviven en la paleta PNG) + `canopy.pmtiles` ESTATICO por ciudad (proyeccion vertical de copas, checkbox propio) + preset con 21-jun a paso horario (26 instantes) | La capa verde mezclaba dos semanticas: "bajo copa" (estatico, dominaba el peso: ~7 MB constantes por instante) y "sombra proyectada" (movil). El corte sigue la fisica: lo que no se mueve se sirve una vez. A pie de calle importa "sombra si/no", no quien la proyecta. Manifest sigue en schema 2 con campos aditivos (`urls.shade`, `canopy_url`) y alias legacy (`urls.building` = set de sombra, `urls.vegetation` = canopy estatico, colores legacy remapeados): la consola desplegada de ajustino.dev sigue pintando coherente sin cambios; migrarla al contrato nuevo queda anotado. Instantes extra: coste lineal (~1 min y ~5-10 MB cada uno), el solsticio horario es el demo "mira la sombra moverse" |
 | 2026-08-13 | Tiles v3 (misma sesion que v2, a peticion del usuario): sombra proyectada DIVIDIDA en dos sets conmutables del mismo color (building+other / trees) y preset = ESCALERA DE DECLINACION: 7 fechas canonicas a pasos de ~7.8 deg (21-dic, 07-feb, 01-mar, 21-mar, 10-abr, 04-may, 21-jun) x paso horario en luz segura = 83 instantes; manifest con campo `ladder` (dia del año -> fecha gemela) | El split recupera un toggle con caso de uso real: apagar trees = "la calle sin arbolado" (aporte del arbolado a la sombra, semilla del diagnostico de intervenciones de Fase 11); el color compartido mantiene la lectura unificada de v2. La escalera sustituye a muestrear el calendario: la declinacion es lo unico que cambia entre dias y es simetrica alrededor de los solsticios (9-ago == 4-may), asi que 7 peldaños cubren el año con error < ~4 deg y cualquier fecha resuelve via `ladder.covers` (calculado con Spencer 71, la orbita eliptica desplaza los rangos ~3 dias del calendario naive). Limites horarios verificados con elevacion > 1.4 deg en cordoba y montilla; ciudad mas oriental debera re-verificar. Viewer local: sliders fecha+hora (rejilla queda para manifests legacy), 3 checkboxes y mini sol orbitando el bbox por azimut |
 
+| 2026-08-13 | Refinado del visor tras probar v3: capa estatica `buildings.pmtiles` derivada del landcover LiDAR (huella real de edificios, conmutable como prueba; complementa exactamente los tejados que la sombra recorta, sin Google ni API keys), arranque en fecha/hora actuales via ladder, sol anclado al borde del VIEWPORT (no del bbox: sobrevive al zoom, corrige el bearing) y compare A/B eliminado | Peticion del usuario tras usar el visor. La huella LiDAR es mas fiel que los footprints OSM del basemap y es dato propio ya calculado (landcover == BUILDING). El sol en coordenadas de pantalla evita perderlo al hacer zoom (interseccion del azimut con el rectangulo del viewport, restando el bearing del mapa). Compare A/B: sin caso de uso real con los sliders (mover la hora ES la comparacion); menos codigo y menos UI. El arrastre de sliders exigio DOM persistente: reconstruir un input range en pleno drag mata el gesto |
+
 Pendientes de decidir:
 
 - Subir de 64 a 128 sectores de horizonte (anotado 2026-08-13, sin fecha): el
@@ -733,3 +735,19 @@ data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
   (tiles ~2 h con 83 instantes). La consola de ajustinodev sigue via alias
   legacy (url = building cast, vegetation = canopy); su migracion sigue
   pendiente y ahora incluye sliders si se quiere paridad.
+- 2026-08-13 (refinado del visor tras v3): cuarta tanda del dia a peticion del
+  usuario. Nuevo `buildings.pmtiles` estatico por ciudad (huella de edificios
+  del landcover LiDAR, checkbox de prueba "para ir viendo diferencias"; encaja
+  exacto con los tejados que la sombra recorta), arranque del visor en la
+  fecha/hora actuales resueltas via ladder, sol anclado al borde del VIEWPORT
+  (sobrevive al zoom; en pantalla, restando el bearing) y compare A/B
+  eliminado. Bug real cazado en vivo: la capa se llamaba "buildings" y el
+  basemap de Protomaps ya posee ese id de capa -> MapLibre rechazaba el estilo
+  ENTERO y el mapa quedaba negro; renombrada a "lidar-buildings". Montilla
+  regenerada (9m08s, 168 pmtiles, 137.7 MiB) y en prod. El arrastre de los
+  sliders se arreglo antes con DOM persistente (reconstruir un input range en
+  pleno drag mata el gesto). Port a ajustinodev VALORADO y pendiente de
+  decision: ShadeConsole.astro (845 lineas, chips propios, colores
+  hardcodeados, snapshot de manifest en public/data/) sigue funcionando via
+  alias legacy; portar sliders+ladder+toggles+sol es una sesion corta y
+  conviene DESPUES del rebuild de cordoba (asi su manifest vivo ya es v3).
