@@ -56,6 +56,47 @@ Dos detalles no obvios:
   fuera del bloque). `scene_for` devuelve el centro del pixel como punto de
   consulta: con muestreo espacial nearest es identico y elimina el borde.
 
+## Interleave: pixel vs banda
+
+En un TIFF multibanda tileado hay dos formas de empaquetar los tiles:
+
+- **pixel** (default de GDAL): cada tile comprimido contiene TODAS las
+  bandas de esa ventana. Leer 1 banda descomprime las 64.
+- **band**: cada tile contiene una sola banda. Leer k bandas descomprime k.
+
+Nuestro patron de acceso es leer 2 de las 64 bandas del horizonte (los dos
+sectores que flanquean el azimut del sol): con interleave pixel pagabamos
+32x de descompresion de mas en cada consulta fria. Desde el postmortem de
+Cordoba los artefactos se escriben con `INTERLEAVE=BAND` (opcion del driver
+COG desde GDAL 3.11); el tag `IMAGE_STRUCTURE:INTERLEAVE` lo confirma y los
+tests lo asertan.
+
+## BigTIFF y verificar lo que escribes
+
+El TIFF clasico usa offsets de 32 bits: **4 GB de techo duro**. GDAL decide
+al crear el fichero si le bastan (BIGTIFF=IF_NEEDED estima con el tamano
+proyectado), pero una escritura que crece por otros motivos puede acercarse
+al limite despues de esa decision. Escribimos con `BIGTIFF=IF_SAFER`: ante
+la duda, BigTIFF (offsets de 64 bits).
+
+La leccion cara del postmortem (2026-08-13): el build de 11 h de Cordoba
+perdio en silencio el ultimo tercio del cubo de horizonte en algun punto de
+la ruta scratch memmapped -> GTiff temporal -> COG, y ningun paso lo
+detecto: los COGs resultantes eran ficheros validos con bandas a cero. En
+un build de horas sobre WSL2 (o cualquier stack de almacenamiento con
+capas), no se puede asumir que cada pagina escrita persiste. Regla desde
+entonces:
+
+- `write_cog` relee el COG terminado y exige igualdad banda a banda con el
+  array fuente.
+- el barrido hace `flush()` (msync) de los cubos memmapped: un fallo de
+  writeback lanza OSError en vez de reaparecer como ceros.
+- `shade-engine verify <city>` audita cualquier directorio de artefactos
+  con un invariante de dominio: angulo cuantizado > 0 exige clase de
+  bloqueador real, y angulo 0 con bloqueador solo es legitimo en la banda
+  muerta de cuantizacion (< 45/255 ~ 0.176 deg). La corrupcion real daba
+  30-100% de violacion por banda; el umbral esta en 5%.
+
 ## Trampa tipica
 
 "Es un .tif y se abre" no significa que sea un COG: un GeoTIFF en strips

@@ -20,6 +20,10 @@ def test_multiband_uint8_roundtrip(tmp_path: Path) -> None:
 
     with rasterio.open(path) as src:
         assert src.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+        # Band interleave: reading k bands of the horizon cube must only
+        # decompress k, not all 64 (pixel interleave packs every band into
+        # each internal tile).
+        assert src.tags(ns="IMAGE_STRUCTURE")["INTERLEAVE"] == "BAND"
         assert src.profile["tiled"] is True
         assert src.profile["compress"] == "deflate"
         assert src.count == 3
@@ -37,6 +41,7 @@ def test_single_band_float32_roundtrip(tmp_path: Path) -> None:
 
     with rasterio.open(path) as src:
         assert src.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+        assert src.tags(ns="IMAGE_STRUCTURE")["INTERLEAVE"] == "BAND"
         assert src.count == 1
         assert src.dtypes == ("float32",)
         assert_array_equal(src.read(1), data)

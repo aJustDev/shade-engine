@@ -227,6 +227,13 @@ def compute_horizon_tiled(
             out = (slice(None), slice(t0 - row0, t1 - row0), slice(u0 - col0, u1 - col0))
             angles_q[out] = quantize_angles(tile_angles)
             blocker[out] = tile_blocker
+    # Push the scratch cubes through msync before anything reads them back:
+    # flush() raises OSError on write-back failure, whereas a silently
+    # dropped dirty page would resurface as zeroed sectors in the artifacts.
+    if isinstance(angles_q, np.memmap):
+        angles_q.flush()
+    if isinstance(blocker, np.memmap):
+        blocker.flush()
     return HorizonResult(angles_q=angles_q, blocker_class=blocker)
 
 
