@@ -57,6 +57,27 @@ services:
     logging: *logging
     networks: [shade-net]
 
+  # One-shot heavy jobs (build/verify/tiles) against prod data. Never started
+  # by default (the profile gates it); invoke explicitly:
+  #   docker compose run --rm pipeline shade-engine build cordoba ...
+  # Unlike the api service it mounts the whole data/ tree read-write (LAZ
+  # cache + staging output roots) and gets a real memory budget: the cordoba
+  # build peaks around 5 GiB.
+  pipeline:
+    image: shade:prod
+    profiles: [tools]
+    # /opt/shade/data belongs to the host user (uid 1001), not to the
+    # image's `app` (1000); HOME because uid 1001 has no passwd entry.
+    user: "1001:1001"
+    environment:
+      HOME: /tmp
+    volumes:
+      - ./data:/app/data
+    mem_limit: 6g
+    cpus: 3
+    logging: *logging
+    networks: [shade-net]
+
   api:
     image: shade:prod
     build:

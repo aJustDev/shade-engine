@@ -436,6 +436,7 @@ concretas donde plantar.
 | 2026-08-13 | Tiles v3 (misma sesion que v2, a peticion del usuario): sombra proyectada DIVIDIDA en dos sets conmutables del mismo color (building+other / trees) y preset = ESCALERA DE DECLINACION: 7 fechas canonicas a pasos de ~7.8 deg (21-dic, 07-feb, 01-mar, 21-mar, 10-abr, 04-may, 21-jun) x paso horario en luz segura = 83 instantes; manifest con campo `ladder` (dia del año -> fecha gemela) | El split recupera un toggle con caso de uso real: apagar trees = "la calle sin arbolado" (aporte del arbolado a la sombra, semilla del diagnostico de intervenciones de Fase 11); el color compartido mantiene la lectura unificada de v2. La escalera sustituye a muestrear el calendario: la declinacion es lo unico que cambia entre dias y es simetrica alrededor de los solsticios (9-ago == 4-may), asi que 7 peldaños cubren el año con error < ~4 deg y cualquier fecha resuelve via `ladder.covers` (calculado con Spencer 71, la orbita eliptica desplaza los rangos ~3 dias del calendario naive). Limites horarios verificados con elevacion > 1.4 deg en cordoba y montilla; ciudad mas oriental debera re-verificar. Viewer local: sliders fecha+hora (rejilla queda para manifests legacy), 3 checkboxes y mini sol orbitando el bbox por azimut |
 
 | 2026-08-13 | Refinado del visor tras probar v3: capa estatica `buildings.pmtiles` derivada del landcover LiDAR (huella real de edificios, conmutable como prueba; complementa exactamente los tejados que la sombra recorta, sin Google ni API keys), arranque en fecha/hora actuales via ladder, sol anclado al borde del VIEWPORT (no del bbox: sobrevive al zoom, corrige el bearing) y compare A/B eliminado | Peticion del usuario tras usar el visor. La huella LiDAR es mas fiel que los footprints OSM del basemap y es dato propio ya calculado (landcover == BUILDING). El sol en coordenadas de pantalla evita perderlo al hacer zoom (interseccion del azimut con el rectangulo del viewport, restando el bearing del mapa). Compare A/B: sin caso de uso real con los sliders (mover la hora ES la comparacion); menos codigo y menos UI. El arrastre de sliders exigio DOM persistente: reconstruir un input range en pleno drag mata el gesto |
+| 2026-08-13 | Rebuild lanzable tambien EN el VPS cartagena: servicio compose `pipeline` (imagen shade:prod, gated por profile `tools`, mount ./data rw, user 1001:1001, 6g/3cpu) que construye en staging (`--output-root data/cities-rebuild`) con swap atomico de v1 al final; la opcion local sigue viva y se elige por-run | Cero codigo Python: la imagen ya trae el CLI y este ya parametriza rutas (--output-root, --lidar-dir). El servicio api no sirve para el build (mount :ro, mem_limit 1g, uid 1000 vs 1001 dueno de /opt/shade/data). Staging en vez de in-place: build escribe en el dir final sin staging y dejaria el metadata.json viejo visible horas bajo el SceneReader abierto; con staging prod sigue sirviendo durante las 12-18 h y el corte es ~1 min. VPS medido: 7.7 GiB RAM (4.5 disponibles), swap de 4 GiB ya existente, 4 vCPU EPYC-Milan, 199 GB disco; el pico ~5 GiB entra, y parar de noche observabilidad + apps ajenas (~2 GiB medidos) lo mete entero en RAM (asumible segun el usuario). Bonus: elimina el stack WSL (VHD sobre NTFS) que causo la corrupcion original y los artefactos nacen donde se sirven |
 
 Pendientes de decidir:
 
@@ -672,10 +673,12 @@ cordoba`. Tiles: 32 pmtiles (2 por instante x 16), 161 MB, ~15 min de
   OJO: PROD SIGUE SIRVIENDO EL HORIZONTE CORRUPTO hasta el rebuild. Siguiente:
   montilla como segunda ciudad (ensayo del pipeline endurecido, decidido
   local + prod) y despues el rebuild nocturno de cordoba.
-- 2026-08-13 (runbook rebuild nocturno de cordoba, lo lanza el usuario):
-  precondiciones: hardening pusheado con CI verde, montilla construida y
-  verificada, >= 30 GB libres en el disco fisico de Windows, sin cargas pesadas
-  en WSL. Pasos:
+- 2026-08-13 (runbook rebuild nocturno de cordoba, lo lanza el usuario; desde
+  la tarde hay DOS opciones y se elige por-run):
+
+  OPCION A - build local (WSL) + rsync. Precondiciones: hardening pusheado con
+  CI verde, montilla construida y verificada, >= 30 GB libres en el disco
+  fisico de Windows, sin cargas pesadas en WSL. Pasos:
   1. `mv data/cities/cordoba/v1 data/cities/cordoba/v1.pre-rebuild` (forense y
      rollback; se borra al validar).
   2. `uv run shade-engine build cordoba` (exact, ~11 h; los 90 LAZ ya estan en
@@ -693,6 +696,41 @@ data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
      viva (los valores de tarde cambian todos) y commit en ese repo.
   6. Sanidad en vivo: /v1/shade de un punto de calle a las 20:00 de junio da
      sombra de edificio; visor publico con overlay en 17:00 y 20:00 de junio.
+
+  OPCION B - build EN el VPS cartagena (servicio compose `pipeline`; construye
+  en staging asi que prod SIGUE SIRVIENDO durante el build y el corte es la
+  ventana de swap, ~1 min). Precondiciones: compose con el servicio pipeline
+  desplegado (deploy normal), cache de LAZ subido. Pasos:
+  1. Una vez, subir el cache de LAZ (~5.7 GB, queda como cache permanente):
+     `rsync -a --info=progress2 data/lidar/cordoba/ cartagena:/opt/shade/data/lidar/cordoba/`
+  2. Smoke del servicio (1 min; valida imagen, mounts y uid antes de las 12-18 h):
+     `ssh cartagena "cd /opt/shade && docker compose run --rm pipeline shade-engine verify montilla"`
+  3. Noche, margen de RAM opcional: `docker stop` del stack de observabilidad
+     y las apps ajenas (~2 GiB medidos; restart unless-stopped respeta el stop)
+     y `docker start` al dia siguiente. Sin parar nada tambien entra: 4.5 GiB
+     disponibles + 4 GiB de swap frente a un pico de ~5 GiB en el binning
+     (primeras ~2 h). shade api/db NO se paran hasta el swap.
+  4. En tmux del VPS (`tmux new -s rebuild`):
+     `cd /opt/shade && docker compose run --rm pipeline shade-engine build cordoba --lidar-dir data/lidar/cordoba --output-root data/cities-rebuild 2>&1 | tee data/build-cordoba-$(date +%F).log`
+     (--lidar-dir fuerza LocalDirectory: cero red, cero CNIG; el build se
+     auto-verifica; estimar 12-18 h, el barrido es ~single-core y las 11h21
+     locales eran en otro CPU).
+  5. Por la manana: `docker compose run --rm pipeline shade-engine verify
+cordoba --output-root data/cities-rebuild`; despues el basemap (el v1
+     vivo sigue intacto en su sitio, no hace falta v1.pre-rebuild todavia):
+     `mkdir -p data/cities-rebuild/cordoba/v1/tiles && cp data/cities/cordoba/v1/tiles/basemap.pmtiles data/cities-rebuild/cordoba/v1/tiles/`
+     y `docker compose run --rm pipeline shade-engine tiles cordoba
+--output-root data/cities-rebuild` (~2-3 h).
+  6. Swap (~1 min, de noche si se quiere): `docker compose stop api` ->
+     `mv data/cities/cordoba/v1 data/cities/cordoba/v1.pre-rebuild && mv data/cities-rebuild/cordoba/v1 data/cities/cordoba/v1`
+     -> `docker compose up -d api` (migrate re-corre, es idempotente). Caddy
+     no cambia (sirve ficheros de data/cities tal cual) y no hay cache stale:
+     los nombres v3 son URLs nuevas y el unico reutilizado, basemap.pmtiles,
+     es identico byte a byte.
+  7. Sanidad en vivo igual que A.6 + recapturar fixtures de ajustinodev. Tras
+     unos dias verdes: `rm -rf data/cities/cordoba/v1.pre-rebuild data/cities-rebuild`.
+     Rollback mientras tanto: parar api, deshacer los dos mv, arrancar api.
+
 - 2026-08-13 (montilla en produccion): ensayo del pipeline endurecido COMPLETO
   en la misma sesion del postmortem. Sondeo de catalogo 25/25 tiles LIDA3 (AND
   2024), build exact 1h 35m (537 MiB; horizon.tif 442 MiB ya en interleave
@@ -751,3 +789,20 @@ data/cities/cordoba/v1/tiles/` y `uv run shade-engine tiles cordoba`
   hardcodeados, snapshot de manifest en public/data/) sigue funcionando via
   alias legacy; portar sliders+ladder+toggles+sol es una sesion corta y
   conviene DESPUES del rebuild de cordoba (asi su manifest vivo ya es v3).
+- 2026-08-13 (rebuild lanzable desde cartagena): quinta tanda del dia. El
+  rebuild de cordoba se puede lanzar ahora tambien EN el VPS, eligiendo
+  por-run (registro: fila "Rebuild lanzable tambien EN el VPS"). Cambio unico
+  de codigo: servicio `pipeline` en compose.yml; cero Python (el CLI ya
+  parametrizaba --output-root y --lidar-dir). Hechos medidos en vivo que
+  fijaron el diseno: uid mismatch (imagen `app`=1000 vs ductual=1001 dueno de
+  /opt/shade/data -> user: 1001:1001 y HOME=/tmp porque ese uid no tiene
+  entrada passwd en la imagen), swap de 4 GiB YA existia en el VPS (la
+  preocupacion de RAM de la manana era menor de lo temido), co-tenants ~2 GiB
+  parables de noche (docker stats), tmux instalado, compose v5.3.1 (el
+  targeting explicito de un servicio con profile lo activa solo). compose.yml
+  validado contra el docker del VPS por stdin (`docker compose -f - config`:
+  PARSE_OK y el servicio resuelve bind /opt/shade/data rw + 6g + 3cpu).
+  Runbook OPCION B anadido a la nota del runbook de esta misma fecha; la
+  OPCION A local queda intacta. Pendiente igual que antes: lanzar el rebuild
+  (ahora con smoke previo `verify montilla` via el servicio pipeline) y
+  despues el port de ajustinodev.
