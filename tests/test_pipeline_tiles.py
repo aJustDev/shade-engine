@@ -35,10 +35,13 @@ from shade_pipeline.shade_raster import (
 )
 from shade_pipeline.tiles import (
     _PALETTE_STATES,
+    CANOPY_COLORS,
+    CANOPY_TILES_FILENAME,
     MANIFEST_FILENAME,
     SHADE_COLORS,
     bounds_wgs84,
     build_tiles,
+    season_preset_instants,
     write_instant_pmtiles,
 )
 
@@ -239,43 +242,75 @@ def test_build_tiles_manifest(built_city: Path, tmp_path: Path) -> None:
     assert summer["at"] == "2026-06-21T14:20"
     assert summer["utc_offset"] == "+02:00"  # CEST
     assert winter["utc_offset"] == "+01:00"  # CET: the preset spans DST changes
+
+    canopy_url = manifest["canopy_url"]
+    assert str(canopy_url).split("?")[0] == CANOPY_TILES_FILENAME
+    assert (tiles_dir / CANOPY_TILES_FILENAME).exists()
+    assert manifest["colors"]["shade"] == manifest["colors"]["shade_building"]
+    # Legacy vegetation color = the static canopy's color (see build_tiles).
+    assert manifest["colors"]["shade_vegetation"] == manifest["colors"]["canopy"]
     for entry in instants:
         urls = entry["urls"]
-        assert set(urls) == {"building", "vegetation"}
-        # Legacy field kept for schema-1 clients during the deploy swap.
-        assert entry["url"] == urls["building"]
-        for url in urls.values():
-            assert (tiles_dir / str(url).split("?")[0]).exists()
+        assert set(urls) == {"shade", "building", "vegetation"}
+        # Legacy aliases: url/building = the shade set; vegetation = canopy.
+        assert entry["url"] == urls["shade"]
+        assert urls["building"] == urls["shade"]
+        assert urls["vegetation"] == canopy_url
+        assert (tiles_dir / str(urls["shade"]).split("?")[0]).exists()
         assert entry["sun"]["elevation_deg"] > 0
 
 
-def test_roof_mask_and_split_tilesets(built_city: Path, tmp_path: Path) -> None:
-    """Roofs are transparent nodata in both sets; each set keeps only its states."""
+def test_roof_mask_and_canopy_split(built_city: Path, tmp_path: Path) -> None:
+    """Roofs are OUTSIDE in the shade set; canopy pixels live in the static set only."""
     target = tmp_path / "city"
     shutil.copytree(built_city, target)
-    tiles_dir = build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=16)
+    # Plant a 3x3 canopy patch far from the cube (sunlit at the golden
+    # instants), directly in canopy.tif: the split must follow the file.
+    with rasterio.open(target / artifacts.CANOPY_FILENAME) as src:
+        canopy = src.read()[0]
+        canopy_transform = src.transform
+        canopy_crs = str(src.crs)
+    canopy[5:8, 5:8] = 1
+    write_cog(target / artifacts.CANOPY_FILENAME, canopy, canopy_transform, canopy_crs)
+
+    tiles_dir = build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=18)
     manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
     urls = manifest["instants"][0]["urls"]
     metadata = artifacts.load_metadata(target)
+    min_x, _, _, max_y = metadata.bbox
     cube_center = (
         synthetic.UTM_ORIGIN[0] + synthetic.CUBE_CENTER_X,
         synthetic.UTM_ORIGIN[1] + (synthetic.CUBE_Y[0] + synthetic.CUBE_Y[1]) / 2.0,
     )
+    crown_center = (min_x + 6.5, max_y - 6.5)  # center of the planted patch
 
-    with open(tiles_dir / str(urls["building"]).split("?")[0], "rb") as handle:
+    with open(tiles_dir / str(urls["shade"]).split("?")[0], "rb") as handle:
         reader = Reader(MmapSource(handle))
-        # NEAR is street in the cube's winter shadow: building color survives.
+        # NEAR is street in the cube's winter shadow: shade color survives.
         assert _rgba_at(reader, metadata.crs, *NEAR, 16) == SHADE_COLORS[STATE_SHADE_BUILDING]
         # The cube interior (landcover BUILDING) is masked to OUTSIDE, not
         # SUN: both are transparent, but the palette index proves the roof
         # mask ran (unmasked it would be building shade, seen from inside).
         assert _state_at(reader, metadata.crs, *cube_center, 16) == STATE_OUTSIDE
+        # Under-canopy pixels are excluded from the per-instant set: SUN
+        # (transparent), not vegetation shade.
+        assert _state_at(reader, metadata.crs, *crown_center, 18) == STATE_SUN
 
-    with open(tiles_dir / str(urls["vegetation"]).split("?")[0], "rb") as handle:
+    with open(tiles_dir / CANOPY_TILES_FILENAME, "rb") as handle:
         reader = Reader(MmapSource(handle))
-        # Building shade is excluded from the vegetation set. The cube city
-        # has no vegetation at all, so only min_zoom tiles exist (all blank).
-        assert _rgba_at(reader, metadata.crs, *NEAR, 14)[3] == 0
+        # The static set paints exactly the crowns, in the canopy green.
+        expected = CANOPY_COLORS[STATE_SHADE_VEGETATION]
+        assert _rgba_at(reader, metadata.crs, *crown_center, 18) == expected
+        # Cast building shade never leaks into the canopy set.
+        assert _rgba_at(reader, metadata.crs, *NEAR, 16)[3] == 0
+
+
+def test_season_preset_hourly_summer() -> None:
+    """26 instants: hourly summer solstice plus 4 per remaining season."""
+    instants = season_preset_instants(ZoneInfo("Europe/Madrid"))
+    assert len(instants) == 26
+    june = [when for when in instants if when.month == 6]
+    assert [when.hour for when in june] == list(range(8, 22))
 
 
 def test_build_tiles_rejects_night_instant(built_city: Path, tmp_path: Path) -> None:
@@ -310,14 +345,14 @@ def test_cli_tiles_smoke(built_city: Path, tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "shade-20261221T1320-building.pmtiles" in result.output
-    assert "shade-20261221T1320-vegetation.pmtiles" in result.output
+    assert "shade-20261221T1320.pmtiles" in result.output
+    assert CANOPY_TILES_FILENAME in result.output
     assert "state raster in" in result.output
     assert "tiles done in" in result.output
     assert "tiles written to" in result.output
     tiles_dir = output_root / "cube" / "v1" / "tiles"
-    assert (tiles_dir / "shade-20261221T1320-building.pmtiles").exists()
-    assert (tiles_dir / "shade-20261221T1320-vegetation.pmtiles").exists()
+    assert (tiles_dir / "shade-20261221T1320.pmtiles").exists()
+    assert (tiles_dir / CANOPY_TILES_FILENAME).exists()
     assert (tiles_dir / MANIFEST_FILENAME).exists()
 
     night = CliRunner().invoke(

@@ -77,16 +77,23 @@ uv run shade-engine tiles <id>              # preset de estaciones 2026
 uv run shade-engine tiles <id> --at 2026-08-01T19:30   # o instantes sueltos
 ```
 
-Escribe `data/cities/<id>/v1/tiles/`: DOS pmtiles por instante
-(`shade-<instante>-building.pmtiles`, que incluye tambien la sombra "other",
-y `shade-<instante>-vegetation.pmtiles`, conmutable en la web) y el manifest
-`index.json` (schema 2: `urls.{building,vegetation}` por instante mas un
-`url` legacy = building para clientes antiguos durante un despliegue).
-Los interiores de edificio van transparentes en ambos sets (mascara de
-tejados, solo presentacion: el raster de estados y la API no cambian).
-Instantes nocturnos se rechazan. Al regenerar, borrar antes los
-`shade-*.pmtiles` viejos del directorio local para que el rsync con
-`--delete` deje el servidor limpio. Ver `docs/learning/map-tiles-pmtiles.md`.
+Escribe `data/cities/<id>/v1/tiles/`: UN pmtiles por instante
+(`shade-<instante>.pmtiles`: toda la sombra proyectada -- edificios, arboles
+y "other" -- en un solo color), UN `canopy.pmtiles` estatico por ciudad (la
+proyeccion vertical de las copas desde `canopy.tif`, identica a cualquier
+hora, conmutable en la web) y el manifest `index.json` (schema 2 con campos
+aditivos: `urls.shade` por instante y `canopy_url` global son el contrato
+nuevo; `url`/`urls.building` = alias del set de sombra y `urls.vegetation`
+apunta al canopy estatico para que un cliente schema-2 desplegado siga
+pintando algo coherente sin cambios). Los interiores de edificio van
+transparentes en el set de sombra (mascara de tejados, solo presentacion:
+el raster de estados y la API no cambian); las copas se pintan tambien
+sobre tejado (un arbol que cuelga sobre un edificio sigue siendo un arbol).
+El preset 2026 trae el solsticio de verano a paso horario (08:00-21:00) y 4
+horas por estacion restante: 26 instantes. Instantes nocturnos se rechazan.
+Al regenerar, borrar antes los `shade-*.pmtiles` viejos del directorio
+local para que el rsync con `--delete` deje el servidor limpio. Ver
+`docs/learning/map-tiles-pmtiles.md`.
 
 El basemap NO lo genera el CLI: es un extract de OSM via Protomaps, una
 operacion manual unica por ciudad (CLI go de
