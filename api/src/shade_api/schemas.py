@@ -155,6 +155,13 @@ class RouteLegOut(BaseModel):
     sun_fraction: float = Field(
         description="Length-weighted fraction of the route in the sun; 0 at night"
     )
+    veg_shade_length_m: float = Field(
+        description=(
+            "Meters walked under tree canopy; the rest of the shaded meters "
+            "(length - sun_length_m - veg_shade_length_m) is cast by buildings "
+            "or terrain"
+        )
+    )
 
 
 class ShadedRouteOut(BaseModel):
@@ -166,6 +173,12 @@ class ShadedRouteOut(BaseModel):
     alpha: float = Field(
         description=(
             "Detour appetite used: an edge fully in the sun costs (1 + alpha) times its length"
+        )
+    )
+    beta: float = Field(
+        description=(
+            "Tree preference used: shade cast by buildings or terrain costs "
+            "(1 + beta) times its length, tree shade costs its bare length"
         )
     )
     sun: SunOut

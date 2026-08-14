@@ -39,8 +39,11 @@ from pydantic import BaseModel
 GRAPH_DIRNAME: Final = "graph"
 GRAPH_FILENAME: Final = "graph.npz"
 FRACTIONS_FILENAME: Final = "fractions.npz"
+FRACTIONS_SUN_KEY: Final = "sun_fraction"
+FRACTIONS_VEG_KEY: Final = "veg_shade_fraction"
 GRAPH_META_FILENAME: Final = "graph.json"
-ROUTE_GRAPH_SCHEMA_VERSION: Final = 1
+ROUTE_GRAPH_SCHEMA_VERSION: Final = 2
+"""2: fractions.npz carries the vegetation-shade matrix beside the sun one."""
 OSM_ATTRIBUTION: Final = "(c) OpenStreetMap contributors (ODbL)"
 
 
@@ -94,6 +97,7 @@ class RouteGraphArtifact:
     geom_y: npt.NDArray[np.float64]
     geom_offsets: npt.NDArray[np.int64]
     fractions: npt.NDArray[np.uint8]
+    veg_fractions: npt.NDArray[np.uint8]
     meta: RouteGraphMeta
 
 
@@ -118,6 +122,7 @@ def load_route_graph(artifact_dir: str | Path) -> RouteGraphArtifact:
             f"unsupported graph schema_version {meta.schema_version} "
             f"(this build reads {ROUTE_GRAPH_SCHEMA_VERSION})"
         )
+    sun, vegetation = _load_fractions(directory)
     with np.load(directory / GRAPH_FILENAME) as data:
         artifact = RouteGraphArtifact(
             node_x=data["node_x"],
@@ -128,17 +133,25 @@ def load_route_graph(artifact_dir: str | Path) -> RouteGraphArtifact:
             geom_x=data["geom_x"],
             geom_y=data["geom_y"],
             geom_offsets=data["geom_offsets"],
-            fractions=_load_fractions(directory),
+            fractions=sun,
+            veg_fractions=vegetation,
             meta=meta,
         )
     _check_coherence(artifact)
     return artifact
 
 
-def _load_fractions(directory: Path) -> npt.NDArray[np.uint8]:
+def _load_fractions(directory: Path) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8]]:
+    """The two per-edge matrices: fraction in the sun, fraction under canopy."""
     with np.load(directory / FRACTIONS_FILENAME) as data:
-        fractions: npt.NDArray[np.uint8] = data["sun_fraction"]
-    return fractions
+        sun: npt.NDArray[np.uint8] = data["sun_fraction"]
+        if FRACTIONS_VEG_KEY not in data:
+            raise ValueError(
+                f"{directory / FRACTIONS_FILENAME} has no {FRACTIONS_VEG_KEY} matrix; "
+                "rebuild with `shade-engine graph <city>`"
+            )
+        vegetation: npt.NDArray[np.uint8] = data[FRACTIONS_VEG_KEY]
+    return sun, vegetation
 
 
 def _check_coherence(artifact: RouteGraphArtifact) -> None:
@@ -154,6 +167,7 @@ def _check_coherence(artifact: RouteGraphArtifact) -> None:
         "geom_y": np.float64,
         "geom_offsets": np.int64,
         "fractions": np.uint8,
+        "veg_fractions": np.uint8,
     }
     for name, dtype in expected_dtypes.items():
         actual = getattr(artifact, name).dtype
@@ -196,3 +210,13 @@ def _check_coherence(artifact: RouteGraphArtifact) -> None:
         raise ValueError(
             f"fractions shape {artifact.fractions.shape}, expected ({edges}, {len(columns)})"
         )
+    if artifact.veg_fractions.shape != artifact.fractions.shape:
+        raise ValueError(
+            f"veg fractions shape {artifact.veg_fractions.shape}, "
+            f"expected {artifact.fractions.shape}"
+        )
+    # Sun and canopy are disjoint states of the same samples, so the two
+    # fractions cannot sum past 1. Each uint8 rounds by up to half a step,
+    # hence the 256 (not 255) ceiling on the quantized sum.
+    if int((artifact.fractions.astype(np.int32) + artifact.veg_fractions).max()) > 256:
+        raise ValueError("graph artifact: sun and vegetation fractions sum above 1")

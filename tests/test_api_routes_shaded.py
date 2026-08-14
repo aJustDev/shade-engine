@@ -150,6 +150,29 @@ def test_route_same_edge_partial_leg(routes_client: TestClient) -> None:
     assert body["shaded"]["geometry"]["coordinates"] == body["shortest"]["geometry"]["coordinates"]
 
 
+def test_beta_above_alpha_is_400(routes_client: TestClient) -> None:
+    """Sun must stay at least as unwelcome as building shade."""
+    response = _route(routes_client, alpha=1.0, beta=2.0)
+    assert response.status_code == 400
+    assert "must not exceed alpha" in response.json()["detail"]
+
+
+def test_beta_out_of_bounds_is_422(routes_client: TestClient) -> None:
+    assert _route(routes_client, beta=-1.0).status_code == 422
+    assert _route(routes_client, alpha=10.0, beta=11.0).status_code == 422
+
+
+def test_response_carries_beta_and_veg_breakdown(routes_client: TestClient) -> None:
+    """The cube has no canopy, so the breakdown is all sun and built shade."""
+    response = _route(routes_client, alpha=1.0, beta=0.5)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["beta"] == 0.5
+    for leg in (body["shaded"], body["shortest"]):
+        assert leg["veg_shade_length_m"] == 0.0
+        assert leg["sun_length_m"] + leg["veg_shade_length_m"] <= leg["length_m"] + 1e-6
+
+
 def test_snap_beyond_threshold_is_400(
     routes_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

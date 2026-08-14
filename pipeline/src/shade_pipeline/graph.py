@@ -56,7 +56,12 @@ from shade_core.routegraph import (
 from shade_core.solar import sun_position
 from shade_pipeline.grid import transform_from_bbox
 from shade_pipeline.progress import format_duration
-from shade_pipeline.shade_raster import STATE_OUTSIDE, STATE_SUN, compute_state_raster
+from shade_pipeline.shade_raster import (
+    STATE_OUTSIDE,
+    STATE_SHADE_VEGETATION,
+    STATE_SUN,
+    compute_state_raster,
+)
 from shade_pipeline.tiles import (
     LADDER_PRESET_2026,
     bounds_wgs84,
@@ -224,30 +229,39 @@ def sample_edges(
     return np.concatenate(xs_out), np.concatenate(ys_out), np.concatenate(ids_out)
 
 
-def edge_sun_fractions(
+def edge_state_fractions(
     sample_x: npt.NDArray[np.float64],
     sample_y: npt.NDArray[np.float64],
     sample_edge: npt.NDArray[np.int64],
     n_edges: int,
     state: npt.NDArray[np.uint8],
     transform: Affine,
-) -> npt.NDArray[np.float64]:
-    """Per-edge fraction of samples standing in the sun under one state raster.
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Per-edge fractions under one state raster: (in the sun, under canopy).
 
-    Out-of-grid samples and ``STATE_OUTSIDE`` pixels count as sun: claiming
-    shade where there is no data would fabricate exactly what a shade
-    seeker is looking for.
+    Two numbers per edge because the three shade states are not equivalent
+    for a walker: a plane tree cools far better than a wall does (see
+    docs/learning/vegetation-cooling.md), so vegetation shade is kept apart
+    from building and terrain shade, which stay implicit as
+    ``1 - sun - vegetation``.
+
+    Out-of-grid samples and ``STATE_OUTSIDE`` pixels count as sun (and never
+    as canopy): claiming shade where there is no data would fabricate
+    exactly what a shade seeker is looking for.
     """
     rows, cols = rasterio.transform.rowcol(transform, sample_x, sample_y)
     rows, cols = np.asarray(rows), np.asarray(cols)
     height, width = state.shape
     inside = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width)
     sun = np.ones(len(sample_x), dtype=np.float64)
+    vegetation = np.zeros(len(sample_x), dtype=np.float64)
     values = state[rows[inside], cols[inside]]
     sun[inside] = ((values == STATE_SUN) | (values == STATE_OUTSIDE)).astype(np.float64)
+    vegetation[inside] = (values == STATE_SHADE_VEGETATION).astype(np.float64)
     counts = np.bincount(sample_edge, minlength=n_edges)
     sunny = np.bincount(sample_edge, weights=sun, minlength=n_edges)
-    return sunny / counts
+    shaded_by_trees = np.bincount(sample_edge, weights=vegetation, minlength=n_edges)
+    return sunny / counts, shaded_by_trees / counts
 
 
 def graph_ladder() -> list[GraphRung]:
@@ -272,6 +286,7 @@ def write_route_graph(
     artifact_dir: Path,
     arrays: GraphArrays,
     fractions: npt.NDArray[np.uint8],
+    veg_fractions: npt.NDArray[np.uint8],
     meta: RouteGraphMeta,
 ) -> Path:
     """Write the three graph files, then read them back and compare.
@@ -293,7 +308,13 @@ def write_route_graph(
         geom_y=arrays.geom_y,
         geom_offsets=arrays.geom_offsets,
     )
-    np.savez(directory / FRACTIONS_FILENAME, sun_fraction=fractions)
+    # Key names must match the loader's constants; the readback below is
+    # what catches any drift.
+    np.savez(
+        directory / FRACTIONS_FILENAME,
+        sun_fraction=fractions,
+        veg_shade_fraction=veg_fractions,
+    )
     (directory / GRAPH_META_FILENAME).write_text(
         meta.model_dump_json(indent=2) + "\n", encoding="utf-8"
     )
@@ -314,6 +335,8 @@ def write_route_graph(
             raise ValueError(f"{name}: readback mismatch after graph write")
     if not np.array_equal(stored.fractions, fractions):
         raise ValueError("fractions: readback mismatch after graph write")
+    if not np.array_equal(stored.veg_fractions, veg_fractions):
+        raise ValueError("veg fractions: readback mismatch after graph write")
     if stored.meta != meta:
         raise ValueError("graph.json: readback mismatch after graph write")
     return directory
@@ -351,11 +374,15 @@ def build_graph(
     center_lon = (bounds[0] + bounds[2]) / 2.0
     center_lat = (bounds[1] + bounds[3]) / 2.0
     fractions = np.empty((n_edges, len(instants)), dtype=np.uint8)
+    veg_fractions = np.empty((n_edges, len(instants)), dtype=np.uint8)
     for index, when in enumerate(instants):
         sun = sun_position(center_lat, center_lon, when)
         state = compute_state_raster(artifact_dir, sun)
-        fraction = edge_sun_fractions(sample_x, sample_y, sample_edge, n_edges, state, transform)
-        fractions[:, index] = np.rint(fraction * 255.0).astype(np.uint8)
+        sunny, vegetation = edge_state_fractions(
+            sample_x, sample_y, sample_edge, n_edges, state, transform
+        )
+        fractions[:, index] = np.rint(sunny * 255.0).astype(np.uint8)
+        veg_fractions[:, index] = np.rint(vegetation * 255.0).astype(np.uint8)
         echo(f"sun fractions [{index + 1}/{len(instants)}] {when:%Y-%m-%d %H:%M}")
 
     meta = RouteGraphMeta(
@@ -371,6 +398,6 @@ def build_graph(
         ladder=graph_ladder(),
         attribution=[OSM_ATTRIBUTION],
     )
-    directory = write_route_graph(artifact_dir, arrays, fractions, meta)
+    directory = write_route_graph(artifact_dir, arrays, fractions, veg_fractions, meta)
     echo(f"graph artifact written to {directory} in {format_duration(time.monotonic() - start)}")
     return directory

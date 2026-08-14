@@ -37,6 +37,7 @@ def _artifact(
     edges: list[Edge],
     fractions: list[list[int]],
     times: list[str] | None = None,
+    veg: list[list[int]] | None = None,
 ) -> RouteGraphArtifact:
     """Hand-built artifact; edge geometry defaults to the straight segment."""
     times = times if times is not None else ["10:00", "11:00", "12:00"]
@@ -48,6 +49,11 @@ def _artifact(
     offsets = np.zeros(len(edges) + 1, dtype=np.int64)
     np.cumsum([len(g) for g in geoms], out=offsets[1:])
     fractions_array = np.asarray(fractions, dtype=np.uint8)
+    veg_array = (
+        np.asarray(veg, dtype=np.uint8)
+        if veg is not None
+        else np.zeros_like(fractions_array, dtype=np.uint8)
+    )
     ladder = _ladder(times)
     return RouteGraphArtifact(
         node_x=np.asarray([x for x, _ in nodes], dtype=np.float64),
@@ -59,6 +65,7 @@ def _artifact(
         geom_y=np.concatenate([g[:, 1] for g in geoms]),
         geom_offsets=offsets,
         fractions=fractions_array,
+        veg_fractions=veg_array,
         meta=RouteGraphMeta(
             schema_version=ROUTE_GRAPH_SCHEMA_VERSION,
             city_id="test",
@@ -316,7 +323,8 @@ def test_astar_points_same_edge_direct_wins() -> None:
     )
     assert spans is not None
     assert spans == [EdgeSpan(edge=0, s_from=20.0, s_to=75.0)]
-    leg = graph.assemble_spans(spans, np.zeros(1, dtype=np.float32))
+    zeros = np.zeros(1, dtype=np.float32)
+    leg = graph.assemble_spans(spans, zeros, zeros)
     assert leg.length_m == pytest.approx(55.0)
     assert leg.xs.tolist() == [20.0, 75.0]
 
@@ -337,7 +345,7 @@ def test_astar_points_same_edge_detour_via_parallel_wins() -> None:
     assert spans is not None
     assert [span.edge for span in spans] == [0, 1, 0]  # out, around, back in
     assert _spans_cost(artifact, spans, cost) == pytest.approx(160.0)  # vs 360 straight
-    leg = graph.assemble_spans(spans, fractions)
+    leg = graph.assemble_spans(spans, fractions, np.zeros_like(fractions))
     assert leg.length_m == pytest.approx(130.0)  # 5 + 120 + 5
     assert leg.sun_length_m == pytest.approx(10.0)  # only the two stubs
 
@@ -423,15 +431,78 @@ def test_assemble_spans_cuts_partial_geometry() -> None:
     graph = RouteGraph.build(artifact)
     fractions = np.array([0.5], dtype=np.float32)
 
-    leg = graph.assemble_spans([EdgeSpan(edge=0, s_from=5.0, s_to=15.0)], fractions)
+    leg = graph.assemble_spans(
+        [EdgeSpan(edge=0, s_from=5.0, s_to=15.0)], fractions, np.zeros_like(fractions)
+    )
     assert leg.xs.tolist() == [5.0, 10.0, 10.0]
     assert leg.ys.tolist() == [0.0, 0.0, 5.0]
     assert leg.length_m == pytest.approx(10.0)
     assert leg.sun_length_m == pytest.approx(5.0)
 
-    backward = graph.assemble_spans([EdgeSpan(edge=0, s_from=15.0, s_to=5.0)], fractions)
+    backward = graph.assemble_spans(
+        [EdgeSpan(edge=0, s_from=15.0, s_to=5.0)], fractions, np.zeros_like(fractions)
+    )
     assert backward.xs.tolist() == [10.0, 10.0, 5.0]
     assert backward.ys.tolist() == [5.0, 0.0, 0.0]
+
+
+# --- vegetation weighting ------------------------------------------------------
+
+
+def test_astar_beta_prefers_the_tree_shaded_parallel() -> None:
+    """Two shaded parallels, neither in the sun: beta breaks the tie toward
+    the one under canopy, and only once it outweighs the extra length.
+
+    Straight 100 m under building shade vs 120 m arc under trees. With
+    cost = len * (1 + beta * non_veg_shade): straight = 100 * (1 + beta),
+    arc = 120. The flip sits at beta = 0.2.
+    """
+    nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0)]
+    apex = (50.0, float(np.sqrt(60.0**2 - 50.0**2)))
+    edges: list[Edge] = [(0, 1, None), (0, 1, [(0.0, 0.0), apex, (100.0, 0.0)])]
+    # Neither edge sees the sun; only the arc is under canopy.
+    artifact = _artifact(nodes, edges, [[0] * 3, [0] * 3], veg=[[0] * 3, [255] * 3])
+    graph = RouteGraph.build(artifact)
+    when = datetime.fromisoformat("2026-07-01T11:00")
+    sun = graph.fractions_at(when)
+    veg = graph.veg_fractions_at(when)
+    lengths = artifact.edge_len.astype(np.float64)
+    other_shade = np.clip(1.0 - sun - veg, 0.0, 1.0)
+
+    for beta, expected_edge in [(0.0, 0), (0.1, 0), (0.5, 1)]:
+        path = graph.astar(0, 1, lengths * (1.0 + beta * other_shade))
+        assert path is not None
+        assert int(graph.adj_edge[path[0]]) == expected_edge, f"beta {beta}"
+
+
+def test_veg_fractions_interpolate_between_columns() -> None:
+    """The canopy matrix resolves exactly like the sun one."""
+    artifact = _artifact(
+        [(0.0, 0.0), (10.0, 0.0)], [(0, 1, None)], [[0, 0, 0]], veg=[[0, 255, 255]]
+    )
+    graph = RouteGraph.build(artifact)
+    assert graph.veg_fractions_at(datetime.fromisoformat("2026-05-10T10:30"))[0] == pytest.approx(
+        0.5, abs=1e-3
+    )
+    assert graph.veg_fractions_at(datetime.fromisoformat("2026-05-10T10:00"))[0] == 0.0
+    assert graph.veg_fractions_at(datetime.fromisoformat("2026-05-10T06:00"))[0] == 0.0
+
+
+def test_assemble_spans_accounts_vegetal_length() -> None:
+    """A leg reports sun, canopy, and (implicitly) built shade separately."""
+    nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0)]
+    artifact = _artifact(nodes, [(0, 1, None)], [[0] * 3])
+    graph = RouteGraph.build(artifact)
+    leg = graph.assemble_spans(
+        [EdgeSpan(edge=0, s_from=0.0, s_to=50.0)],
+        np.array([0.2], dtype=np.float32),
+        np.array([0.5], dtype=np.float32),
+    )
+    assert leg.length_m == pytest.approx(50.0)
+    assert leg.sun_length_m == pytest.approx(10.0)
+    assert leg.veg_shade_length_m == pytest.approx(25.0)
+    # The remainder is shade cast by buildings or terrain.
+    assert leg.length_m - leg.sun_length_m - leg.veg_shade_length_m == pytest.approx(15.0)
 
 
 # --- fraction resolution -------------------------------------------------------

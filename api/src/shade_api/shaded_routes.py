@@ -9,6 +9,18 @@ and serializes. The response always carries the shortest (alpha = 0) route
 next to the shaded one: "1.42 km at 12% sun vs 1.31 km at 54%" is the
 answer people actually want.
 
+``beta`` adds the second preference: tree shade cools far better than a
+building's does (docs/learning/vegetation-cooling.md), so the weight is a
+ladder of penalties rather than a bonus -- sun ``+alpha``, shade cast by
+buildings or terrain ``+beta``, canopy free::
+
+    cost = length * (1 + alpha * sun + beta * (1 - sun - canopy))
+
+Every term is non-negative, so ``cost >= length`` holds and A* stays
+optimal. Note the pair invariant weakens when ``beta > 0``: the shaded
+route may take slightly more sun in exchange for walking under trees,
+because that is what was asked for.
+
 At night there is no sun to avoid: one A* over bare lengths, both legs
 identical, ``status: "night"``.
 """
@@ -29,6 +41,7 @@ router = APIRouter(prefix="/v1")
 
 SNAP_MAX_M = 400.0
 DEFAULT_ALPHA = 1.0
+DEFAULT_BETA = 0.0
 
 
 def _parse_point(value: str, name: str) -> tuple[float, float]:
@@ -78,6 +91,7 @@ def _leg_out(runtime: CityRuntime, leg: RouteLeg) -> RouteLegOut:
         length_m=round(leg.length_m, 1),
         sun_length_m=round(leg.sun_length_m, 1),
         sun_fraction=round(leg.sun_fraction, 3),
+        veg_shade_length_m=round(leg.veg_shade_length_m, 1),
     )
 
 
@@ -101,7 +115,27 @@ def shaded_route(
             ),
         ),
     ] = DEFAULT_ALPHA,
+    beta: Annotated[
+        float,
+        Query(
+            ge=0.0,
+            le=10.0,
+            description=(
+                "Tree preference: shade cast by buildings or terrain costs "
+                "(1 + beta) times its length while tree shade costs its bare "
+                "length, so beta > 0 routes under canopy; must not exceed alpha"
+            ),
+        ),
+    ] = DEFAULT_BETA,
 ) -> ShadedRouteOut:
+    if beta > alpha:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"beta ({beta:g}) must not exceed alpha ({alpha:g}): sun has to stay "
+                "at least as unwelcome as building shade"
+            ),
+        )
     from_lat, from_lon = _parse_point(from_, "from")
     to_lat, to_lon = _parse_point(to, "to")
     runtime, from_x, from_y = _locate(registry, city, from_lat, from_lon)
@@ -123,23 +157,29 @@ def shaded_route(
     edge_len = graph.artifact.edge_len.astype(np.float64)
     if sun.is_up:
         fractions = graph.fractions_at(when)
+        veg_fractions = graph.veg_fractions_at(when)
         status = "ok"
     else:
         fractions = np.zeros(len(edge_len), dtype=np.float32)
+        veg_fractions = np.zeros(len(edge_len), dtype=np.float32)
         status = "night"
 
-    shaded_spans = graph.astar_points(src, dst, edge_len * (1.0 + alpha * fractions))
+    # Shade cast by anything but a tree. The clip absorbs the 1/255 of
+    # quantization error the two matrices can carry into the subtraction.
+    other_shade = np.clip(1.0 - fractions - veg_fractions, 0.0, 1.0)
+    cost = edge_len * (1.0 + alpha * fractions + beta * other_shade)
+    shaded_spans = graph.astar_points(src, dst, cost)
     if shaded_spans is None:
         raise HTTPException(status_code=400, detail="no route between origin and destination")
     if not shaded_spans:  # both pins snapped to the same spot
         shaded_leg = shortest_leg = graph.point_leg(src)
     else:
-        shaded_leg = graph.assemble_spans(shaded_spans, fractions)
-        if alpha > 0.0 and status == "ok":
+        shaded_leg = graph.assemble_spans(shaded_spans, fractions, veg_fractions)
+        if (alpha > 0.0 or beta > 0.0) and status == "ok":
             shortest_spans = graph.astar_points(src, dst, edge_len)
             assert shortest_spans is not None  # same endpoints just proved reachable
-            shortest_leg = graph.assemble_spans(shortest_spans, fractions)
-        else:  # alpha = 0 or night: the shaded run already minimized length
+            shortest_leg = graph.assemble_spans(shortest_spans, fractions, veg_fractions)
+        else:  # no preference or night: the shaded run already minimized length
             shortest_leg = shaded_leg
 
     response.headers["Cache-Control"] = "public, max-age=86400" if at is not None else "no-store"
@@ -148,6 +188,7 @@ def shaded_route(
         at=when,
         status=status,
         alpha=alpha,
+        beta=beta,
         sun=SunOut(
             azimuth_deg=round(sun.azimuth_deg, 2), elevation_deg=round(sun.elevation_deg, 2)
         ),

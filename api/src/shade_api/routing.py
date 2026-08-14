@@ -73,6 +73,7 @@ class RouteLeg:
     ys: npt.NDArray[np.float64]
     length_m: float
     sun_length_m: float
+    veg_shade_length_m: float
 
     @property
     def sun_fraction(self) -> float:
@@ -241,7 +242,22 @@ class RouteGraph:
         raise ValueError(f"no ladder rung covers {iso}")
 
     def fractions_at(self, when: datetime) -> npt.NDArray[np.float32]:
-        """Per-edge sun fraction (0..1) at a local instant.
+        """Per-edge sun fraction (0..1) at a local instant."""
+        return self._interpolate_columns(self.artifact.fractions, when)
+
+    def veg_fractions_at(self, when: datetime) -> npt.NDArray[np.float32]:
+        """Per-edge fraction under tree canopy (0..1) at a local instant.
+
+        Same resolution as :meth:`fractions_at` over the other stored
+        matrix. Sun and canopy are disjoint, so what is left,
+        ``1 - sun - vegetation``, is shade cast by buildings or terrain.
+        """
+        return self._interpolate_columns(self.artifact.veg_fractions, when)
+
+    def _interpolate_columns(
+        self, matrix: npt.NDArray[np.uint8], when: datetime
+    ) -> npt.NDArray[np.float32]:
+        """Resolve one stored fraction matrix to a local instant.
 
         Date resolves to a rung through ``covers``; the time interpolates
         linearly between the two neighboring hourly columns (nearest would
@@ -252,7 +268,7 @@ class RouteGraph:
         rung = self._rung_for(when.date())
         minutes = when.hour * 60.0 + when.minute + when.second / 60.0
         times = [int(column.time[:2]) * 60.0 + int(column.time[3:5]) for column in rung.columns]
-        fractions = self.artifact.fractions
+        fractions = matrix
         scale = np.float32(1.0 / 255.0)
         if minutes <= times[0]:
             return fractions[:, rung.columns[0].col].astype(np.float32) * scale
@@ -452,21 +468,28 @@ class RouteGraph:
             return cut_x[::-1], cut_y[::-1]
         return cut_x, cut_y
 
-    def assemble_spans(self, spans: list[EdgeSpan], fractions: npt.NDArray[np.float32]) -> RouteLeg:
+    def assemble_spans(
+        self,
+        spans: list[EdgeSpan],
+        fractions: npt.NDArray[np.float32],
+        veg_fractions: npt.NDArray[np.float32],
+    ) -> RouteLeg:
         """Stitch walked spans into one origin -> destination leg.
 
         Each span contributes its clipped polyline, oriented as walked;
-        shared joint vertices are dropped. ``sun_length_m`` weights the
-        walked meters by the edge's sun fraction at the queried instant --
-        the same accounting the router optimized. Approximation worth
-        naming: the artifact stores one fraction per *edge*, so a partial
-        span is charged that fraction pro rata rather than resampling the
-        stretch actually walked.
+        shared joint vertices are dropped. ``sun_length_m`` and
+        ``veg_shade_length_m`` weight the walked meters by the edge's sun
+        and canopy fractions at the queried instant -- the same accounting
+        the router optimized; the remainder is shade cast by buildings or
+        terrain. Approximation worth naming: the artifact stores one
+        fraction per *edge*, so a partial span is charged that fraction pro
+        rata rather than resampling the stretch actually walked.
         """
         xs_parts: list[npt.NDArray[np.float64]] = []
         ys_parts: list[npt.NDArray[np.float64]] = []
         length = 0.0
         sun_length = 0.0
+        veg_length = 0.0
         for position, span in enumerate(spans):
             xs, ys = self._span_polyline(span)
             if position > 0:  # the joint vertex is the previous span's last one
@@ -476,14 +499,21 @@ class RouteGraph:
             walked = abs(span.s_to - span.s_from)
             length += walked
             sun_length += walked * float(fractions[span.edge])
+            veg_length += walked * float(veg_fractions[span.edge])
         return RouteLeg(
             xs=np.concatenate(xs_parts),
             ys=np.concatenate(ys_parts),
             length_m=length,
             sun_length_m=sun_length,
+            veg_shade_length_m=veg_length,
         )
 
-    def assemble(self, adj_path: list[int], fractions: npt.NDArray[np.float32]) -> RouteLeg:
+    def assemble(
+        self,
+        adj_path: list[int],
+        fractions: npt.NDArray[np.float32],
+        veg_fractions: npt.NDArray[np.float32] | None = None,
+    ) -> RouteLeg:
         """Assemble a node-to-node path: every hop is a whole-edge span."""
         spans = []
         for k in adj_path:
@@ -494,7 +524,9 @@ class RouteGraph:
                 if self.adj_forward[k]
                 else EdgeSpan(edge=edge, s_from=length, s_to=0.0)
             )
-        return self.assemble_spans(spans, fractions)
+        if veg_fractions is None:
+            veg_fractions = np.zeros(len(fractions), dtype=np.float32)
+        return self.assemble_spans(spans, fractions, veg_fractions)
 
     def point_leg(self, point: EdgePoint) -> RouteLeg:
         """Origin and destination snapped to the same spot: a zero-length leg."""
@@ -503,4 +535,5 @@ class RouteGraph:
             ys=np.array([point.y, point.y]),
             length_m=0.0,
             sun_length_m=0.0,
+            veg_shade_length_m=0.0,
         )

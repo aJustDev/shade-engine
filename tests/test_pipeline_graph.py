@@ -1,5 +1,6 @@
 """Pedestrian graph artifact: extraction, sampling, fractions, CLI."""
 
+import json
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -27,13 +28,17 @@ from shade_pipeline.cli import app
 from shade_pipeline.graph import (
     GraphArrays,
     OsmnxWalkSource,
-    edge_sun_fractions,
+    edge_state_fractions,
     extract_graph_arrays,
     graph_ladder,
     sample_edges,
     write_route_graph,
 )
-from shade_pipeline.shade_raster import STATE_OUTSIDE, STATE_SHADE_BUILDING
+from shade_pipeline.shade_raster import (
+    STATE_OUTSIDE,
+    STATE_SHADE_BUILDING,
+    STATE_SHADE_VEGETATION,
+)
 from shade_pipeline.tiles import season_preset_instants
 
 CRS = "EPSG:25830"
@@ -110,7 +115,7 @@ def test_sample_edges_spacing_and_endpoints() -> None:
 # --- fractions against a hand raster ------------------------------------------
 
 
-def test_edge_sun_fractions_states_and_bounds() -> None:
+def test_edge_state_fractions_states_and_bounds() -> None:
     # 10x10 raster, origin (0, 10): west half sun, east half building shade,
     # one OUTSIDE pixel in the shaded half (counts as sun).
     state = np.zeros((10, 10), dtype=np.uint8)
@@ -124,10 +129,34 @@ def test_edge_sun_fractions_states_and_bounds() -> None:
     sample_x = np.array([0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, *[50.0] * 5, 7.5, 7.5])
     sample_y = np.array([*[4.5] * 10, *[4.5] * 5, 7.5, 7.5])
     sample_edge = np.array([*[0] * 10, *[1] * 5, 2, 2], dtype=np.int64)
-    fractions = edge_sun_fractions(sample_x, sample_y, sample_edge, 3, state, transform)
+    fractions, vegetation = edge_state_fractions(
+        sample_x, sample_y, sample_edge, 3, state, transform
+    )
     assert fractions[0] == pytest.approx(0.5)
     assert fractions[1] == 1.0
     assert fractions[2] == 1.0
+    # No canopy anywhere in this raster, not even off-grid.
+    assert vegetation.tolist() == [0.0, 0.0, 0.0]
+
+
+def test_edge_state_fractions_splits_vegetation() -> None:
+    """Building shade and canopy are both 'not sun' but must not be mixed."""
+    state = np.zeros((10, 10), dtype=np.uint8)
+    state[:, 2:6] = STATE_SHADE_BUILDING
+    state[:, 6:] = STATE_SHADE_VEGETATION
+    transform = from_origin(0.0, 10.0, 1.0, 1.0)
+
+    # Ten samples across one row: 2 sun, 4 building shade, 4 canopy.
+    sample_x = np.array([0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5])
+    sample_y = np.array([4.5] * 10)
+    sample_edge = np.zeros(10, dtype=np.int64)
+    fractions, vegetation = edge_state_fractions(
+        sample_x, sample_y, sample_edge, 1, state, transform
+    )
+    assert fractions[0] == pytest.approx(0.2)
+    assert vegetation[0] == pytest.approx(0.4)
+    # What is left is shade cast by buildings or terrain.
+    assert 1.0 - fractions[0] - vegetation[0] == pytest.approx(0.4)
 
 
 # --- ladder columns -----------------------------------------------------------
@@ -165,12 +194,15 @@ def _meta_for(arrays: GraphArrays, samples: int) -> RouteGraphMeta:
 def test_write_then_load_roundtrip(tmp_path: Path) -> None:
     arrays = extract_graph_arrays(graph_fixture.cube_walk_graph(), CRS)
     rng = np.random.default_rng(7)
-    fractions = rng.integers(0, 256, size=(len(arrays.edge_len), 83), dtype=np.uint8)
-    write_route_graph(tmp_path, arrays, fractions, _meta_for(arrays, samples=123))
+    edges = len(arrays.edge_len)
+    fractions = rng.integers(0, 128, size=(edges, 83), dtype=np.uint8)
+    vegetation = rng.integers(0, 128, size=(edges, 83), dtype=np.uint8)
+    write_route_graph(tmp_path, arrays, fractions, vegetation, _meta_for(arrays, samples=123))
 
     stored = load_route_graph(tmp_path)
     assert isinstance(stored, RouteGraphArtifact)
     assert np.array_equal(stored.fractions, fractions)
+    assert np.array_equal(stored.veg_fractions, vegetation)
     assert np.array_equal(stored.node_x, arrays.node_x)
     assert np.array_equal(stored.geom_offsets, arrays.geom_offsets)
     assert stored.meta.attribution == [OSM_ATTRIBUTION]
@@ -181,17 +213,58 @@ def test_load_without_graph_is_actionable(tmp_path: Path) -> None:
         load_route_graph(tmp_path)
 
 
-def test_load_rejects_incoherent_fractions(tmp_path: Path) -> None:
+def _write_zero_graph(tmp_path: Path) -> GraphArrays:
     arrays = extract_graph_arrays(graph_fixture.cube_walk_graph(), CRS)
-    fractions = np.zeros((len(arrays.edge_len), 83), dtype=np.uint8)
-    write_route_graph(tmp_path, arrays, fractions, _meta_for(arrays, samples=1))
+    zeros = np.zeros((len(arrays.edge_len), 83), dtype=np.uint8)
+    write_route_graph(tmp_path, arrays, zeros, zeros, _meta_for(arrays, samples=1))
+    return arrays
+
+
+def test_load_rejects_incoherent_fractions(tmp_path: Path) -> None:
+    _write_zero_graph(tmp_path)
     # Corrupt one file after the fact: a wrong-shaped fractions matrix must
     # fail at load, mentioning what disagrees.
     np.savez(
         tmp_path / GRAPH_DIRNAME / "fractions.npz",
         sun_fraction=np.zeros((2, 83), dtype=np.uint8),
+        veg_shade_fraction=np.zeros((2, 83), dtype=np.uint8),
     )
     with pytest.raises(ValueError, match="fractions shape"):
+        load_route_graph(tmp_path)
+
+
+def test_load_rejects_missing_veg_fractions(tmp_path: Path) -> None:
+    """A schema 1 fractions file (sun only) must fail with a rebuild hint."""
+    arrays = _write_zero_graph(tmp_path)
+    np.savez(
+        tmp_path / GRAPH_DIRNAME / "fractions.npz",
+        sun_fraction=np.zeros((len(arrays.edge_len), 83), dtype=np.uint8),
+    )
+    with pytest.raises(ValueError, match="shade-engine graph"):
+        load_route_graph(tmp_path)
+
+
+def test_load_rejects_sun_plus_vegetation_above_one(tmp_path: Path) -> None:
+    """Sun and canopy are disjoint states: their fractions cannot both be 1."""
+    arrays = _write_zero_graph(tmp_path)
+    full = np.full((len(arrays.edge_len), 83), 255, dtype=np.uint8)
+    np.savez(
+        tmp_path / GRAPH_DIRNAME / "fractions.npz",
+        sun_fraction=full,
+        veg_shade_fraction=full,
+    )
+    with pytest.raises(ValueError, match="sum above 1"):
+        load_route_graph(tmp_path)
+
+
+def test_load_rejects_old_schema_version(tmp_path: Path) -> None:
+    arrays = _write_zero_graph(tmp_path)
+    meta_path = tmp_path / GRAPH_DIRNAME / "graph.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["schema_version"] = 1
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    assert len(arrays.edge_len) > 0
+    with pytest.raises(ValueError, match="schema_version"):
         load_route_graph(tmp_path)
 
 
