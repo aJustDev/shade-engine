@@ -245,23 +245,31 @@ networkx.
 Ops pendiente (cierra la fase; el codigo ya esta desplegable):
 
 1. Push a main (CI verde -> autodeploy: la imagen nueva trae el comando).
-2. En el VPS: `docker compose run --rm pipeline shade-engine graph cordoba`
-   (necesita salida a Overpass desde el contenedor; la descarga OSM son
-   ~10-20 MB y el grueso son los 83 compute_state_raster de ciudad entera:
-   estimar 1-2 h). Idem montilla (minutos).
-3. `docker compose restart api` y smoke:
+2. Montilla: su grafo YA esta construido en local (2026-08-14, Overpass en
+   vivo, 617 nodos / 884 aristas / 69 km, 15 s); basta subirlo:
+   `rsync -a data/cities/montilla/v1/graph/ cartagena:/opt/shade/data/cities/montilla/v1/graph/`.
+3. Cordoba: `docker compose run --rm pipeline shade-engine graph cordoba`
+   EN el VPS (salida a Overpass desde el contenedor; descarga OSM ~10-20 MB
+   y el grueso son los 83 compute_state_raster de ciudad entera: estimar
+   1-2 h). OJO: NO construirlo en local: data/cities/cordoba/v1 local sigue
+   siendo el build de julio con el horizonte corrupto (bandas 45-64); las
+   fracciones de tarde saldrian sin sombra.
+4. `docker compose restart api` y smoke:
    `curl "https://shade.ajustino.dev/v1/routes/shaded?city=cordoba&from=37.8794,-4.7794&to=37.8846,-4.7717&at=<manana 17:30>&alpha=1"`.
-4. Verificar el criterio de salida en el viewer local contra prod
-   (SHADE_VIEWER_UPSTREAM) y anotar aqui el resultado.
+5. Verificar el criterio de salida sobre Cordoba en el viewer local contra
+   prod (SHADE_VIEWER_UPSTREAM) y anotar aqui el resultado.
 
 Roadmap anotado (fuera de la fase): modo circuito zona+duracion; port del
 modo ruta a la consola de ajustinodev (tras cerrar esta ops).
 
 Criterio de salida (provisional): entre dos puntos del casco a media tarde,
 la ruta sombreada evita visiblemente las calles al sol frente al camino mas
-corto, comprobable sobre el mapa de Fase 7. -> Demostrado sobre la ciudad
-sintetica (la ruta verde rodea la sombra de invierno del cubo: mismos 40 m,
-40% de sol vs 70%); pendiente de repetir sobre Cordoba real tras la ops.
+corto, comprobable sobre el mapa de Fase 7. -> CUMPLIDO sobre Montilla real
+en local (2026-08-14, fecha/hora actuales 18:00, sol az 262): corta 961 m al
+73% de sol vs sombreada 1.16 km al 35% por calles distintas (+203 m compran
+38 puntos menos de sol); antes, demostrado tambien sobre la ciudad sintetica
+(empate de 40 m resuelto por sol, 40% vs 70%). Queda repetirlo sobre Cordoba
+tras la ops.
 
 ## Vision post-MVP: motor de confort termico y refugios climaticos
 
@@ -850,7 +858,7 @@ cordoba --output-root data/cities-rebuild`; despues el basemap (el v1
   siguiente: recapturar fixtures de ajustinodev y el port de la consola.
 - 2026-08-14 (Fase 8 implementada, ops pendiente): tres commits en una
   sesion: pipeline (`shade-engine graph`: artefacto v1/graph/ con fracciones
-  uint8 sobre la escalera), api (`/v1/routes/shaded`: CSR + A* propio, snap,
+  uint8 sobre la escalera), api (`/v1/routes/shaded`: CSR + A\* propio, snap,
   interpolacion horaria, ODbL) y viewer local (modo ruta con 2 clicks,
   input de alfa, re-consulta al mover sliders, resumen comparativo).
   Verificado end-to-end en local sobre la ciudad sintetica cube (build +
@@ -861,10 +869,20 @@ cordoba --output-root data/cities-rebuild`; despues el basemap (el v1
   a-star.md. deps nuevas SOLO en pipeline: osmnx 2.1 + networkx (wheels
   py3/cp314 verificados, pyogrio incluido). El fixture cube local queda en
   data/cities/cube (gitignored, regenerable via tests/graph_fixture). El
-  viewer gano SHADE_VIEWER_API para apuntar a un puerto local distinto de
-  8000. PENDIENTE para cerrar la fase (seccion "Ops pendiente" de Fase 8):
+  viewer gano SHADE_VIEWER_API para apuntar a un puerto local distinto de 8000. PENDIENTE para cerrar la fase (seccion "Ops pendiente" de Fase 8):
   push a main, `shade-engine graph cordoba|montilla` via el servicio
   pipeline del VPS (Overpass accesible; 1-2 h cordoba por los 83 rasteres
   de estado), restart de la api, smoke publico y criterio de salida sobre
   Cordoba real en el visor. Despues: valorar el port del modo ruta a la
   consola de ajustinodev.
+- 2026-08-14 (validacion local sobre Montilla real): los artefactos SI
+  estaban en local (un despiste de cwd los escondio en la sesion anterior:
+  data/ tiene cordoba 2.5G del build de JULIO -- horizonte corrupto, no
+  usar para el grafo --, montilla 677M del build sano de agosto, el cache
+  lidar y assets). `shade-engine graph montilla` en local contra Overpass
+  real: 15 s, 617 nodos / 884 aristas / 69 km, cache OSM 600K en
+  data/cache/osm. Criterio de salida CUMPLIDO en el viewer con la fecha y
+  hora de hoy (18:00, sol az 262): corta 961 m al 73% de sol vs sombreada
+  1.16 km al 35% por calles distintas; captura route-mode-montilla.png.
+  El grafo de montilla queda listo para subir a prod (paso 2 de la ops de
+  Fase 8); el de cordoba debe construirse EN el VPS.
