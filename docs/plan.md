@@ -260,8 +260,10 @@ AVISO vigente para la proxima: cuando prod YA tenga grafos, un cambio de
 vieja rechaza un artefacto nuevo y viceversa, siempre con error accionable
 al cargar (no en silencio), pero con corte.
 
-Roadmap anotado (fuera de la fase): modo circuito zona+duracion; port del
-modo ruta a la consola de ajustinodev (tras cerrar esta ops).
+Roadmap anotado (fuera de la fase): modo circuito zona+duracion. El port
+del modo ruta a la consola de ajustinodev esta HECHO (2026-08-14, con
+paridad completa: trazo coloreado, bocadillo, presets, arbolado,
+alternativas y tabla que adopta el alfa).
 
 Criterio de salida: entre dos puntos del casco a media tarde, la ruta
 sombreada evita visiblemente las calles al sol frente al camino mas corto,
