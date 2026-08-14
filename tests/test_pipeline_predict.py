@@ -92,7 +92,7 @@ def test_read_points_roundtrip(tmp_path: Path) -> None:
 
 def test_field_kit_csv_parses() -> None:
     """The committed Cordoba kit stays loadable and inside the city bbox rough area."""
-    points = read_points(Path(__file__).parent.parent / "docs" / "validacion-cordoba-puntos.csv")
+    points = read_points(Path(__file__).parent.parent / "cities" / "cordoba-field-points.csv")
     assert len(points) == 10
     for point in points:
         assert 37.8 < point.lat < 37.95

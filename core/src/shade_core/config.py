@@ -8,7 +8,7 @@ A note on ``crs`` and ``bbox``: the bounding box is expressed in the city's
 *local projected* CRS (e.g. ``EPSG:25830``, UTM zone 30N for Cordoba), where
 coordinates are meters, not degrees. All raster processing and distance math
 happens in that CRS; latitude/longitude (EPSG:4326) only appears at the API
-boundary. See ``docs/learning/crs.md`` for the rationale and the classic
+boundary. See ``shade-docs: learning/crs.md`` for the rationale and the classic
 lat/lon vs lon/lat trap.
 """
 

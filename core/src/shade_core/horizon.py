@@ -15,7 +15,7 @@ surface model (DSM). Computing from the DSM itself would place the observer
 on top of tree canopies and roofs, reporting sun where the street below is
 shaded.
 
-Sampling choices (deliberate, see docs/learning/horizon-algorithm.md):
+Sampling choices (deliberate, see shade-docs: learning/horizon-algorithm.md):
 
 - **Across azimuth**: circular linear interpolation between the two adjacent
   sectors (wrapping 360 -> 0). Nearest-sector would err by up to half a

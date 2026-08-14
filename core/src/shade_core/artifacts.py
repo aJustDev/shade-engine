@@ -6,7 +6,7 @@ The pipeline writes six COGs plus a metadata JSON per city version
 :class:`SceneReader` serves point queries through windowed reads with a
 bounded block cache (the API path).
 
-Georeference contract (see docs/learning/cog.md and crs.md): artifacts are
+Georeference contract (see shade-docs: learning/cog.md and crs.md): artifacts are
 north-up rasters with square pixels in the city's projected CRS, transform
 ``(res, 0, x_min, 0, -res, y_max)`` -- the same (x_min, y_max) origin and
 southward rows as :class:`shade_core.horizon.HorizonGrid`. Band k+1 of the

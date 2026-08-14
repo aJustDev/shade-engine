@@ -241,7 +241,7 @@ def edge_state_fractions(
 
     Two numbers per edge because the three shade states are not equivalent
     for a walker: a plane tree cools far better than a wall does (see
-    docs/learning/vegetation-cooling.md), so vegetation shade is kept apart
+    shade-docs: learning/vegetation-cooling.md), so vegetation shade is kept apart
     from building and terrain shade, which stay implicit as
     ``1 - sun - vegetation``.
 

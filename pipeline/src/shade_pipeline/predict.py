@@ -4,7 +4,7 @@ Mirrors the API's timeline endpoint (transform once at the boundary with
 ``always_xy``, nearest-pixel snap via ``SceneReader.scene_for``, the city's
 timezone for wall-clock times) but reads the artifacts straight from disk,
 so a printed prediction sheet needs no running server. Used by the Cordoba
-field-validation protocol in docs/validacion-cordoba.md.
+field-validation protocol in shade-docs: ops/validacion-campo.md.
 """
 
 import csv

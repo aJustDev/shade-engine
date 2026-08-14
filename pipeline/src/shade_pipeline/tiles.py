@@ -1,4 +1,4 @@
-"""Per-instant shade overlays as raster PMTiles (see docs/learning/map-tiles-pmtiles.md).
+"""Per-instant shade overlays as raster PMTiles (see shade-docs: learning/map-tiles-pmtiles.md).
 
 Web maps consume square 256 px tiles addressed by z/x/y in Web Mercator
 (EPSG:3857): at zoom z the world is a 2^z x 2^z grid, x grows east and y
@@ -8,7 +8,7 @@ with plain HTTP range requests -- the COG trick applied to web pyramids,
 and the reason serving these needs no tile server, only Caddy.
 
 Zoom bounds: Web Mercator inflates distances by 1/cos(lat) (see
-docs/learning/web-mercator.md), so at Cordoba's latitude (37.9 N) zoom 17
+shade-docs: learning/web-mercator.md), so at Cordoba's latitude (37.9 N) zoom 17
 is 156543/2^17 * cos(37.9) = 0.94 m/px -- our native 1 m resolution. Higher
 zooms would only upsample (the map client already overzooms past max_zoom);
 zoom 12 (~30 m/px) fits the whole city on two tiles.
@@ -362,7 +362,7 @@ def build_tiles(
     canopy) keep a deployed schema-2 client rendering sensibly without
     changes. Output lands under ``<artifact_dir>/tiles/``; the basemap
     referenced by ``basemap_url`` is produced out of band (see
-    docs/adding-a-city.md).
+    shade-docs: ops/anadir-ciudad.md).
     """
     echo = progress if progress is not None else lambda _message: None
     metadata = load_metadata(artifact_dir)

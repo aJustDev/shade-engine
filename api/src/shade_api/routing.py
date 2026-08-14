@@ -8,7 +8,7 @@ parallel ``adj_edge``/``adj_forward`` arrays say which artifact edge each
 hop rides and in which direction (both directions share one edge id, so
 fractions and geometry are stored once).
 
-**A*** (see docs/learning/a-star.md) is Dijkstra with a compass: it always
+**A*** (see shade-docs: learning/a-star.md) is Dijkstra with a compass: it always
 expands the node minimizing ``g(n) + h(n)`` -- cost walked so far plus a
 *heuristic* estimate of the cost still ahead. The route is optimal exactly
 when ``h`` never overestimates (an *admissible* heuristic). Ours is the
@@ -26,7 +26,7 @@ scale the heuristic too, or A* silently stops being optimal.
 
 **Virtual endpoints.** People drop pins mid-street, not on junctions, so
 :meth:`RouteGraph.snap_point` projects them onto the closest *edge*
-(see docs/learning/point-segment-projection.md) and
+(see shade-docs: learning/point-segment-projection.md) and
 :meth:`RouteGraph.astar_points` routes between those interior points. That
 is the classic super-source construction: the search is seeded with both
 ends of the origin edge, each charged the partial cost of the stretch
@@ -71,7 +71,7 @@ class RouteSegment:
 
     The edge is the router's decision unit -- the artifact stores one sun
     and one canopy fraction per edge per ladder instant -- so this is the
-    finest honest slice of a route (docs/learning/edge-granularity.md). A
+    finest honest slice of a route (shade-docs: learning/edge-granularity.md). A
     partial span inherits its edge's fractions pro rata, not scaled. The
     polyline keeps both joint vertices, so consecutive segments touch and
     dropping each one's first point rebuilds the leg exactly.
@@ -216,7 +216,7 @@ class RouteGraph:
 
         Per segment the projection is the clamped scalar parameter
         ``t = clip(dot(p - a, d) / |d|^2, 0, 1)`` (see
-        docs/learning/point-segment-projection.md); the winner is the
+        shade-docs: learning/point-segment-projection.md); the winner is the
         smallest squared distance, compared squared to skip ~200k square
         roots. Brute force over every segment: one vectorized pass is a
         couple of milliseconds on Cordoba and a spatial index would only

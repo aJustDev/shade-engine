@@ -8,13 +8,13 @@ keeps only vegetation tall enough to stand under::
     canopy = (landcover == VEGETATION) & (dsm - dtm >= CANOPY_MIN_HEIGHT_M)
 
 ``dsm - dtm`` is the CHM (canopy height model): the height of whatever sits
-above the ground (see docs/learning/dsm-dtm-chm.md). A sieve filter then
+above the ground (see shade-docs: learning/dsm-dtm-chm.md). A sieve filter then
 drops connected regions smaller than ``CANOPY_SIEVE_PX`` pixels -- urban
 LiDAR classification speckle (stray vegetation returns on facades, balconies,
 street furniture). Sieve replaces small regions with their largest neighbor,
 so it also FILLS sub-threshold holes inside large crowns; that bias is
 accepted (an 8 m2 gap inside a crown is shaded anyway) and pinned by tests.
-See docs/learning/canopy-sieve.md.
+See shade-docs: learning/canopy-sieve.md.
 
 Crowns keep casting shade regardless of this mask: the horizon sweep reads
 the DSM, which is untouched. The mask only answers "is there canopy overhead

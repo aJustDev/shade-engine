@@ -10,7 +10,7 @@ next to the shaded one: "1.42 km at 12% sun vs 1.31 km at 54%" is the
 answer people actually want.
 
 ``beta`` adds the second preference: tree shade cools far better than a
-building's does (docs/learning/vegetation-cooling.md), so the weight is a
+building's does (shade-docs: learning/vegetation-cooling.md), so the weight is a
 ladder of penalties rather than a bonus -- sun ``+alpha``, shade cast by
 buildings or terrain ``+beta``, canopy free::
 

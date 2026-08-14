@@ -23,7 +23,7 @@ is an additive artifact -- absent from older builds, backfilled with
 
 Licensing: the graph geometry is derived from OpenStreetMap, so the
 artifact and every response built on it must credit OSM under the ODbL
-(see docs/learning/routing-graph.md).
+(see shade-docs: learning/routing-graph.md).
 """
 
 import json

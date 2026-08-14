@@ -5,7 +5,7 @@ independently-compressed internal tiles, reduced-resolution overviews for
 visualization, and tile indexes at the front of the file. Reading one pixel
 of one band then costs one tile's worth of IO -- the same over local disk or
 HTTP range requests -- which is how the API will query city-sized artifacts
-without ever loading them (see docs/learning/cog.md).
+without ever loading them (see shade-docs: learning/cog.md).
 
 GDAL's COG driver is CreateCopy-only (it must know every tile before writing
 the header), so the canonical path is: write a temporary tiled GTiff, then
