@@ -60,6 +60,10 @@ def test_route_shape_and_invariants(routes_client: TestClient) -> None:
     assert body["alpha"] == 1.0
     assert body["sun"]["elevation_deg"] > 0
     assert body["origin"]["snap_distance_m"] < 1.0
+    # The snapped point is reported back so clients can draw pin -> network.
+    origin_lon, origin_lat = graph_fixture.lonlat(graph_fixture.NORTH_A)
+    assert body["origin"]["snapped_lat"] == pytest.approx(origin_lat, abs=1e-5)
+    assert body["origin"]["snapped_lon"] == pytest.approx(origin_lon, abs=1e-5)
     assert OSM_ATTRIBUTION in body["attribution"]
     assert CUBE_CITY.attribution[0] in body["attribution"]
 
@@ -108,12 +112,42 @@ def test_alpha_zero_returns_shortest_twice(routes_client: TestClient) -> None:
     assert body["shaded"] == body["shortest"]
 
 
-def test_same_snap_node_is_zero_length(routes_client: TestClient) -> None:
+def test_same_snap_point_is_zero_length(routes_client: TestClient) -> None:
     response = _route(routes_client, to=_point(graph_fixture.NORTH_A))
     assert response.status_code == 200
     body = response.json()
     assert body["shaded"]["length_m"] == 0.0
     assert len(body["shaded"]["geometry"]["coordinates"]) == 2
+
+
+def test_route_snaps_to_edge_interior(routes_client: TestClient) -> None:
+    """A pin 3 m off the middle of the pocket edge starts the route there,
+    not at the junction 6.7 m away that node snapping would have picked."""
+    response = _route(
+        routes_client,
+        **{"from": _point((60.0, 63.0)), "to": _point(graph_fixture.POCKET_B)},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["origin"]["snap_distance_m"] == pytest.approx(3.0, abs=0.1)
+    expected_lon, expected_lat = graph_fixture.lonlat((60.0, 60.0))
+    assert body["origin"]["snapped_lat"] == pytest.approx(expected_lat, abs=1e-5)
+    assert body["origin"]["snapped_lon"] == pytest.approx(expected_lon, abs=1e-5)
+    first = body["shaded"]["geometry"]["coordinates"][0]
+    assert first == pytest.approx([expected_lon, expected_lat], abs=1e-5)
+    assert body["shaded"]["length_m"] == pytest.approx(6.0, abs=0.1)
+
+
+def test_route_same_edge_partial_leg(routes_client: TestClient) -> None:
+    """Both pins on one edge: the leg is the stretch between them."""
+    response = _route(
+        routes_client,
+        **{"from": _point((57.0, 61.0)), "to": _point((63.0, 61.0))},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["shaded"]["length_m"] == pytest.approx(6.0, abs=0.1)
+    assert body["shaded"]["geometry"]["coordinates"] == body["shortest"]["geometry"]["coordinates"]
 
 
 def test_snap_beyond_threshold_is_400(

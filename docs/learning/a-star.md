@@ -36,6 +36,37 @@ sombra) y reconstruir por nodos perderia cual se eligio. El sondeo de
 2026-07-12 midio ~10 ms por ruta en el grafo real de Cordoba: sobra para
 servirlo en proceso.
 
+## Origen y destino virtuales
+
+Los pines caen en mitad de la calle, no en los cruces, asi que desde la
+Fase 8.5 el origen y el destino son **puntos sobre una arista** (ver
+point-segment-projection.md) y no nodos del grafo. La forma limpia de
+enrutar entre ellos es la construccion clasica de **super-fuente /
+super-sumidero**: imaginar dos nodos nuevos, O y D, conectados a los
+extremos de sus respectivas aristas con el coste del trozo que falta.
+
+En `_astar_virtual` eso no se materializa en el grafo (seria mutar el
+artefacto); se expresa en la cola:
+
+- **Semillas**: en vez de empezar con un solo nodo a coste 0, la cola nace
+  con los DOS extremos de la arista de origen, cada uno con el coste
+  parcial de llegar hasta el (`coste_arista * s / longitud`).
+- **Destino**: un pseudo-nodo `_TARGET` con heuristica 0. Cuando se cierra
+  un extremo de la arista de destino, se empuja `_TARGET` con el coste
+  acumulado mas el trozo final. El primer `_TARGET` que sale de la cola es
+  el optimo.
+- **Caso misma arista**: si los dos pines comparten arista, el paseo
+  directo entre ellos entra como candidato inicial. Compite de verdad:
+  puede ganar salir por un extremo, dar la vuelta por la paralela en
+  sombra y volver a entrar por el otro.
+
+Que el coste parcial sea proporcional (`coste * s / L`) es exacto en
+nuestro modelo, porque la fraccion de sol se guarda **por arista**: dentro
+de una arista el coste por metro es constante. Y la admisibilidad
+sobrevive: la arista virtual de entrada a D cuesta `c_d * s / L >= s >=`
+euclidea desde ese extremo hasta el punto destino (porque `c_d >= L`), asi
+que `h` sigue sin sobreestimar y el corte temprano sigue valiendo.
+
 ## Trampa tipica
 
 **Normalizar el peso rompe el optimo en silencio.** Si algun dia el coste

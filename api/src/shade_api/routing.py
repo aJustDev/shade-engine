@@ -23,10 +23,26 @@ popped from the queue is settled for good and the search can stop the
 moment the destination pops. :meth:`RouteGraph.astar` refuses edge costs
 below edge lengths: whoever normalizes the weight formula someday must
 scale the heuristic too, or A* silently stops being optimal.
+
+**Virtual endpoints.** People drop pins mid-street, not on junctions, so
+:meth:`RouteGraph.snap_point` projects them onto the closest *edge*
+(see docs/learning/point-segment-projection.md) and
+:meth:`RouteGraph.astar_points` routes between those interior points. That
+is the classic super-source construction: the search is seeded with both
+ends of the origin edge, each charged the partial cost of the stretch
+back to the pin, and a virtual destination node -- ``_TARGET`` in the
+queue, heuristic 0 -- collects both ends of the destination edge plus, when
+the two pins share an edge, the direct walk between them. Partial costs are
+exact because our weight has constant cost per meter within an edge (the
+sun fraction is stored per edge, not per meter), and consistency survives
+because a partial cost ``c * s / L`` is never below the arc ``s`` it
+covers, hence never below the euclidean estimate it replaces.
 """
 
 import heapq
+import math
 from bisect import bisect_right
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -34,6 +50,19 @@ import numpy as np
 import numpy.typing as npt
 
 from shade_core.routegraph import GraphRung, RouteGraphArtifact
+
+_TARGET = -1
+"""Pseudo-node standing for the virtual destination inside the queue.
+
+It sorts before every real node index, so on an f-value tie the goal pops
+first -- which is what we want, the search is over.
+"""
+
+_SAME_POINT_M = 1e-6
+"""Below this the two pins snapped to the same spot: no route to compute."""
+
+_MIN_SPAN_M = 1e-9
+"""Partial spans shorter than this are dropped (the pin sat on a node)."""
 
 
 @dataclass(frozen=True)
@@ -51,6 +80,38 @@ class RouteLeg:
 
 
 @dataclass(frozen=True)
+class EdgePoint:
+    """A point *on* the graph: which edge, and how far along it.
+
+    ``s_m`` is arc length in meters from the edge's ``edge_u`` end, always
+    within ``[0, edge_len]``. ``x``/``y`` are the projected coordinates of
+    the point itself (not of the query), and ``distance_m`` is how far the
+    caller's point sat from the network.
+    """
+
+    edge: int
+    s_m: float
+    x: float
+    y: float
+    distance_m: float
+
+
+@dataclass(frozen=True)
+class EdgeSpan:
+    """A walked interval of one edge, in arc length from the ``edge_u`` end.
+
+    A full forward traversal is ``(e, 0, L)`` and a full backward one is
+    ``(e, L, 0)``; route endpoints produce partial spans. The direction is
+    the sign of ``s_to - s_from`` and ``abs(s_to - s_from)`` is the walked
+    length, so spans carry everything assembly needs.
+    """
+
+    edge: int
+    s_from: float
+    s_to: float
+
+
+@dataclass(frozen=True)
 class RouteGraph:
     """A city's routable graph: the artifact plus its directed CSR adjacency."""
 
@@ -59,10 +120,29 @@ class RouteGraph:
     adj_node: npt.NDArray[np.int32]
     adj_edge: npt.NDArray[np.int32]
     adj_forward: npt.NDArray[np.bool_]
+    seg_x: npt.NDArray[np.float64]
+    seg_y: npt.NDArray[np.float64]
+    seg_dx: npt.NDArray[np.float64]
+    seg_dy: npt.NDArray[np.float64]
+    seg_len: npt.NDArray[np.float64]
+    seg_arc0: npt.NDArray[np.float64]
+    seg_edge: npt.NDArray[np.int32]
 
     @classmethod
     def build(cls, artifact: RouteGraphArtifact) -> RouteGraph:
-        """Directed CSR from the undirected edges: each emits u->v and v->u."""
+        """Directed CSR from the undirected edges, plus a flat segment table.
+
+        Two derived structures, both built once at load:
+
+        - the adjacency: each undirected edge emits u->v and v->u sharing
+          one edge id, so fractions and geometry are stored once;
+        - the segment table: every polyline segment of every edge flattened
+          into parallel arrays, which is what lets :meth:`snap_point`
+          project a pin onto the network with a single vectorized pass.
+          ``seg_arc0`` is the arc length from the start of *its own* edge to
+          the segment's first vertex, so a hit at parameter ``t`` maps back
+          to a position along the edge without any per-edge bookkeeping.
+        """
         n_nodes = len(artifact.node_x)
         n_edges = len(artifact.edge_len)
         heads = np.concatenate([artifact.edge_u, artifact.edge_v])
@@ -74,26 +154,71 @@ class RouteGraph:
         order = np.argsort(heads, kind="stable")
         indptr = np.zeros(n_nodes + 1, dtype=np.int64)
         np.cumsum(np.bincount(heads, minlength=n_nodes), out=indptr[1:])
+
+        # Ragged flattening: diff() over the concatenated vertices produces
+        # one bogus segment per edge boundary (last vertex of edge e to the
+        # first of e + 1); the mask drops exactly those.
+        offsets = artifact.geom_offsets
+        counts = np.diff(offsets)
+        dx = np.diff(artifact.geom_x)
+        dy = np.diff(artifact.geom_y)
+        keep = np.ones(len(dx), dtype=np.bool_)
+        keep[offsets[1:-1] - 1] = False
+        seg_dx, seg_dy = dx[keep], dy[keep]
+        seg_len = np.hypot(seg_dx, seg_dy)
+        seg_edge = np.repeat(np.arange(n_edges, dtype=np.int32), counts - 1)
+        # Arc from the start of the owning edge = global running arc minus
+        # the running arc at that edge's first segment.
+        arc = np.concatenate([[0.0], np.cumsum(seg_len)])[:-1]
+        first = offsets[:-1] - np.arange(n_edges)
         return cls(
             artifact=artifact,
             indptr=indptr,
             adj_node=tails[order].astype(np.int32),
             adj_edge=edges[order],
             adj_forward=forward[order],
+            seg_x=artifact.geom_x[:-1][keep],
+            seg_y=artifact.geom_y[:-1][keep],
+            seg_dx=seg_dx,
+            seg_dy=seg_dy,
+            seg_len=seg_len,
+            seg_arc0=arc - np.repeat(arc[first], counts - 1),
+            seg_edge=seg_edge,
         )
 
-    def nearest_node(self, x: float, y: float) -> tuple[int, float]:
-        """(node index, distance in meters) of the closest graph node.
+    def snap_point(self, x: float, y: float) -> EdgePoint:
+        """Project a point onto the closest edge of the network.
 
-        Brute force over all nodes: at ~13k nodes per city one vectorized
-        argmin costs microseconds; a spatial index would only add a
-        dependency. Trap acknowledged: nearest in a straight line may sit
-        across a river or a wall -- the route from it is still correct,
-        just possibly starting on the far side.
+        Per segment the projection is the clamped scalar parameter
+        ``t = clip(dot(p - a, d) / |d|^2, 0, 1)`` (see
+        docs/learning/point-segment-projection.md); the winner is the
+        smallest squared distance, compared squared to skip ~200k square
+        roots. Brute force over every segment: one vectorized pass is a
+        couple of milliseconds on Cordoba and a spatial index would only
+        add a dependency. Trap acknowledged: closest in a straight line may
+        sit across a river or a wall -- the route from it is still correct,
+        just possibly starting on the far bank.
         """
-        d2 = (self.artifact.node_x - x) ** 2 + (self.artifact.node_y - y) ** 2
+        length2 = self.seg_dx**2 + self.seg_dy**2
+        # Zero-length segments (repeated OSM vertices) collapse to t = 0.
+        divisor = np.where(length2 > 0.0, length2, 1.0)
+        along = (x - self.seg_x) * self.seg_dx + (y - self.seg_y) * self.seg_dy
+        t = np.clip(along / divisor, 0.0, 1.0)
+        px = self.seg_x + t * self.seg_dx
+        py = self.seg_y + t * self.seg_dy
+        d2 = (px - x) ** 2 + (py - y) ** 2
         index = int(np.argmin(d2))
-        return index, float(np.sqrt(d2[index]))
+        edge = int(self.seg_edge[index])
+        # Clamp: the float64 segment sums drift from the stored float32
+        # edge length by ~1e-7 m, and callers rely on s_m <= edge_len.
+        arc = self.seg_arc0[index] + t[index] * self.seg_len[index]
+        return EdgePoint(
+            edge=edge,
+            s_m=float(np.clip(arc, 0.0, self.artifact.edge_len[edge])),
+            x=float(px[index]),
+            y=float(py[index]),
+            distance_m=float(np.sqrt(d2[index])),
+        )
 
     def _ladder_year(self) -> int:
         return int(self.artifact.meta.ladder[0].date[:4])
@@ -140,36 +265,64 @@ class RouteGraph:
         high = fractions[:, rung.columns[upper].col].astype(np.float32) * scale
         return (np.float32(1.0) - weight) * low + weight * high
 
-    def astar(self, src: int, dst: int, edge_cost: npt.NDArray[np.float64]) -> list[int] | None:
-        """Cheapest path src -> dst as adjacency indices; None if unreachable.
+    def _astar_virtual(
+        self,
+        seeds: Sequence[tuple[int, float]],
+        targets: Mapping[int, float],
+        target_x: float,
+        target_y: float,
+        edge_cost: npt.NDArray[np.float64],
+        direct_cost: float = math.inf,
+    ) -> tuple[int, npt.NDArray[np.int64], npt.NDArray[np.int64]] | None:
+        """A* from a set of seeded nodes to a virtual destination.
 
-        ``edge_cost`` is per *undirected* edge (walking costs the same both
-        ways). Predecessors store the adjacency index, not the node, so a
-        cheaper parallel edge between the same two nodes survives path
-        reconstruction. See the module docstring for why the euclidean
-        heuristic is admissible and why costs below lengths are rejected.
+        ``seeds`` are ``(node, cost already spent to reach it)`` and
+        ``targets`` are ``(node, cost from it to the destination)``:
+        together they express the super-source/super-sink construction the
+        module docstring describes. ``direct_cost`` is the price of getting
+        there without touching any node at all (both pins on one edge).
+
+        Returns ``(entry node, pred_adj, pred_node)`` -- ``_TARGET`` as the
+        entry node meaning the direct walk won -- or None if unreachable.
+        Predecessors store the adjacency index, not the node, so a cheaper
+        parallel edge between the same two nodes survives reconstruction;
+        seeds keep ``pred_adj == -1`` as the stop sentinel.
         """
         lengths = self.artifact.edge_len.astype(np.float64)
         if np.any(edge_cost < lengths - 1e-6):
             raise ValueError("edge costs below edge lengths would break the A* heuristic")
-        if src == dst:
-            return []
         node_x, node_y = self.artifact.node_x, self.artifact.node_y
-        h = np.hypot(node_x - node_x[dst], node_y - node_y[dst])
+        h = np.hypot(node_x - target_x, node_y - target_y)
         n_nodes = len(node_x)
         dist = np.full(n_nodes, np.inf)
-        dist[src] = 0.0
         pred_adj = np.full(n_nodes, -1, dtype=np.int64)
         pred_node = np.full(n_nodes, -1, dtype=np.int64)
         settled = np.zeros(n_nodes, dtype=np.bool_)
-        frontier: list[tuple[float, int]] = [(float(h[src]), src)]
+        frontier: list[tuple[float, int]] = []
+        for node, spent in seeds:
+            if spent < float(dist[node]):
+                dist[node] = spent
+                heapq.heappush(frontier, (spent + float(h[node]), node))
+        best = direct_cost
+        entry = _TARGET
+        if math.isfinite(direct_cost):
+            heapq.heappush(frontier, (direct_cost, _TARGET))
         while frontier:
             _, node = heapq.heappop(frontier)
-            if node == dst:
-                break
+            if node == _TARGET:
+                # h(destination) = 0, so the first pop carries the cheapest
+                # arrival: every entry still queued has f >= this one.
+                return entry, pred_adj, pred_node
             if settled[node]:
                 continue
             settled[node] = True
+            tail = targets.get(node)
+            if tail is not None:
+                arrival = float(dist[node]) + tail
+                if arrival < best:
+                    best = arrival
+                    entry = node
+                    heapq.heappush(frontier, (arrival, _TARGET))
             for k in range(int(self.indptr[node]), int(self.indptr[node + 1])):
                 neighbor = int(self.adj_node[k])
                 if settled[neighbor]:
@@ -180,43 +333,149 @@ class RouteGraph:
                     pred_adj[neighbor] = k
                     pred_node[neighbor] = node
                     heapq.heappush(frontier, (candidate + float(h[neighbor]), neighbor))
-        if not np.isfinite(dist[dst]):
-            return None
-        path: list[int] = []
-        node = dst
-        while node != src:
-            path.append(int(pred_adj[node]))
+        return None
+
+    def _hops_from(
+        self,
+        node: int,
+        pred_adj: npt.NDArray[np.int64],
+        pred_node: npt.NDArray[np.int64],
+    ) -> tuple[list[int], int]:
+        """Walk predecessors back to a seed: (adjacency indices, seed node)."""
+        hops: list[int] = []
+        while pred_adj[node] != -1:
+            hops.append(int(pred_adj[node]))
             node = int(pred_node[node])
-        path.reverse()
-        return path
+        hops.reverse()
+        return hops, node
 
-    def assemble(self, adj_path: list[int], fractions: npt.NDArray[np.float32]) -> RouteLeg:
-        """Concatenate a path's edge polylines into one origin -> destination leg.
+    def astar(self, src: int, dst: int, edge_cost: npt.NDArray[np.float64]) -> list[int] | None:
+        """Cheapest node-to-node path as adjacency indices; None if unreachable.
 
-        Each hop's geometry is reversed when ridden against its stored
-        direction; shared joint vertices are dropped. ``sun_length_m``
-        weights each edge's length by its sun fraction at the queried
-        instant -- the same accounting the router optimized.
+        ``edge_cost`` is per *undirected* edge (walking costs the same both
+        ways). Node endpoints are the degenerate case of
+        :meth:`astar_points`: one seed and one target, both free.
+        """
+        result = self._astar_virtual(
+            [(src, 0.0)],
+            {dst: 0.0},
+            float(self.artifact.node_x[dst]),
+            float(self.artifact.node_y[dst]),
+            edge_cost,
+        )
+        if result is None:
+            return None
+        entry, pred_adj, pred_node = result
+        hops, _ = self._hops_from(entry, pred_adj, pred_node)
+        return hops
+
+    def astar_points(
+        self,
+        src: EdgePoint,
+        dst: EdgePoint,
+        edge_cost: npt.NDArray[np.float64],
+    ) -> list[EdgeSpan] | None:
+        """Cheapest walk between two points *on* edges, as spans.
+
+        Both pins usually sit mid-edge, so the route starts and ends with a
+        partial span. The stretch from a pin to an edge end costs its share
+        of the edge, ``cost * s / length``, which is exact under our weight
+        (uniform cost per meter within an edge). When both pins share an
+        edge, the walk straight along it competes in the queue with leaving
+        through one end and coming back through the other -- a real choice
+        when the parallel arc is shaded and the direct stretch is not.
+
+        Returns an empty list when both pins land on the same spot, and
+        None when no walk connects them.
         """
         artifact = self.artifact
+        src_len = float(artifact.edge_len[src.edge])
+        dst_len = float(artifact.edge_len[dst.edge])
+        src_cost = float(edge_cost[src.edge])
+        dst_cost = float(edge_cost[dst.edge])
+        direct = math.inf
+        if src.edge == dst.edge:
+            if abs(src.s_m - dst.s_m) <= _SAME_POINT_M:
+                return []
+            direct = src_cost * abs(dst.s_m - src.s_m) / src_len
+        src_u, src_v = int(artifact.edge_u[src.edge]), int(artifact.edge_v[src.edge])
+        dst_u, dst_v = int(artifact.edge_u[dst.edge]), int(artifact.edge_v[dst.edge])
+        result = self._astar_virtual(
+            [(src_u, src_cost * src.s_m / src_len), (src_v, src_cost * (1.0 - src.s_m / src_len))],
+            {dst_u: dst_cost * dst.s_m / dst_len, dst_v: dst_cost * (1.0 - dst.s_m / dst_len)},
+            dst.x,
+            dst.y,
+            edge_cost,
+            direct,
+        )
+        if result is None:
+            return None
+        entry, pred_adj, pred_node = result
+        if entry == _TARGET:  # never left the shared edge
+            return [EdgeSpan(edge=src.edge, s_from=src.s_m, s_to=dst.s_m)]
+        hops, exit_node = self._hops_from(entry, pred_adj, pred_node)
+        spans: list[EdgeSpan] = []
+        exit_s = 0.0 if exit_node == src_u else src_len
+        if abs(src.s_m - exit_s) > _MIN_SPAN_M:
+            spans.append(EdgeSpan(edge=src.edge, s_from=src.s_m, s_to=exit_s))
+        for k in hops:
+            edge = int(self.adj_edge[k])
+            length = float(artifact.edge_len[edge])
+            spans.append(
+                EdgeSpan(edge=edge, s_from=0.0, s_to=length)
+                if self.adj_forward[k]
+                else EdgeSpan(edge=edge, s_from=length, s_to=0.0)
+            )
+        entry_s = 0.0 if entry == dst_u else dst_len
+        if abs(entry_s - dst.s_m) > _MIN_SPAN_M:
+            spans.append(EdgeSpan(edge=dst.edge, s_from=entry_s, s_to=dst.s_m))
+        return spans
+
+    def _span_polyline(self, span: EdgeSpan) -> tuple[npt.NDArray[np.float64], ...]:
+        """The stored polyline clipped to a span, oriented as walked."""
+        artifact = self.artifact
+        start, stop = artifact.geom_offsets[span.edge], artifact.geom_offsets[span.edge + 1]
+        xs = artifact.geom_x[start:stop]
+        ys = artifact.geom_y[start:stop]
+        low, high = min(span.s_from, span.s_to), max(span.s_from, span.s_to)
+        arc = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xs), np.diff(ys)))])
+        # Spans measure in the stored (float32) edge length while this sum is
+        # float64: rescale so both agree at the ends, or a whole traversal
+        # would stop a hair short of its last vertex.
+        arc *= float(artifact.edge_len[span.edge]) / arc[-1]
+        # Cut ends then land exactly on stored vertices when the span is
+        # whole, so a full traversal reproduces the polyline.
+        inner = (arc > low) & (arc < high)
+        cut_x = np.concatenate([[np.interp(low, arc, xs)], xs[inner], [np.interp(high, arc, xs)]])
+        cut_y = np.concatenate([[np.interp(low, arc, ys)], ys[inner], [np.interp(high, arc, ys)]])
+        if span.s_from > span.s_to:
+            return cut_x[::-1], cut_y[::-1]
+        return cut_x, cut_y
+
+    def assemble_spans(self, spans: list[EdgeSpan], fractions: npt.NDArray[np.float32]) -> RouteLeg:
+        """Stitch walked spans into one origin -> destination leg.
+
+        Each span contributes its clipped polyline, oriented as walked;
+        shared joint vertices are dropped. ``sun_length_m`` weights the
+        walked meters by the edge's sun fraction at the queried instant --
+        the same accounting the router optimized. Approximation worth
+        naming: the artifact stores one fraction per *edge*, so a partial
+        span is charged that fraction pro rata rather than resampling the
+        stretch actually walked.
+        """
         xs_parts: list[npt.NDArray[np.float64]] = []
         ys_parts: list[npt.NDArray[np.float64]] = []
         length = 0.0
         sun_length = 0.0
-        for position, k in enumerate(adj_path):
-            edge = int(self.adj_edge[k])
-            start, stop = artifact.geom_offsets[edge], artifact.geom_offsets[edge + 1]
-            xs = artifact.geom_x[start:stop]
-            ys = artifact.geom_y[start:stop]
-            if not self.adj_forward[k]:
-                xs, ys = xs[::-1], ys[::-1]
-            if position > 0:  # the joint vertex is the previous hop's last one
+        for position, span in enumerate(spans):
+            xs, ys = self._span_polyline(span)
+            if position > 0:  # the joint vertex is the previous span's last one
                 xs, ys = xs[1:], ys[1:]
             xs_parts.append(xs)
             ys_parts.append(ys)
-            edge_length = float(artifact.edge_len[edge])
-            length += edge_length
-            sun_length += edge_length * float(fractions[edge])
+            walked = abs(span.s_to - span.s_from)
+            length += walked
+            sun_length += walked * float(fractions[span.edge])
         return RouteLeg(
             xs=np.concatenate(xs_parts),
             ys=np.concatenate(ys_parts),
@@ -224,8 +483,24 @@ class RouteGraph:
             sun_length_m=sun_length,
         )
 
-    def trivial_leg(self, node: int) -> RouteLeg:
-        """Origin and destination snapped to the same node: a zero-length leg."""
-        x = self.artifact.node_x[node]
-        y = self.artifact.node_y[node]
-        return RouteLeg(xs=np.array([x, x]), ys=np.array([y, y]), length_m=0.0, sun_length_m=0.0)
+    def assemble(self, adj_path: list[int], fractions: npt.NDArray[np.float32]) -> RouteLeg:
+        """Assemble a node-to-node path: every hop is a whole-edge span."""
+        spans = []
+        for k in adj_path:
+            edge = int(self.adj_edge[k])
+            length = float(self.artifact.edge_len[edge])
+            spans.append(
+                EdgeSpan(edge=edge, s_from=0.0, s_to=length)
+                if self.adj_forward[k]
+                else EdgeSpan(edge=edge, s_from=length, s_to=0.0)
+            )
+        return self.assemble_spans(spans, fractions)
+
+    def point_leg(self, point: EdgePoint) -> RouteLeg:
+        """Origin and destination snapped to the same spot: a zero-length leg."""
+        return RouteLeg(
+            xs=np.array([point.x, point.x]),
+            ys=np.array([point.y, point.y]),
+            length_m=0.0,
+            sun_length_m=0.0,
+        )

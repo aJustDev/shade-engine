@@ -3,10 +3,11 @@
 Division of labor: the frozen graph artifact answers "how sunny is each
 street at that instant" (precomputed fractions, resolved through the
 declination ladder), :mod:`shade_api.routing` answers "cheapest path"
-(A* over ``length * (1 + alpha * sun_fraction)``), and this router only
-parses, snaps, and serializes. The response always carries the shortest
-(alpha = 0) route next to the shaded one: "1.42 km at 12% sun vs 1.31 km
-at 54%" is the answer people actually want.
+(A* over ``length * (1 + alpha * sun_fraction)``, between points snapped
+onto edges rather than to junctions), and this router only parses, snaps,
+and serializes. The response always carries the shortest (alpha = 0) route
+next to the shaded one: "1.42 km at 12% sun vs 1.31 km at 54%" is the
+answer people actually want.
 
 At night there is no sun to avoid: one A* over bare lengths, both legs
 identical, ``status: "night"``.
@@ -20,7 +21,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 
 from shade_api.registry import CityRuntime
 from shade_api.routes import _AT_DESCRIPTION, Registry, _locate, resolve_at
-from shade_api.routing import RouteGraph, RouteLeg
+from shade_api.routing import EdgePoint, RouteGraph, RouteLeg
 from shade_api.schemas import RouteLegOut, RoutePointOut, ShadedRouteOut, SunOut
 from shade_core.solar import sun_position
 
@@ -44,14 +45,26 @@ def _parse_point(value: str, name: str) -> tuple[float, float]:
     return lat, lon
 
 
-def _snap(graph: RouteGraph, x: float, y: float, name: str) -> tuple[int, float]:
-    node, distance = graph.nearest_node(x, y)
-    if distance > SNAP_MAX_M:
+def _snap(graph: RouteGraph, x: float, y: float, name: str) -> EdgePoint:
+    point = graph.snap_point(x, y)
+    if point.distance_m > SNAP_MAX_M:
         raise HTTPException(
             status_code=400,
             detail=f"no walkable path within {SNAP_MAX_M:.0f} m of {name}",
         )
-    return node, distance
+    return point
+
+
+def _point_out(runtime: CityRuntime, lat: float, lon: float, point: EdgePoint) -> RoutePointOut:
+    """The requested point plus where it actually landed on the network."""
+    snapped_lon, snapped_lat = runtime.to_projected.transform(point.x, point.y, direction="INVERSE")
+    return RoutePointOut(
+        lat=lat,
+        lon=lon,
+        snapped_lat=round(float(snapped_lat), 6),
+        snapped_lon=round(float(snapped_lon), 6),
+        snap_distance_m=round(point.distance_m, 1),
+    )
 
 
 def _leg_out(runtime: CityRuntime, leg: RouteLeg) -> RouteLegOut:
@@ -102,8 +115,8 @@ def shaded_route(
                 "and redeploy its artifacts"
             ),
         )
-    src, src_distance = _snap(graph, from_x, from_y, "origin")
-    dst, dst_distance = _snap(graph, to_x, to_y, "destination")
+    src = _snap(graph, from_x, from_y, "origin")
+    dst = _snap(graph, to_x, to_y, "destination")
 
     when = resolve_at(at, runtime.tz)
     sun = sun_position(from_lat, from_lon, when)
@@ -115,17 +128,17 @@ def shaded_route(
         fractions = np.zeros(len(edge_len), dtype=np.float32)
         status = "night"
 
-    if src == dst:
-        shaded_leg = shortest_leg = graph.trivial_leg(src)
+    shaded_spans = graph.astar_points(src, dst, edge_len * (1.0 + alpha * fractions))
+    if shaded_spans is None:
+        raise HTTPException(status_code=400, detail="no route between origin and destination")
+    if not shaded_spans:  # both pins snapped to the same spot
+        shaded_leg = shortest_leg = graph.point_leg(src)
     else:
-        shaded_path = graph.astar(src, dst, edge_len * (1.0 + alpha * fractions))
-        if shaded_path is None:
-            raise HTTPException(status_code=400, detail="no route between origin and destination")
-        shaded_leg = graph.assemble(shaded_path, fractions)
+        shaded_leg = graph.assemble_spans(shaded_spans, fractions)
         if alpha > 0.0 and status == "ok":
-            shortest_path = graph.astar(src, dst, edge_len)
-            assert shortest_path is not None  # same endpoints just proved reachable
-            shortest_leg = graph.assemble(shortest_path, fractions)
+            shortest_spans = graph.astar_points(src, dst, edge_len)
+            assert shortest_spans is not None  # same endpoints just proved reachable
+            shortest_leg = graph.assemble_spans(shortest_spans, fractions)
         else:  # alpha = 0 or night: the shaded run already minimized length
             shortest_leg = shaded_leg
 
@@ -138,8 +151,8 @@ def shaded_route(
         sun=SunOut(
             azimuth_deg=round(sun.azimuth_deg, 2), elevation_deg=round(sun.elevation_deg, 2)
         ),
-        origin=RoutePointOut(lat=from_lat, lon=from_lon, snap_distance_m=round(src_distance, 1)),
-        destination=RoutePointOut(lat=to_lat, lon=to_lon, snap_distance_m=round(dst_distance, 1)),
+        origin=_point_out(runtime, from_lat, from_lon, src),
+        destination=_point_out(runtime, to_lat, to_lon, dst),
         shaded=_leg_out(runtime, shaded_leg),
         shortest=_leg_out(runtime, shortest_leg),
         attribution=list(

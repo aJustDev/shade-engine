@@ -135,12 +135,14 @@ class ParkingNearbyOut(BaseModel):
 
 
 class RoutePointOut(BaseModel):
-    """A route endpoint after snapping to the pedestrian graph."""
+    """A route endpoint: as requested, and where it landed on the graph."""
 
     lat: float
     lon: float
+    snapped_lat: float = Field(description="Where the point met the network, WGS84")
+    snapped_lon: float = Field(description="Where the point met the network, WGS84")
     snap_distance_m: float = Field(
-        description="Distance from the requested point to the snapped graph node, meters"
+        description="Distance from the requested point to the snapped point on the network, meters"
     )
 
 

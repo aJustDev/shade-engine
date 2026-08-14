@@ -6,7 +6,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from shade_api.routing import RouteGraph
+from shade_api.routing import EdgePoint, EdgeSpan, RouteGraph
 from shade_core.routegraph import (
     OSM_ATTRIBUTION,
     ROUTE_GRAPH_SCHEMA_VERSION,
@@ -152,15 +152,11 @@ def test_astar_unreachable_returns_none() -> None:
     assert graph.astar(0, 3, artifact.edge_len.astype(np.float64)) is None
 
 
-def test_astar_same_node_is_empty_and_trivial_leg() -> None:
+def test_astar_same_node_is_empty() -> None:
     nodes: list[Node] = [(3.0, 4.0), (10.0, 4.0)]
     artifact = _artifact(nodes, [(0, 1, None)], [[0] * 3])
     graph = RouteGraph.build(artifact)
     assert graph.astar(0, 0, artifact.edge_len.astype(np.float64)) == []
-    leg = graph.trivial_leg(0)
-    assert leg.length_m == 0.0
-    assert leg.sun_fraction == 0.0
-    assert leg.xs.tolist() == [3.0, 3.0]
 
 
 def test_astar_rejects_costs_below_lengths() -> None:
@@ -199,13 +195,243 @@ def test_assemble_orients_and_joins_geometry() -> None:
 # --- snapping ------------------------------------------------------------------
 
 
-def test_nearest_node() -> None:
+def test_snap_point_projects_onto_edge_interior() -> None:
+    """A pin beside a street lands on the street, not on the far junction."""
     nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0), (0.0, 50.0)]
     artifact = _artifact(nodes, [(0, 1, None), (0, 2, None)], [[0] * 3] * 2)
     graph = RouteGraph.build(artifact)
-    node, distance = graph.nearest_node(90.0, 10.0)
-    assert node == 1
-    assert distance == pytest.approx(np.hypot(10.0, 10.0))
+    point = graph.snap_point(60.0, 8.0)
+    assert point.edge == 0
+    assert point.s_m == pytest.approx(60.0)
+    assert (point.x, point.y) == pytest.approx((60.0, 0.0))
+    assert point.distance_m == pytest.approx(8.0)
+
+
+def test_snap_point_prefers_closer_parallel_geometry() -> None:
+    """Straight and arc between the same nodes: the arc wins when nearer."""
+    nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0)]
+    edges: list[Edge] = [(0, 1, None), (0, 1, [(0.0, 0.0), (50.0, 40.0), (100.0, 0.0)])]
+    artifact = _artifact(nodes, edges, [[0] * 3] * 2)
+    graph = RouteGraph.build(artifact)
+    assert graph.snap_point(50.0, 38.0).edge == 1
+    assert graph.snap_point(50.0, 2.0).edge == 0
+
+
+def test_snap_point_clamps_beyond_segment_ends() -> None:
+    """Past the end the projection clamps to the vertex; zero-length
+    segments (repeated OSM vertices) must not divide by zero."""
+    nodes: list[Node] = [(0.0, 0.0), (10.0, 0.0)]
+    edges: list[Edge] = [(0, 1, [(0.0, 0.0), (5.0, 0.0), (5.0, 0.0), (10.0, 0.0)])]
+    artifact = _artifact(nodes, edges, [[0] * 3])
+    graph = RouteGraph.build(artifact)
+    point = graph.snap_point(40.0, 3.0)
+    assert point.s_m == pytest.approx(10.0)
+    assert (point.x, point.y) == pytest.approx((10.0, 0.0))
+    assert point.distance_m == pytest.approx(float(np.hypot(30.0, 3.0)))
+
+
+# --- routing between points on edges -------------------------------------------
+
+
+def _edge_point(artifact: RouteGraphArtifact, edge: int, s_m: float) -> EdgePoint:
+    """An EdgePoint at arc length s_m, with the matching coordinates."""
+    start, stop = int(artifact.geom_offsets[edge]), int(artifact.geom_offsets[edge + 1])
+    xs, ys = artifact.geom_x[start:stop], artifact.geom_y[start:stop]
+    arc = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xs), np.diff(ys)))])
+    return EdgePoint(
+        edge=edge,
+        s_m=s_m,
+        x=float(np.interp(s_m, arc, xs)),
+        y=float(np.interp(s_m, arc, ys)),
+        distance_m=0.0,
+    )
+
+
+def _spans_cost(artifact: RouteGraphArtifact, spans: list[EdgeSpan], cost: np.ndarray) -> float:
+    """What the walked spans cost, charging each edge pro rata."""
+    return float(
+        sum(
+            abs(span.s_to - span.s_from) * cost[span.edge] / float(artifact.edge_len[span.edge])
+            for span in spans
+        )
+    )
+
+
+def _virtual_oracle(
+    artifact: RouteGraphArtifact, cost: np.ndarray, src: EdgePoint, dst: EdgePoint
+) -> float:
+    """Brute-force cost with the virtual endpoints spelled out as nodes."""
+    oracle = nx.MultiGraph()
+    for index in range(len(artifact.edge_len)):
+        oracle.add_edge(
+            int(artifact.edge_u[index]), int(artifact.edge_v[index]), weight=float(cost[index])
+        )
+    for label, point in (("O", src), ("D", dst)):
+        length = float(artifact.edge_len[point.edge])
+        share = float(cost[point.edge]) / length
+        tail = length - point.s_m
+        oracle.add_edge(label, int(artifact.edge_u[point.edge]), weight=share * point.s_m)
+        oracle.add_edge(label, int(artifact.edge_v[point.edge]), weight=share * tail)
+    if src.edge == dst.edge:
+        share = float(cost[src.edge]) / float(artifact.edge_len[src.edge])
+        oracle.add_edge("O", "D", weight=share * abs(dst.s_m - src.s_m))
+    return float(nx.dijkstra_path_length(oracle, "O", "D"))
+
+
+def test_astar_points_matches_virtual_dijkstra_oracle() -> None:
+    """Random pins on a seeded grid: same cost as the explicit oracle."""
+    rng = np.random.default_rng(7)
+    side = 5
+    nodes: list[Node] = [(float(i * 10), float(j * 10)) for i in range(side) for j in range(side)]
+    edges: list[Edge] = []
+    for i in range(side):
+        for j in range(side):
+            if i + 1 < side:
+                edges.append((i * side + j, (i + 1) * side + j, None))
+            if j + 1 < side:
+                edges.append((i * side + j, i * side + j + 1, None))
+    artifact = _artifact(nodes, edges, [[0, 0, 0]] * len(edges))
+    graph = RouteGraph.build(artifact)
+    cost = artifact.edge_len.astype(np.float64) * (1.0 + rng.uniform(0.0, 3.0, len(edges)))
+
+    queries = rng.uniform(-5.0, 45.0, size=(30, 4))
+    for from_x, from_y, to_x, to_y in queries:
+        src = graph.snap_point(float(from_x), float(from_y))
+        dst = graph.snap_point(float(to_x), float(to_y))
+        spans = graph.astar_points(src, dst, cost)
+        assert spans is not None
+        expected = _virtual_oracle(artifact, cost, src, dst)
+        assert _spans_cost(artifact, spans, cost) == pytest.approx(expected)
+
+
+def test_astar_points_same_edge_direct_wins() -> None:
+    """Two pins on one street: walk it, do not detour through a junction."""
+    nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0)]
+    artifact = _artifact(nodes, [(0, 1, None)], [[0] * 3])
+    graph = RouteGraph.build(artifact)
+    spans = graph.astar_points(
+        _edge_point(artifact, 0, 20.0),
+        _edge_point(artifact, 0, 75.0),
+        artifact.edge_len.astype(np.float64),
+    )
+    assert spans is not None
+    assert spans == [EdgeSpan(edge=0, s_from=20.0, s_to=75.0)]
+    leg = graph.assemble_spans(spans, np.zeros(1, dtype=np.float32))
+    assert leg.length_m == pytest.approx(55.0)
+    assert leg.xs.tolist() == [20.0, 75.0]
+
+
+def test_astar_points_same_edge_detour_via_parallel_wins() -> None:
+    """The stretch between the pins is sunny and a shaded arc parallels it:
+    leaving the edge and coming back beats walking straight through."""
+    nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0)]
+    apex = (50.0, float(np.sqrt(60.0**2 - 50.0**2)))  # each half exactly 60 m
+    edges: list[Edge] = [(0, 1, None), (0, 1, [(0.0, 0.0), apex, (100.0, 0.0)])]
+    artifact = _artifact(nodes, edges, [[255] * 3, [0] * 3])
+    graph = RouteGraph.build(artifact)
+    fractions = graph.fractions_at(datetime.fromisoformat("2026-07-01T11:00"))
+    cost = artifact.edge_len.astype(np.float64) * (1.0 + 3.0 * fractions)
+    src, dst = _edge_point(artifact, 0, 5.0), _edge_point(artifact, 0, 95.0)
+
+    spans = graph.astar_points(src, dst, cost)
+    assert spans is not None
+    assert [span.edge for span in spans] == [0, 1, 0]  # out, around, back in
+    assert _spans_cost(artifact, spans, cost) == pytest.approx(160.0)  # vs 360 straight
+    leg = graph.assemble_spans(spans, fractions)
+    assert leg.length_m == pytest.approx(130.0)  # 5 + 120 + 5
+    assert leg.sun_length_m == pytest.approx(10.0)  # only the two stubs
+
+    # Without the sun penalty the direct walk wins.
+    direct = graph.astar_points(src, dst, artifact.edge_len.astype(np.float64))
+    assert direct == [EdgeSpan(edge=0, s_from=5.0, s_to=95.0)]
+
+
+def test_astar_points_between_parallel_edges() -> None:
+    """Origin on the straight, destination on the arc: two partial spans."""
+    nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0)]
+    apex = (50.0, float(np.sqrt(60.0**2 - 50.0**2)))
+    edges: list[Edge] = [(0, 1, None), (0, 1, [(0.0, 0.0), apex, (100.0, 0.0)])]
+    artifact = _artifact(nodes, edges, [[0] * 3] * 2)
+    graph = RouteGraph.build(artifact)
+    spans = graph.astar_points(
+        _edge_point(artifact, 0, 50.0),
+        _edge_point(artifact, 1, 60.0),
+        artifact.edge_len.astype(np.float64),
+    )
+    assert spans is not None
+    assert [span.edge for span in spans] == [0, 1]
+    assert sum(abs(span.s_to - span.s_from) for span in spans) == pytest.approx(110.0)
+
+
+def test_astar_points_node_coincident_matches_astar() -> None:
+    """Pins exactly on junctions reproduce the node-to-node search."""
+    nodes: list[Node] = [(0.0, 0.0), (30.0, 0.0), (30.0, 40.0)]
+    edges: list[Edge] = [(0, 1, None), (1, 2, None)]
+    artifact = _artifact(nodes, edges, [[0] * 3] * 2)
+    graph = RouteGraph.build(artifact)
+    cost = artifact.edge_len.astype(np.float64)
+    path = graph.astar(0, 2, cost)
+    spans = graph.astar_points(_edge_point(artifact, 0, 0.0), _edge_point(artifact, 1, 40.0), cost)
+    assert path is not None and spans is not None
+    assert _spans_cost(artifact, spans, cost) == pytest.approx(_path_cost(graph, path, cost))
+    assert [span.edge for span in spans] == [0, 1]
+
+
+def test_astar_points_identical_point_returns_empty() -> None:
+    artifact = _artifact([(0.0, 0.0), (10.0, 0.0)], [(0, 1, None)], [[0] * 3])
+    graph = RouteGraph.build(artifact)
+    point = _edge_point(artifact, 0, 4.0)
+    assert graph.astar_points(point, point, artifact.edge_len.astype(np.float64)) == []
+
+
+def test_point_leg_is_zero_length() -> None:
+    artifact = _artifact([(3.0, 4.0), (10.0, 4.0)], [(0, 1, None)], [[0] * 3])
+    graph = RouteGraph.build(artifact)
+    leg = graph.point_leg(_edge_point(artifact, 0, 0.0))
+    assert leg.length_m == 0.0
+    assert leg.sun_fraction == 0.0
+    assert leg.xs.tolist() == [3.0, 3.0]
+
+
+def test_astar_points_unreachable_returns_none() -> None:
+    nodes: list[Node] = [(0.0, 0.0), (10.0, 0.0), (100.0, 0.0), (110.0, 0.0)]
+    edges: list[Edge] = [(0, 1, None), (2, 3, None)]
+    artifact = _artifact(nodes, edges, [[0] * 3] * 2)
+    graph = RouteGraph.build(artifact)
+    spans = graph.astar_points(
+        _edge_point(artifact, 0, 5.0),
+        _edge_point(artifact, 1, 5.0),
+        artifact.edge_len.astype(np.float64),
+    )
+    assert spans is None
+
+
+def test_astar_points_rejects_costs_below_lengths() -> None:
+    artifact = _artifact([(0.0, 0.0), (10.0, 0.0)], [(0, 1, None)], [[0] * 3])
+    graph = RouteGraph.build(artifact)
+    with pytest.raises(ValueError, match="heuristic"):
+        graph.astar_points(
+            _edge_point(artifact, 0, 1.0), _edge_point(artifact, 0, 9.0), np.array([5.0])
+        )
+
+
+def test_assemble_spans_cuts_partial_geometry() -> None:
+    """A span clips the polyline at exact arc positions, either direction."""
+    nodes: list[Node] = [(0.0, 0.0), (10.0, 10.0)]
+    edges: list[Edge] = [(0, 1, [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)])]
+    artifact = _artifact(nodes, edges, [[255] * 3])
+    graph = RouteGraph.build(artifact)
+    fractions = np.array([0.5], dtype=np.float32)
+
+    leg = graph.assemble_spans([EdgeSpan(edge=0, s_from=5.0, s_to=15.0)], fractions)
+    assert leg.xs.tolist() == [5.0, 10.0, 10.0]
+    assert leg.ys.tolist() == [0.0, 0.0, 5.0]
+    assert leg.length_m == pytest.approx(10.0)
+    assert leg.sun_length_m == pytest.approx(5.0)
+
+    backward = graph.assemble_spans([EdgeSpan(edge=0, s_from=15.0, s_to=5.0)], fractions)
+    assert backward.xs.tolist() == [10.0, 10.0, 5.0]
+    assert backward.ys.tolist() == [5.0, 0.0, 0.0]
 
 
 # --- fraction resolution -------------------------------------------------------
