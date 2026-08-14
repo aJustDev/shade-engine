@@ -242,24 +242,23 @@ para el precalculo solar. El artefacto final elimina el termino de RAM: los
 arrays cargados rondan ~10-25 MB por ciudad frente a los 223 MiB del grafo
 networkx.
 
-Ops pendiente (cierra la fase; los DOS grafos ya estan construidos en local
-con datos sanos -- cordoba se re-espejo del VPS antes, verify 6/6):
+Ops HECHA (2026-08-14): 12 commits (fases 8, 8.5 y 8.6) subidos a main, CI
+verde y autodeploy correcto; los grafos schema 2 de montilla y cordoba
+viven ya en `/opt/shade/data/cities/<id>/v1/graph/`.
 
-1. Push a main (CI verde -> autodeploy: la imagen nueva trae el endpoint).
-2. Subir los grafos (KBs):
-   `rsync -a data/cities/montilla/v1/graph/ cartagena:/opt/shade/data/cities/montilla/v1/graph/`
-   `rsync -a data/cities/cordoba/v1/graph/ cartagena:/opt/shade/data/cities/cordoba/v1/graph/`
-3. `docker compose restart api` y smoke:
-   `curl "https://shade.ajustino.dev/v1/routes/shaded?city=cordoba&from=37.8846,-4.7690&to=37.8846,-4.7830&at=2026-06-21T19:00&alpha=1"`
-   (esperado: corta ~1.41 km / 47% sol, sombreada ~1.57 km / 18%).
-4. Vista rapida del visor contra prod (SHADE_VIEWER_UPSTREAM) y marcar la
-   fase como hecha aqui.
+Orden que se siguio y por que: **datos primero, codigo despues**, al reves
+de lo que decia el aviso original. Se pudo porque se verifico antes que
+prod NO tenia ningun grafo y que `/v1/routes/shaded` devolvia 404: la
+imagen desplegada era anterior a la Fase 8 y no tiene cargador de grafos,
+asi que ignora el directorio. Y conviene: la API carga los grafos AL
+ARRANCAR y el deploy recrea el contenedor, asi que con el orden inverso el
+contenedor nuevo habria arrancado sin grafos (503 en rutas) y habria hecho
+falta un segundo reinicio.
 
-ATENCION (2026-08-14, tras la Fase 8.5): los grafos se REGENERARON con
-schema 2 (matriz de sombra vegetal). El paso 2 sube ya los nuevos, y el
-push del paso 1 debe ir ANTES o A LA VEZ que el rsync: una API vieja
-rechaza el artefacto v2 y una API nueva rechaza el v1, en ambos casos con
-error accionable al cargar (no silencioso).
+AVISO vigente para la proxima: cuando prod YA tenga grafos, un cambio de
+`ROUTE_GRAPH_SCHEMA_VERSION` obliga a coordinar imagen y datos -- una API
+vieja rechaza un artefacto nuevo y viceversa, siempre con error accionable
+al cargar (no en silencio), pero con corte.
 
 Roadmap anotado (fuera de la fase): modo circuito zona+duracion; port del
 modo ruta a la consola de ajustinodev (tras cerrar esta ops).
