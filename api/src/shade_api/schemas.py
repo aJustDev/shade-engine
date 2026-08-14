@@ -134,6 +134,46 @@ class ParkingNearbyOut(BaseModel):
     attribution: list[str]
 
 
+class RoutePointOut(BaseModel):
+    """A route endpoint after snapping to the pedestrian graph."""
+
+    lat: float
+    lon: float
+    snap_distance_m: float = Field(
+        description="Distance from the requested point to the snapped graph node, meters"
+    )
+
+
+class RouteLegOut(BaseModel):
+    """One walking route with its sun exposure accounting."""
+
+    geometry: dict[str, Any] = Field(description="GeoJSON LineString, WGS84 lon-lat")
+    length_m: float
+    sun_length_m: float = Field(description="Meters of the route walked in the sun")
+    sun_fraction: float = Field(
+        description="Length-weighted fraction of the route in the sun; 0 at night"
+    )
+
+
+class ShadedRouteOut(BaseModel):
+    """Shade-optimized walking route plus the shortest route as reference."""
+
+    city: str
+    at: datetime = Field(description="The instant answered for, in the city's timezone")
+    status: str = Field(description="'ok', or 'night' (no sun: both routes are the shortest)")
+    alpha: float = Field(
+        description=(
+            "Detour appetite used: an edge fully in the sun costs (1 + alpha) times its length"
+        )
+    )
+    sun: SunOut
+    origin: RoutePointOut
+    destination: RoutePointOut
+    shaded: RouteLegOut
+    shortest: RouteLegOut = Field(description="The alpha = 0 route, for comparison")
+    attribution: list[str]
+
+
 class HealthOut(BaseModel):
     status: str
     cities: int

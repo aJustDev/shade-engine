@@ -13,9 +13,11 @@ from zoneinfo import ZoneInfo
 
 from pyproj import Transformer
 
+from shade_api.routing import RouteGraph
 from shade_api.settings import ApiSettings
 from shade_core.artifacts import METADATA_FILENAME, BuildMetadata, SceneReader
 from shade_core.config import CityConfig, load_city
+from shade_core.routegraph import load_route_graph
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ class CityRuntime:
     to_projected: Transformer  # EPSG:4326 -> city CRS, always_xy (lon, lat) in
     bbox_wgs84: tuple[float, float, float, float]  # (min_lon, min_lat, max_lon, max_lat)
     tz: ZoneInfo
+    route_graph: RouteGraph | None  # None until `shade-engine graph <city>` runs
 
 
 class CityRegistry:
@@ -68,6 +71,15 @@ class CityRegistry:
             bbox_wgs84 = to_projected.transform_bounds(
                 min_x, min_y, max_x, max_y, direction="INVERSE"
             )
+            # The pedestrian graph is optional (a normal state for a city
+            # whose `shade-engine graph` never ran: routes answer 503). A
+            # graph that exists but fails its coherence checks aborts
+            # startup, same policy as a corrupt raster artifact.
+            try:
+                route_graph = RouteGraph.build(load_route_graph(artifact_dir))
+            except FileNotFoundError:
+                logger.info("city %s has no pedestrian graph; routes disabled", config.id)
+                route_graph = None
             cities[config.id] = CityRuntime(
                 config=config,
                 metadata=metadata,
@@ -75,6 +87,7 @@ class CityRegistry:
                 to_projected=to_projected,
                 bbox_wgs84=bbox_wgs84,
                 tz=ZoneInfo(config.timezone),
+                route_graph=route_graph,
             )
         return cls(cities)
 

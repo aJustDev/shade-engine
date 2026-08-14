@@ -20,6 +20,7 @@ from shade_api.ratelimit import RateLimitMiddleware
 from shade_api.registry import CityRegistry
 from shade_api.routes import health_router, router
 from shade_api.settings import ApiSettings
+from shade_api.shaded_routes import router as shaded_routes_router
 from shade_core.db import make_engine
 
 _DESCRIPTION = (
@@ -63,6 +64,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         )
     app.include_router(router)
     app.include_router(parking_router)
+    app.include_router(shaded_routes_router)
     app.include_router(health_router)
     return app
 
