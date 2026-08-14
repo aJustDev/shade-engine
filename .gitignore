@@ -15,3 +15,6 @@ dist/
 
 # Local raster artifacts and downloads (COGs, LAZ) live outside git
 data/
+
+# Scratch del MCP de Playwright (capturas y logs de sesiones de agente)
+.playwright-mcp/

@@ -488,6 +488,13 @@ grafo de la Fase 8; el diagnostico depende de la Fase 10.
 - [ ] Conexion con refugios climaticos municipales (capa externa si el
       ayuntamiento la publica; nosotros enrutamos y evaluamos, no designamos)
 
+Los datos externos para esto YA ESTAN LOCALIZADOS y verificados (2026-08-14):
+ver `docs/fuentes-de-datos-cordoba.md`. Los 8 refugios climaticos existen pero
+solo como PDF sin coordenadas (transcritos en ese documento), y el ayuntamiento
+publica ademas 89.833 arboles con especie, 674 fuentes de beber y 2.315 zonas
+verdes via WFS en EPSG:25830. Nada integrado todavia; el documento registra
+URLs, conteos dentro de nuestro bbox y trampas.
+
 Criterio de salida (provisional): entre dos puntos del casco en ola de calor, la
 ruta fresca evita las calles de MRT alto; un mapa de priorizacion senala calles
 concretas donde plantar.
@@ -999,3 +1006,38 @@ cordoba --output-root data/cities-rebuild`; despues el basemap (el v1
   push + rsync de los dos graph/ + restart api + smoke (ya no hay build
   de grafo pendiente en el VPS). El aviso de "cordoba local corrupta"
   queda OBSOLETO: data/cities/cordoba/v1 es ahora espejo del rebuild sano.
+- 2026-08-14 (fuentes de datos abiertos de Cordoba, solo reconocimiento):
+  registradas en `docs/fuentes-de-datos-cordoba.md`. Nada integrado. Tres
+  entradas: portal CKAN `datosabiertos.cordoba.es` (145 datasets, API v3),
+  GeoServer WFS `ide.cordoba.es/geoserver/idecordoba/wfs` (105 capas,
+  nativo en EPSG:25830, el mismo CRS en el que calculamos) y el PDF de
+  refugios climaticos de verano 2026 (8 sitios, sin coordenadas,
+  transcrito). Dentro de nuestro bbox: 74,766 arboles con especie, 2,879
+  palmeras, 1,673 zonas verdes, 547 fuentes de beber, 87,509
+  construcciones. El buscador de cordoba.es/transparencia/datosabiertos
+  es una carcasa JS vacia: no usarlo.
+  GAP DE MODELO que revela el arbolado: el apunte tecnico 1 asume copa
+  opaca todo el ano, pero la capa municipal trae ESPECIE y en la muestra
+  hay tantos caducifolios (melia, jacaranda, sofora) como perennes
+  (naranjo amargo). En invierno afirmamos sombra vegetal donde no la hay.
+  Sin cuantificar todavia.
+  Avisos: ningun dataset declara licencia (aclarar antes de
+  redistribuir), los datos son de 2024 y el arbolado no trae altura de
+  copa (el CHM del LiDAR sigue siendo la unica fuente de altura).
+- 2026-08-14 (reorganizacion de repos y frontend nuevo): el motor se mudo de
+  `~/proyectos/shade-engine` a `~/shade/engine` y nacio `~/shade/web`
+  (`shade-web`), frontend propio en React 19 + Vite + TS strict + Tailwind 4
+  + MapLibre, SPA con CSR puro y licencia PRIVADA (el motor sigue MIT; la
+  asimetria es deliberada y solo es reversible en un sentido).
+  Motivo: el visor local y la consola de ajustino.dev eran el mismo programa
+  escrito dos veces, y el modo ruta ya se habia portado a mano dos veces.
+  Base terminada y verificada en local contra la API y los tiles reales:
+  ruta `/:cityId`, selector de ciudad, sliders sobre la escalera, capas
+  conmutables y consulta de punto; 45 tests unitarios y 4 e2e (dos de
+  accesibilidad). Contraste punto a punto con la API: coincide.
+  Falta: repo remoto, proyecto de Cloudflare Pages, y paridad (parking y modo
+  ruta). El visor de `viewer/` NO se borra hasta entonces.
+  Andamiaje copiado de `~/ductual/web`: boundaries por ESLint, reglas de
+  Claude con `paths:` que se auto-cargan, y codegen de tipos desde
+  `openapi.json` con drift check en CI (el `/openapi.json` de produccion es
+  publico, asi que el check no necesita levantar backend).
