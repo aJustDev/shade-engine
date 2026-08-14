@@ -6,20 +6,20 @@ completarlos y anota decisiones en el registro del final. El spec de referencia 
 
 ## Estado global
 
-| Fase | Nombre                             | Estado    |
-| ---- | ---------------------------------- | --------- |
-| 0    | Bootstrap del repo                 | hecha     |
-| 1    | core/: modelo solar + horizonte    | hecha     |
-| 2    | pipeline/: de LAZ a artefactos COG | hecha     |
-| 3    | api/: consulta de sombra (sin DB)  | hecha     |
-| 4    | Cordoba real + validacion de campo | hecha     |
-| 5    | Parking                            | hecha     |
-| 6    | Despliegue en cartagena            | hecha     |
-| 7    | Visualizacion + integracion Astro  | hecha     |
-| 8    | Rutas peatonales a la sombra       | pendiente |
-| 9    | SVF + exposicion solar acumulada   | boceto    |
-| 10   | MRT / UTCI a nivel de peaton       | boceto    |
-| 11   | Rutas frescas + diagnostico        | boceto    |
+| Fase | Nombre                             | Estado   |
+| ---- | ---------------------------------- | -------- |
+| 0    | Bootstrap del repo                 | hecha    |
+| 1    | core/: modelo solar + horizonte    | hecha    |
+| 2    | pipeline/: de LAZ a artefactos COG | hecha    |
+| 3    | api/: consulta de sombra (sin DB)  | hecha    |
+| 4    | Cordoba real + validacion de campo | hecha    |
+| 5    | Parking                            | hecha    |
+| 6    | Despliegue en cartagena            | hecha    |
+| 7    | Visualizacion + integracion Astro  | hecha    |
+| 8    | Rutas peatonales a la sombra       | en curso |
+| 9    | SVF + exposicion solar acumulada   | boceto   |
+| 10   | MRT / UTCI a nivel de peaton       | boceto   |
+| 11   | Rutas frescas + diagnostico        | boceto   |
 
 Estados: pendiente / en curso / hecha / boceto.
 
@@ -198,48 +198,70 @@ CUMPLIDO 2026-07-13: https://ajustino.dev/case-studies/shade-engine pinta el map
 basemap OSM autoalojado y overlay de sombra por instante; tiles verificados por HTTPS
 (manifest 200 + ACAO \*, Range 206 immutable sin content-encoding, preflight OPTIONS 204) y API consultada en vivo desde la pagina (CORS apex verificado).
 
-## Fase 8 - Rutas peatonales a la sombra (boceto)
+## Fase 8 - Rutas peatonales a la sombra (en curso)
 
 Objetivo: "quiero pasear por esta zona a tal hora: dame el recorrido con mas
-sombra". En el spec era roadmap (seccion 11: A\* sobre grafo OSM con peso
-solar); se adelanta aqui como boceto para planificarla en su propia sesion.
-La parte cara ya existe: `SceneReader` responde punto+instante barato, asi
-que la fase es "solo" un grafo con un peso solar.
+sombra". Implementada 2026-08-14 (codigo completo, verificado sobre la ciudad
+sintetica); queda la operacion de construir el grafo de las ciudades reales
+en el VPS (ver "Ops pendiente" abajo). Solo A->B: el modo circuito
+(zona + duracion) queda explicitamente fuera, anotado como roadmap.
 
-- [ ] Grafo peatonal de Cordoba desde OSM (footway, pedestrian, path, steps,
-      living_street, residential): extraccion con osmnx o pyrosm, cacheado
-      como artefacto por ciudad (el grafo del casco cabe en memoria de sobra)
-- [ ] Coste solar por arista: muestrear cada arista cada ~5 m contra los
-      rasteres; coste = longitud \* (1 + alfa \* fraccion_al_sol(hora_salida))
-- [ ] A\* con ese peso; endpoint `GET /v1/routes/shaded?from&to&at` (y quiza
-      modo paseo: zona + duracion -> circuito)
-- [ ] MVP evalua la sombra a la hora de salida: en un paseo de 30 min el sol
+- [x] Grafo peatonal desde OSM: `shade-engine graph <city>` (osmnx tras la
+      interfaz `GraphSource`, espejo de LidarSource/CnigSource; cache
+      Overpass en data/cache/osm). El MultiDiGraph se colapsa a arrays numpy
+      no dirigidos (gemelos reciprocos deduplicados, paralelas VERDADERAS
+      conservadas) y se congela como artefacto aditivo en
+      `data/cities/<id>/v1/graph/` (graph.npz + fractions.npz + graph.json),
+      con readback tras escribir y loader con chequeos de coherencia en
+      `shade_core.routegraph`. Ni PostGIS ni Overpass en runtime.
+- [x] Coste solar por arista: muestreo cada 5 m por longitud de arco en CRS
+      proyectado y fraccion de sol PRECALCULADA contra los 83 instantes de
+      la escalera de declinacion (compute_state_raster + bincount, una
+      pasada vectorizada por instante; misma fisica y mismos instantes que
+      los tiles). uint8 (fraccion\*255); muestra fuera de dato = sol.
+- [x] A\* con ese peso; endpoint `GET /v1/routes/shaded?from&to&at&alpha`:
+      motor CSR numpy propio en `shade_api.routing` (sin networkx en la
+      API), snap al nodo mas cercano (400 m max), fecha via covers del
+      ladder + interpolacion lineal entre horas, respuesta con la ruta
+      corta SIEMPRE de referencia, atribucion ODbL, noche -> status night,
+      ciudad sin grafo -> 503 accionable. Modo circuito NO (roadmap).
+- [x] MVP evalua la sombra a la hora de salida: en un paseo de 30 min el sol
       se mueve ~7 grados; el coste variable durante el propio recorrido queda
       para despues si el error molesta
+- [x] Viewer local: modo ruta (boton + 2 clicks A/B), input de alfa,
+      re-consulta al mover los sliders de fecha/hora, par de capas
+      route-shaded/route-shortest en buildStyle y resumen comparativo
+      ("40 m at 40% sun vs 40 m at 70% sun")
 
 Datos medidos (sondeo 2026-07-12, osmnx sobre el bbox de artefactos 8x7 km,
 network_type=walk): 12,951 nodos / 39,042 aristas, un solo componente conexo;
 descarga+construccion 18.3 s; +223 MiB de RSS; GraphML 15.6 MiB; A\* con
 networkx puro y heuristica de linea recta: mediana 10.1 ms, p90 39.1 ms
 (rutas mediana 2.8 km); 1976 km de aristas -> ~395k puntos de muestreo a 5 m
-para el precalculo solar.
+para el precalculo solar. El artefacto final elimina el termino de RAM: los
+arrays cargados rondan ~10-25 MB por ciudad frente a los 223 MiB del grafo
+networkx.
 
-Decisiones abiertas (para la sesion de planificacion):
+Ops pendiente (cierra la fase; el codigo ya esta desplegable):
 
-- Motor de rutas: RESUELTA por el sondeo -- A\* en proceso (networkx). Con
-  10 ms por ruta y el grafo entero en ~200 MiB no hay caso para pgRouting ni
-  router externo. PostGIS (Fase 5) sigue siendo el sitio natural para
-  persistir el grafo y las fracciones de sol si se precalculan.
-- Precalculo de fraccion de sol por arista y franja de 15-30 min (395k
-  consultas de pixel por franja, asumible) vs calculo perezoso por peticion
-  con LRU (una ruta toca cientos de aristas). Decidir al implementar.
-- DuckDB NO entra: PostGIS cubre los vectores en runtime y para extraer OSM
-  de una ciudad bastan osmnx/Overpass. Reevaluar solo si algun dia se ingiere
-  Overture/GeoParquet multi-ciudad (ahi si brilla duckdb-spatial).
+1. Push a main (CI verde -> autodeploy: la imagen nueva trae el comando).
+2. En el VPS: `docker compose run --rm pipeline shade-engine graph cordoba`
+   (necesita salida a Overpass desde el contenedor; la descarga OSM son
+   ~10-20 MB y el grueso son los 83 compute_state_raster de ciudad entera:
+   estimar 1-2 h). Idem montilla (minutos).
+3. `docker compose restart api` y smoke:
+   `curl "https://shade.ajustino.dev/v1/routes/shaded?city=cordoba&from=37.8794,-4.7794&to=37.8846,-4.7717&at=<manana 17:30>&alpha=1"`.
+4. Verificar el criterio de salida en el viewer local contra prod
+   (SHADE_VIEWER_UPSTREAM) y anotar aqui el resultado.
+
+Roadmap anotado (fuera de la fase): modo circuito zona+duracion; port del
+modo ruta a la consola de ajustinodev (tras cerrar esta ops).
 
 Criterio de salida (provisional): entre dos puntos del casco a media tarde,
 la ruta sombreada evita visiblemente las calles al sol frente al camino mas
-corto, comprobable sobre el mapa de Fase 7.
+corto, comprobable sobre el mapa de Fase 7. -> Demostrado sobre la ciudad
+sintetica (la ruta verde rodea la sombra de invierno del cubo: mismos 40 m,
+40% de sol vs 70%); pendiente de repetir sobre Cordoba real tras la ops.
 
 ## Vision post-MVP: motor de confort termico y refugios climaticos
 
@@ -437,6 +459,10 @@ concretas donde plantar.
 
 | 2026-08-13 | Refinado del visor tras probar v3: capa estatica `buildings.pmtiles` derivada del landcover LiDAR (huella real de edificios, conmutable como prueba; complementa exactamente los tejados que la sombra recorta, sin Google ni API keys), arranque en fecha/hora actuales via ladder, sol anclado al borde del VIEWPORT (no del bbox: sobrevive al zoom, corrige el bearing) y compare A/B eliminado | Peticion del usuario tras usar el visor. La huella LiDAR es mas fiel que los footprints OSM del basemap y es dato propio ya calculado (landcover == BUILDING). El sol en coordenadas de pantalla evita perderlo al hacer zoom (interseccion del azimut con el rectangulo del viewport, restando el bearing del mapa). Compare A/B: sin caso de uso real con los sliders (mover la hora ES la comparacion); menos codigo y menos UI. El arrastre de sliders exigio DOM persistente: reconstruir un input range en pleno drag mata el gesto |
 | 2026-08-13 | Rebuild lanzable tambien EN el VPS cartagena: servicio compose `pipeline` (imagen shade:prod, gated por profile `tools`, mount ./data rw, user 1001:1001, 6g/3cpu) que construye en staging (`--output-root data/cities-rebuild`) con swap atomico de v1 al final; la opcion local sigue viva y se elige por-run | Cero codigo Python: la imagen ya trae el CLI y este ya parametriza rutas (--output-root, --lidar-dir). El servicio api no sirve para el build (mount :ro, mem_limit 1g, uid 1000 vs 1001 dueno de /opt/shade/data). Staging en vez de in-place: build escribe en el dir final sin staging y dejaria el metadata.json viejo visible horas bajo el SceneReader abierto; con staging prod sigue sirviendo durante las 12-18 h y el corte es ~1 min. VPS medido: 7.7 GiB RAM (4.5 disponibles), swap de 4 GiB ya existente, 4 vCPU EPYC-Milan, 199 GB disco; el pico ~5 GiB entra, y parar de noche observabilidad + apps ajenas (~2 GiB medidos) lo mete entero en RAM (asumible segun el usuario). Bonus: elimina el stack WSL (VHD sobre NTFS) que causo la corrupcion original y los artefactos nacen donde se sirven |
+| 2026-08-14 | Fase 8 implementada: grafo peatonal como artefacto aditivo `v1/graph/` (graph.npz + fractions.npz uint8 + graph.json), comando `shade-engine graph`; osmnx SOLO en pipeline tras la interfaz `GraphSource` | Runtime sin Overpass, sin PostGIS y sin deps nuevas en la API (numpy ya estaba). Mismo patron que canopy.tif/tiles: invisible a metadata.json y verify, backfill sin rebuild, FileNotFoundError accionable si falta. Writer con readback (contrato del postmortem) y loader con chequeos de coherencia: un rsync truncado falla al cargar, no al consultar |
+| 2026-08-14 | Motor de rutas: CSR numpy propio + A\* con heapq en `shade_api.routing`; networkx DESCARTADO en runtime (el sondeo solo descartaba routers externos) | RAM (~10-25 MB por ciudad en arrays vs +223 MiB del grafo networkx del sondeo, con mem_limit 1g y 2 workers), aristas paralelas de verdad (astar_path de networkx no soporta MultiGraph; la diagonal de plaza al sol vs el soportal en sombra son paralelas reales), y docstring didactico de admisibilidad. Los predecesores guardan el INDICE de adyacencia para reconstruir la paralela elegida, y astar() rechaza costes < longitud: normalizar el peso sin escalar la heuristica rompe el optimo en silencio |
+| 2026-08-14 | Fracciones de sol por arista PRECALCULADAS sobre los 83 instantes de la escalera (muestreo cada 5 m, compute_state_raster + bincount por instante); fecha via covers + interpolacion lineal entre horas; muestra fuera de dato = sol | Ruta y overlay del visor responden la misma fisica en el mismo instante, y el A\* runtime no toca ningun COG (perezoso habria metido I/O de bloques impredecible en la latencia). uint8 = error < 0.4%, muy por debajo del muestreo a 5 m. Inventar sombra fuera del raster seria fabricar justo lo que el buscador quiere oir |
+| 2026-08-14 | Endpoint `GET /v1/routes/shaded?from=lat,lon&to&at&alpha` (alfa 0-10, default 1, snap 400 m): la respuesta SIEMPRE lleva la ruta corta de referencia; atribucion ODbL; noche -> status night; sin grafo -> 503 accionable. Modo circuito FUERA del MVP | "1.4 km al 12% de sol vs 1.3 km al 54%" es la respuesta util; el circuito es otro problema (sin destino, generacion heuristica de bucles) y el usuario lo dejo fuera explicitamente. La geometria del viario ES OSM: attribution obligatoria en artefacto y respuesta |
 
 Pendientes de decidir:
 
@@ -448,7 +474,9 @@ Pendientes de decidir:
   pagar computo antes de medir el error real. Bajar de 1 m/px queda
   descartado salvo dato nuevo: LIDA3 (5 pt/m2) no soporta 0.5 m reales y el
   barrido seria x8.
-- Motor de rutas y estrategia de precalculo solar (Fase 8): boceto en su seccion
+- Motor de rutas y estrategia de precalculo solar (Fase 8): RESUELTAS
+  2026-08-14 (ver registro): CSR numpy propio + A\* heapq en la API, y
+  precalculo uint8 sobre los 83 instantes de la escalera
 - Cobertura de parking mas alla de las 21 zonas azules (roadmap, sin fecha): las
   fuentes ya se agotaron en la investigacion de Fase 5 (visor municipal roto,
   OSM ~1.2% del viario, Overture pierde los tags parking:\*). Idea a explorar:
@@ -820,3 +848,23 @@ cordoba --output-root data/cities-rebuild`; despues el basemap (el v1
   desde el postmortem. v1.pre-rebuild se conserva unos dias como rollback
   (borrar junto a data/cities-rebuild al validar con calma). Pendiente
   siguiente: recapturar fixtures de ajustinodev y el port de la consola.
+- 2026-08-14 (Fase 8 implementada, ops pendiente): tres commits en una
+  sesion: pipeline (`shade-engine graph`: artefacto v1/graph/ con fracciones
+  uint8 sobre la escalera), api (`/v1/routes/shaded`: CSR + A* propio, snap,
+  interpolacion horaria, ODbL) y viewer local (modo ruta con 2 clicks,
+  input de alfa, re-consulta al mover sliders, resumen comparativo).
+  Verificado end-to-end en local sobre la ciudad sintetica cube (build +
+  graph + tiles + API + viewer + captura Playwright): la ruta sombreada
+  rodea la sombra de invierno del cubo (40 m al 40% de sol vs 40 m al 70%;
+  empate de longitud resuelto por sol, visible en el mapa). 213 tests
+  verdes, mypy y ruff limpios. Notas de learning: routing-graph.md y
+  a-star.md. deps nuevas SOLO en pipeline: osmnx 2.1 + networkx (wheels
+  py3/cp314 verificados, pyogrio incluido). El fixture cube local queda en
+  data/cities/cube (gitignored, regenerable via tests/graph_fixture). El
+  viewer gano SHADE_VIEWER_API para apuntar a un puerto local distinto de
+  8000. PENDIENTE para cerrar la fase (seccion "Ops pendiente" de Fase 8):
+  push a main, `shade-engine graph cordoba|montilla` via el servicio
+  pipeline del VPS (Overpass accesible; 1-2 h cordoba por los 83 rasteres
+  de estado), restart de la api, smoke publico y criterio de salida sobre
+  Cordoba real en el visor. Despues: valorar el port del modo ruta a la
+  consola de ajustinodev.
