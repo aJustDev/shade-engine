@@ -255,6 +255,12 @@ con datos sanos -- cordoba se re-espejo del VPS antes, verify 6/6):
 4. Vista rapida del visor contra prod (SHADE_VIEWER_UPSTREAM) y marcar la
    fase como hecha aqui.
 
+ATENCION (2026-08-14, tras la Fase 8.5): los grafos se REGENERARON con
+schema 2 (matriz de sombra vegetal). El paso 2 sube ya los nuevos, y el
+push del paso 1 debe ir ANTES o A LA VEZ que el rsync: una API vieja
+rechaza el artefacto v2 y una API nueva rechaza el v1, en ambos casos con
+error accionable al cargar (no silencioso).
+
 Roadmap anotado (fuera de la fase): modo circuito zona+duracion; port del
 modo ruta a la consola de ajustinodev (tras cerrar esta ops).
 
@@ -271,6 +277,56 @@ reales (2026-08-14):
   puntos menos de sol (route-mode-cordoba.png).
 - Antes, ciudad sintetica: empate de 40 m resuelto por sol (40% vs 70%).
   Falta solo replicarlo contra prod tras la ops de arriba.
+
+## Fase 8.5 - Refinamiento del modo ruta (2026-08-14)
+
+Ronda de mejoras pedida por el usuario tras usar el modo ruta en vivo.
+Cuatro sesiones, todas hechas y verificadas en local sobre Cordoba.
+
+- [x] **Precision del snap**: origen y destino se pegaban al NODO mas
+      cercano (mediana 64 m de error en Cordoba, p90 330 m). Ahora
+      `snap_point` proyecta sobre la ARISTA mas cercana (tabla plana de
+      segmentos construida en `RouteGraph.build`, argmin vectorizado, 1,8
+      ms sobre 46.118 segmentos) y `astar_points` enruta entre puntos
+      interiores con extremos virtuales. Error mediano 27 m (-58%).
+- [x] **UX del visor** (solo disco, `viewer/` sigue gitignored): pines A/B
+      arrastrables con re-consulta al soltar, conector punteado del pin al
+      punto de enganche, panel con minutos andando y minutos al sol,
+      presets de alfa con nombre (direct/balanced/avoid sun/max shade),
+      boton de limpiar pines, retirada del pin rojo de inspeccion al
+      entrar en modo ruta, y AbortController (arrastrar generaba rafagas
+      cuyas respuestas podian llegar desordenadas).
+- [x] **Peso para sombra vegetal**: segunda matriz uint8 por arista e
+      instante (`veg_shade_fraction`) en fractions.npz -> schema 2;
+      parametro `beta` con escalera de penalizaciones
+      `len * (1 + alfa*sol + beta*sombra_no_vegetal)`, validado
+      `beta <= alfa`. Los legs reportan `veg_shade_length_m`.
+- [x] **Alternativas puntuadas**: `?alternatives=true` barre alfas
+      (0, 0.5, 1, 2, 4, 8), deduplica por secuencia de tramos y filtra
+      dominadas; en Cordoba devuelve 5 rutas de 1,41 km/41% sol a
+      1,91 km/4% en ~40 ms.
+
+Notas didacticas anadidas: `point-segment-projection.md`,
+`vegetation-cooling.md`, `pareto-front.md`, y seccion de extremos
+virtuales en `a-star.md`.
+
+Fuera de alcance, decidido con el usuario: **routing por acera**. Sondeo
+Overpass hecho (2026-08-14): Cordoba tiene 439 aceras mapeadas como way
+sobre 4.942 calles (~9%) y 1.718 nodos de cruce; Montilla, cero (0 ways,
+1 nodo). Si se retoma, la via no es OSM sino sintetizar las dos aceras por
+offset del eje y muestrear el sol por lado (el motor ya soporta aristas
+paralelas entre los mismos nodos); penalizar cruces exigiria ademas partir
+nodos por lado.
+
+Verificado en local sobre Cordoba (2026-08-14):
+
+- Un pin a 3 m del centro de una calle arranca la ruta ahi, no en el cruce
+  a 100 m; el conector punteado dibuja el enganche.
+- `beta=0.5` frente a `beta=0` en el cruce este-oeste: +128 m bajo
+  arbolado (690 -> 818) a cambio de +42 m de sol y +14 m de recorrido.
+  Es el debilitamiento del invariante que documenta la decision de abajo.
+- Barrido de alternativas: 5 ofertas distintas, longitud creciente y sol
+  estrictamente decreciente.
 
 ## Vision post-MVP: motor de confort termico y refugios climaticos
 
@@ -472,6 +528,10 @@ concretas donde plantar.
 | 2026-08-14 | Motor de rutas: CSR numpy propio + A\* con heapq en `shade_api.routing`; networkx DESCARTADO en runtime (el sondeo solo descartaba routers externos) | RAM (~10-25 MB por ciudad en arrays vs +223 MiB del grafo networkx del sondeo, con mem_limit 1g y 2 workers), aristas paralelas de verdad (astar_path de networkx no soporta MultiGraph; la diagonal de plaza al sol vs el soportal en sombra son paralelas reales), y docstring didactico de admisibilidad. Los predecesores guardan el INDICE de adyacencia para reconstruir la paralela elegida, y astar() rechaza costes < longitud: normalizar el peso sin escalar la heuristica rompe el optimo en silencio |
 | 2026-08-14 | Fracciones de sol por arista PRECALCULADAS sobre los 83 instantes de la escalera (muestreo cada 5 m, compute_state_raster + bincount por instante); fecha via covers + interpolacion lineal entre horas; muestra fuera de dato = sol | Ruta y overlay del visor responden la misma fisica en el mismo instante, y el A\* runtime no toca ningun COG (perezoso habria metido I/O de bloques impredecible en la latencia). uint8 = error < 0.4%, muy por debajo del muestreo a 5 m. Inventar sombra fuera del raster seria fabricar justo lo que el buscador quiere oir |
 | 2026-08-14 | Endpoint `GET /v1/routes/shaded?from=lat,lon&to&at&alpha` (alfa 0-10, default 1, snap 400 m): la respuesta SIEMPRE lleva la ruta corta de referencia; atribucion ODbL; noche -> status night; sin grafo -> 503 accionable. Modo circuito FUERA del MVP | "1.4 km al 12% de sol vs 1.3 km al 54%" es la respuesta util; el circuito es otro problema (sin destino, generacion heuristica de bucles) y el usuario lo dejo fuera explicitamente. La geometria del viario ES OSM: attribution obligatoria en artefacto y respuesta |
+| 2026-08-14 | Fase 8.5: snap de origen/destino al PUNTO mas cercano sobre una arista (no al nodo); `nearest_node` eliminado y A\* generalizado a extremos virtuales (semillas en los dos extremos de la arista de origen con su coste parcial, pseudo-nodo destino con h=0, y el paseo directo como candidato cuando ambos pines comparten arista) | El pin cae en mitad de la calle, no en un cruce: el snap a nodo daba 64 m de error mediano en Cordoba (p90 330 m) y rutas que arrancaban en la esquina siguiente. Sobre arista baja a 27 m. El coste parcial `c*s/L` es exacto porque la fraccion de sol se guarda por arista (coste por metro constante dentro de ella), y la consistencia aguanta porque `c*s/L >= s >=` euclidea, asi que el corte temprano sigue valiendo. La tabla de segmentos se precomputa al cargar: 1,8 ms por snap sobre 46.118 segmentos, sin indice espacial ni dependencia nueva |
+| 2026-08-14 | Sombra vegetal separada de la de edificio: segunda matriz uint8 `veg_shade_fraction` en fractions.npz (schema 2, loader estricto) y parametro `beta` como ESCALERA de penalizaciones `len * (1 + alfa*sol + beta*(1-sol-copa))`, con `beta <= alfa` validado (400 si no) | La copa enfria mucho mas que un muro (transpira y el suelo bajo ella no se recalienta), pero el muestreo colapsaba los tres estados de sombra en "no sol". Penalizar y nunca premiar: un bonus negativo pondria el coste por debajo de la longitud y romperia la heuristica en silencio. Bump de schema en vez de campo opcional porque prod aun no tenia grafos desplegados y regenerar cuesta 22 s (montilla) / ~4 min (cordoba); un loader tolerante seria codigo muerto para siempre. CONSECUENCIA ACEPTADA: con beta > 0 el invariante `sol(sombreada) <= sol(corta)` deja de valer (medido en Cordoba: +42 m de sol a cambio de +128 m bajo arbolado), que es justo lo que se pidio |
+| 2026-08-14 | Alternativas por BARRIDO DE ALFAS (0, 0.5, 1, 2, 4, 8) + dedup por secuencia de tramos + filtro de dominadas con umbral de mejora del 5%; k-shortest-paths (Yen) descartado | Reutiliza el A\* existente (~10 ms por pasada) y cada alfa es un gusto distinto, asi que cada optimo es un punto no dominado; Yen es mas complejo y devuelve primos hermanos de la misma ruta. El filtro de dominancia hace falta aunque parezca redundante: con beta > 0 el coste escalarizado no es monotono en (longitud, sol). El umbral del 5% es de producto, no de matematicas: alfas vecinos daban rutas 2 m mas largas con 4 m menos de sol sobre 1,4 km, dos filas identicas en pantalla. Limite documentado: la suma ponderada solo alcanza la envolvente convexa del frente, el barrido es una muestra |
+| 2026-08-14 | Routing por ACERA descartado por ahora (sondeo Overpass en la misma sesion) | Sin datos: Cordoba solo tiene ~9% de calles con acera mapeada como way (439/4.942) y Montilla cero (0 ways, 1 nodo de cruce). Apoyarse en OSM daria un servicio que funciona en cuatro calles de una ciudad y en ninguna de la otra. La via realista, si se retoma, es sintetizar las dos aceras por offset del eje y muestrear el sol por lado (el motor ya soporta paralelas entre los mismos nodos); penalizar cruces exigiria partir nodos por lado |
 
 Pendientes de decidir:
 
