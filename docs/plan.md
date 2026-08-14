@@ -278,6 +278,43 @@ reales (2026-08-14):
 - Antes, ciudad sintetica: empate de 40 m resuelto por sol (40% vs 70%).
   Falta solo replicarlo contra prod tras la ops de arriba.
 
+## Fase 8.6 - Ruta legible (2026-08-14)
+
+Segunda ronda de feedback del usuario sobre el modo ruta: el trazo era una
+linea de color plano que no respondia "donde me va a dar el sol", y el
+panel apilaba seis lineas de prosa en una columna de 340 px.
+
+- [x] **Trazo coloreado por tipo de tramo**. El leg `shaded` viaja con su
+      descomposicion por arista (`segments`: geometria, longitud y las dos
+      fracciones de esa arista); el visor clasifica por argmax (empates a
+      favor del sol), fusiona consecutivos de la misma clase (39 -> 21 en
+      Cordoba) y pinta con `match` sobre `class` mas un casing oscuro.
+      Paleta elegida contra el fondo real (sombra `#24305e`, copa
+      `#1f5a4a`, edificios `#3d4350`): sol `#ffdd57`, arbol `#3fbf6f`,
+      edificio `#8ea1ff`.
+- [x] **Bocadillo por hover**: uno solo a la vez, anclado en el cursor,
+      con las cifras del trazo tocado y que clase es ese tramo concreto.
+      Throttle por `requestAnimationFrame`, `setHTML` solo al cambiar de
+      identidad, y cierre explicito al principio de `render()` porque los
+      popups sobreviven a `setStyle`.
+- [x] **Tabla en el panel** (grid, no `<table>`: las filas son botones y
+      las columnas hay que fijarlas a 316 px utiles) con una fila por
+      oferta; pulsar una la ADOPTA fijando su alfa. Debajo, solo la mezcla
+      de sombra de la ruta activa y el delta frente a la corta.
+- [x] **Leyenda de estilos de trazo** anadida a la del sidebar, con
+      swatch de barra, solo cuando hay ruta.
+
+Medido tras el cambio: la respuesta con alternativas pasa de 22,4 KB a
+29,4 KB (los segmentos solo viajan en un leg). Verificado en vivo sobre
+Cordoba: las tres clases se distinguen sobre el mapa, el bocadillo cambia
+por tramo y desaparece al salir, adoptar "max shade" recolorea la ruta y
+sincroniza el preset, y la consola queda limpia.
+
+Nota: el caso `status: "night"` es inalcanzable desde los sliders del
+visor (la escalera solo tiene instantes diurnos; el peldano de invierno
+acaba a las 17:00 con el sol a 10 grados). La rama neutra del visor es
+defensiva y quien la fija son los tests de la API.
+
 ## Fase 8.5 - Refinamiento del modo ruta (2026-08-14)
 
 Ronda de mejoras pedida por el usuario tras usar el modo ruta en vivo.
@@ -532,6 +569,8 @@ concretas donde plantar.
 | 2026-08-14 | Sombra vegetal separada de la de edificio: segunda matriz uint8 `veg_shade_fraction` en fractions.npz (schema 2, loader estricto) y parametro `beta` como ESCALERA de penalizaciones `len * (1 + alfa*sol + beta*(1-sol-copa))`, con `beta <= alfa` validado (400 si no) | La copa enfria mucho mas que un muro (transpira y el suelo bajo ella no se recalienta), pero el muestreo colapsaba los tres estados de sombra en "no sol". Penalizar y nunca premiar: un bonus negativo pondria el coste por debajo de la longitud y romperia la heuristica en silencio. Bump de schema en vez de campo opcional porque prod aun no tenia grafos desplegados y regenerar cuesta 22 s (montilla) / ~4 min (cordoba); un loader tolerante seria codigo muerto para siempre. CONSECUENCIA ACEPTADA: con beta > 0 el invariante `sol(sombreada) <= sol(corta)` deja de valer (medido en Cordoba: +42 m de sol a cambio de +128 m bajo arbolado), que es justo lo que se pidio |
 | 2026-08-14 | Alternativas por BARRIDO DE ALFAS (0, 0.5, 1, 2, 4, 8) + dedup por secuencia de tramos + filtro de dominadas con umbral de mejora del 5%; k-shortest-paths (Yen) descartado | Reutiliza el A\* existente (~10 ms por pasada) y cada alfa es un gusto distinto, asi que cada optimo es un punto no dominado; Yen es mas complejo y devuelve primos hermanos de la misma ruta. El filtro de dominancia hace falta aunque parezca redundante: con beta > 0 el coste escalarizado no es monotono en (longitud, sol). El umbral del 5% es de producto, no de matematicas: alfas vecinos daban rutas 2 m mas largas con 4 m menos de sol sobre 1,4 km, dos filas identicas en pantalla. Limite documentado: la suma ponderada solo alcanza la envolvente convexa del frente, el barrido es una muestra |
 | 2026-08-14 | Routing por ACERA descartado por ahora (sondeo Overpass en la misma sesion) | Sin datos: Cordoba solo tiene ~9% de calles con acera mapeada como way (439/4.942) y Montilla cero (0 ways, 1 nodo de cruce). Apoyarse en OSM daria un servicio que funciona en cuatro calles de una ciudad y en ninguna de la otra. La via realista, si se retoma, es sintetizar las dos aceras por offset del eje y muestrear el sol por lado (el motor ya soporta paralelas entre los mismos nodos); penalizar cruces exigiria partir nodos por lado |
+| 2026-08-14 | Fase 8.6: la API expone `segments` (descomposicion por arista) SOLO en el leg `shaded`, crudos y SIN clasificar | Colorear exige una historia categorica a partir de dos fracciones continuas, y el umbral es presentacion: la API devuelve los numeros y el cliente elige (argmax, empates a favor del sol) y fusiona por clase (39 -> 21 tramos en Cordoba). Solo el leg activo porque es el unico que se colorea: la corta es referencia discontinua y las alternativas candidatas finas; asi el coste es +6,6 KB sobre 22,4 (medido 29,4 KB con alternativas) en vez de multiplicar por siete. Y de noche, con las dos fracciones a 0, clasificar pintaria la ciudad entera de sombra de edificio: el cliente corta por `status` |
+| 2026-08-14 | Bocadillo por HOVER anclado en el cursor + tabla unica en el panel; pulsar una alternativa la ADOPTA (fija su alfa y reconsulta) | Un bocadillo permanente por ruta se solaparia justo donde las rutas van juntas, que es casi todo el recorrido, y con alternativas serian seis. La adopcion elimina el resaltado dorado y el estado `selectedAlternative`: habia dos formas de senalar una ruta y solo una la elegia de verdad; ademas unifica la lista con los presets de alfa. La fila activa se detecta comparando metricas y no el alfa, porque el filtro de Pareto (umbral 5%) puede haber colapsado el alfa pedido. Trampas ancladas en codigo: los popups sobreviven a `setStyle` (cierre al principio de `render()`), `queryRenderedFeatures` revienta sobre una capa que desaparecio (guard con `getLayer`), y su orden de hits no es contractual (prioridad explicita) |
 
 Pendientes de decidir:
 
