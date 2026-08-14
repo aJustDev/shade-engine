@@ -806,3 +806,17 @@ cordoba --output-root data/cities-rebuild`; despues el basemap (el v1
   OPCION A local queda intacta. Pendiente igual que antes: lanzar el rebuild
   (ahora con smoke previo `verify montilla` via el servicio pipeline) y
   despues el port de ajustinodev.
+- 2026-08-14 (REBUILD DE CORDOBA EJECUTADO, opcion B): el usuario lo lanzo la
+  noche del 13 (~20:25) y se completo el dia 14. Numeros reales: build 12h42m
+  (barrido 3m32s/tile x 224; RAM sin incidentes con observabilidad parada esa
+  noche y rearrancada por la manana), 3.7 GiB de artefactos (horizon.tif 3.1
+  GiB ya en interleave BAND), auto-verificacion + verify redundante 6/6;
+  tiles 1h08m (83 instantes, 168 pmtiles, 910 MiB, muy por debajo de la
+  estimacion de 2-3 h); swap con ~15 s de api parada (mv v1 ->
+  v1.pre-rebuild, staging -> v1, up -d). Sanidad en vivo: /v1/shade en
+  Tendillas 21-jun 20:00 responde SOMBRA con sol en az 286 (sector 50, el
+  rango que estuvo muerto), index.json 200 con CORS, pmtiles Range 206,
+  /v1/cities lista [cordoba, montilla]. PROD QUEDA SANA por primera vez
+  desde el postmortem. v1.pre-rebuild se conserva unos dias como rollback
+  (borrar junto a data/cities-rebuild al validar con calma). Pendiente
+  siguiente: recapturar fixtures de ajustinodev y el port de la consola.
