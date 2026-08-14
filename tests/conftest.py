@@ -1,4 +1,5 @@
 import os
+import shutil
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -79,6 +80,24 @@ def built_city(tmp_path_factory: pytest.TempPathFactory) -> Path:
     lidar_dir.mkdir()
     laz_fixture.write_cube_laz(lidar_dir / "cube.laz", origin=synthetic.UTM_ORIGIN)
     return build_city(CUBE_CITY, LocalDirectory(lidar_dir), root / "data")
+
+
+@pytest.fixture(scope="session")
+def routed_city(built_city: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """``built_city`` copy with the pedestrian graph artifact built on top.
+
+    A copy, never the session fixture itself: tests of the graph-less
+    behavior (503, actionable FileNotFoundError) rely on ``built_city``
+    staying graph-free.
+    """
+    import graph_fixture
+    from shade_pipeline.graph import build_graph
+
+    root = tmp_path_factory.mktemp("routed_city")
+    artifact_dir = root / "cube" / "v1"
+    shutil.copytree(built_city, artifact_dir)
+    build_graph(CUBE_CITY, artifact_dir, graph_fixture.SyntheticWalkSource())
+    return artifact_dir
 
 
 @pytest.fixture(scope="session")

@@ -1,4 +1,4 @@
-"""CLI: ``shade-engine build|predict|canopy|verify|import-layer|tiles <city>``."""
+"""CLI: ``shade-engine build|predict|canopy|verify|import-layer|tiles|graph <city>``."""
 
 import time
 from datetime import date, datetime
@@ -15,6 +15,7 @@ from shade_core.db import make_engine
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, derive_canopy
 from shade_pipeline.cnig import CnigError, CnigSource
+from shade_pipeline.graph import DEFAULT_OSM_CACHE, DEFAULT_SPACING_M, OsmnxWalkSource, build_graph
 from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.layers import import_parking_layer
 from shade_pipeline.predict import prediction_table, read_points
@@ -237,6 +238,41 @@ def tiles(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"tiles written to {out_dir}")
+
+
+@app.command()
+def graph(
+    city: str,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    cache_dir: Annotated[
+        Path | None, typer.Option(help="OSM download cache (default: data/cache/osm)")
+    ] = None,
+    spacing: Annotated[float, typer.Option(help="Edge sampling step, meters")] = DEFAULT_SPACING_M,
+) -> None:
+    """Build CITY's pedestrian graph artifact with per-edge sun fractions.
+
+    Downloads the walk network from OpenStreetMap (Overpass, cached under
+    --cache-dir) and precomputes each edge's sun fraction against the
+    declination-ladder instants, reusing the existing raster artifacts:
+    run ``build`` first. Serving routes only needs the resulting
+    ``graph/`` directory rsynced next to the other artifacts.
+    """
+    config = load_city(cities_dir / f"{city}.yaml")
+    artifact_dir = output_root / config.id / ARTIFACT_VERSION
+    if not (artifact_dir / METADATA_FILENAME).exists():
+        typer.echo(
+            f"error: no artifacts under {artifact_dir}; run shade-engine build first", err=True
+        )
+        raise typer.Exit(1)
+    source = OsmnxWalkSource(cache_dir if cache_dir is not None else DEFAULT_OSM_CACHE)
+    try:
+        build_graph(config, artifact_dir, source, spacing_m=spacing, progress=typer.echo)
+    except (ValueError, FileNotFoundError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 @app.command("import-layer")

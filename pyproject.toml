@@ -35,7 +35,17 @@ explicit_package_bases = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pvlib.*", "pandas.*", "laspy.*", "rasterio.*", "affine.*", "shapely.*", "mercantile.*"]
+module = [
+    "pvlib.*",
+    "pandas.*",
+    "laspy.*",
+    "rasterio.*",
+    "affine.*",
+    "shapely.*",
+    "mercantile.*",
+    "networkx.*",
+    "osmnx.*",
+]
 ignore_missing_imports = true
 
 # pmtiles ships py.typed but its writer is unannotated, which strict mode's
