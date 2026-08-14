@@ -199,6 +199,69 @@ def test_assemble_orients_and_joins_geometry() -> None:
     assert leg.sun_length_m == pytest.approx(float(lengths[0]))
 
 
+def test_assemble_spans_reports_one_segment_per_span() -> None:
+    """A -> B -> C: two segments, each with its own edge's fractions."""
+    nodes: list[Node] = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]
+    edges: list[Edge] = [
+        (0, 1, [(0.0, 0.0), (5.0, 2.0), (10.0, 0.0)]),
+        (2, 1, [(20.0, 0.0), (15.0, 2.0), (10.0, 0.0)]),  # stored C -> B
+    ]
+    artifact = _artifact(nodes, edges, [[255] * 3, [0] * 3])
+    graph = RouteGraph.build(artifact)
+    fractions = graph.fractions_at(datetime.fromisoformat("2026-07-01T11:00"))
+    path = graph.astar(0, 2, artifact.edge_len.astype(np.float64))
+    assert path is not None
+    leg = graph.assemble(path, fractions)
+
+    assert len(leg.segments) == 2
+    lengths = artifact.edge_len.astype(np.float64)
+    assert leg.segments[0].length_m == pytest.approx(float(lengths[0]))
+    assert leg.segments[0].sun_fraction == pytest.approx(1.0)
+    assert leg.segments[1].sun_fraction == pytest.approx(0.0)
+    assert sum(s.length_m for s in leg.segments) == pytest.approx(leg.length_m)
+
+
+def test_segments_rebuild_the_leg_polyline() -> None:
+    """Dropping each follower's joint vertex reproduces the leg exactly."""
+    nodes: list[Node] = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]
+    edges: list[Edge] = [
+        (0, 1, [(0.0, 0.0), (5.0, 2.0), (10.0, 0.0)]),
+        (2, 1, [(20.0, 0.0), (15.0, 2.0), (10.0, 0.0)]),
+    ]
+    artifact = _artifact(nodes, edges, [[0] * 3] * 2)
+    graph = RouteGraph.build(artifact)
+    fractions = graph.fractions_at(datetime.fromisoformat("2026-07-01T11:00"))
+    path = graph.astar(0, 2, artifact.edge_len.astype(np.float64))
+    assert path is not None
+    leg = graph.assemble(path, fractions)
+
+    xs = np.concatenate([leg.segments[0].xs, *[s.xs[1:] for s in leg.segments[1:]]])
+    ys = np.concatenate([leg.segments[0].ys, *[s.ys[1:] for s in leg.segments[1:]]])
+    assert xs.tolist() == leg.xs.tolist()
+    assert ys.tolist() == leg.ys.tolist()
+    for earlier, later in zip(leg.segments, leg.segments[1:], strict=False):
+        assert earlier.xs[-1] == later.xs[0]
+        assert earlier.ys[-1] == later.ys[0]
+
+
+def test_segment_keeps_its_edge_fractions_on_a_partial_span() -> None:
+    """Half an edge is charged pro rata, but reports the edge's fractions
+    unscaled: a client colours by how sunny the street is, not by how much
+    of it was walked."""
+    nodes: list[Node] = [(0.0, 0.0), (100.0, 0.0)]
+    artifact = _artifact(nodes, [(0, 1, None)], [[0] * 3])
+    graph = RouteGraph.build(artifact)
+    leg = graph.assemble_spans(
+        [EdgeSpan(edge=0, s_from=0.0, s_to=50.0)],
+        np.array([0.2], dtype=np.float32),
+        np.array([0.5], dtype=np.float32),
+    )
+    assert len(leg.segments) == 1
+    assert leg.segments[0].length_m == pytest.approx(50.0)
+    assert leg.segments[0].sun_fraction == pytest.approx(0.2)
+    assert leg.segments[0].veg_shade_fraction == pytest.approx(0.5)
+
+
 # --- snapping ------------------------------------------------------------------
 
 
@@ -399,6 +462,7 @@ def test_point_leg_is_zero_length() -> None:
     assert leg.length_m == 0.0
     assert leg.sun_fraction == 0.0
     assert leg.xs.tolist() == [3.0, 3.0]
+    assert leg.segments == ()  # nothing was walked, nothing to decompose
 
 
 def test_astar_points_unreachable_returns_none() -> None:

@@ -146,6 +146,23 @@ class RoutePointOut(BaseModel):
     )
 
 
+class RouteSegmentOut(BaseModel):
+    """One graph edge's stretch of a route, with that edge's shade mix."""
+
+    geometry: dict[str, Any] = Field(description="GeoJSON LineString, WGS84 lon-lat")
+    length_m: float = Field(description="Meters walked on this edge")
+    sun_fraction: float = Field(
+        description="This edge's share in the sun at the queried instant, 0..1"
+    )
+    veg_shade_fraction: float = Field(
+        description=(
+            "This edge's share under tree canopy; the remainder "
+            "(1 - sun_fraction - veg_shade_fraction) is shade cast by "
+            "buildings or terrain"
+        )
+    )
+
+
 class RouteLegOut(BaseModel):
     """One walking route with its sun exposure accounting."""
 
@@ -161,6 +178,15 @@ class RouteLegOut(BaseModel):
             "(length - sun_length_m - veg_shade_length_m) is cast by buildings "
             "or terrain"
         )
+    )
+    segments: list[RouteSegmentOut] | None = Field(
+        default=None,
+        description=(
+            "Per-edge decomposition in walked order; only on the shaded leg. "
+            "Consecutive segments share their joint vertex and their lengths "
+            "sum to length_m. Fractions are the edge's, constant along the "
+            "segment: this is the finest resolution the router itself used"
+        ),
     )
 
 

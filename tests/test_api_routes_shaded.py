@@ -38,6 +38,11 @@ def _point(local: tuple[float, float]) -> str:
     return f"{lat},{lon}"
 
 
+def _without_segments(leg: dict[str, Any]) -> dict[str, Any]:
+    """The two legs are the same route; only the active one is decomposed."""
+    return {key: value for key, value in leg.items() if key != "segments"}
+
+
 def _route(client: TestClient, **overrides: Any) -> Any:
     params: dict[str, Any] = {
         "city": "cube",
@@ -102,7 +107,7 @@ def test_night_routes_are_identical(routes_client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "night"
     assert body["sun"]["elevation_deg"] < 0
-    assert body["shaded"] == body["shortest"]
+    assert _without_segments(body["shaded"]) == _without_segments(body["shortest"])
     assert body["shaded"]["sun_fraction"] == 0.0
 
 
@@ -110,7 +115,7 @@ def test_alpha_zero_returns_shortest_twice(routes_client: TestClient) -> None:
     response = _route(routes_client, alpha=0.0)
     assert response.status_code == 200
     body = response.json()
-    assert body["shaded"] == body["shortest"]
+    assert _without_segments(body["shaded"]) == _without_segments(body["shortest"])
 
 
 def test_same_snap_point_is_zero_length(routes_client: TestClient) -> None:
@@ -149,6 +154,62 @@ def test_route_same_edge_partial_leg(routes_client: TestClient) -> None:
     body = response.json()
     assert body["shaded"]["length_m"] == pytest.approx(6.0, abs=0.1)
     assert body["shaded"]["geometry"]["coordinates"] == body["shortest"]["geometry"]["coordinates"]
+
+
+def test_shaded_leg_carries_its_segments(routes_client: TestClient) -> None:
+    """The active leg ships its per-edge decomposition, ready to colour."""
+    body = _route(routes_client).json()
+    segments = body["shaded"]["segments"]
+    assert len(segments) >= 2  # the default query crosses several edges
+    for segment in segments:
+        assert segment["geometry"]["type"] == "LineString"
+        assert len(segment["geometry"]["coordinates"]) >= 2
+        assert segment["length_m"] > 0
+        assert 0.0 <= segment["sun_fraction"] <= 1.0
+        assert segment["sun_fraction"] + segment["veg_shade_fraction"] <= 1.0 + 1e-6
+
+
+def test_segment_lengths_sum_to_the_leg(routes_client: TestClient) -> None:
+    body = _route(routes_client).json()
+    leg = body["shaded"]
+    total = sum(segment["length_m"] for segment in leg["segments"])
+    # Each segment rounds to 0.1 m on its own, so the drift grows with the
+    # count: a fixed abs=0.1 would be flaky on a real city's 40 segments.
+    tolerance = 0.05 * len(leg["segments"]) + 0.05
+    assert total == pytest.approx(leg["length_m"], abs=tolerance)
+
+
+def test_segments_chain_into_the_leg_geometry(routes_client: TestClient) -> None:
+    """Neighbours share their joint vertex: this is what lets a client
+    stitch the pieces back into the leg (and merge runs by class)."""
+    leg = _route(routes_client).json()["shaded"]
+    segments = leg["segments"]
+    assert segments[0]["geometry"]["coordinates"][0] == leg["geometry"]["coordinates"][0]
+    assert segments[-1]["geometry"]["coordinates"][-1] == leg["geometry"]["coordinates"][-1]
+    for earlier, later in itertools.pairwise(segments):
+        assert earlier["geometry"]["coordinates"][-1] == later["geometry"]["coordinates"][0]
+
+
+def test_reference_legs_have_no_segments(routes_client: TestClient) -> None:
+    """Only the coloured route is decomposed; the rest are reference lines."""
+    body = _route(routes_client, alternatives="true").json()
+    assert body["shortest"]["segments"] is None
+    assert all(alternative["segments"] is None for alternative in body["alternatives"])
+
+
+def test_night_segments_report_no_sun(routes_client: TestClient) -> None:
+    """At night the segments still travel, all zero: there is nothing to
+    classify, and a naive argmax would paint the city as building shade."""
+    body = _route(routes_client, at="2026-12-21T03:00").json()
+    segments = body["shaded"]["segments"]
+    assert segments
+    assert all(segment["sun_fraction"] == 0.0 for segment in segments)
+    assert all(segment["veg_shade_fraction"] == 0.0 for segment in segments)
+
+
+def test_zero_length_route_has_no_segments(routes_client: TestClient) -> None:
+    body = _route(routes_client, to=_point(graph_fixture.NORTH_A)).json()
+    assert body["shaded"]["segments"] == []
 
 
 def test_beta_above_alpha_is_400(routes_client: TestClient) -> None:

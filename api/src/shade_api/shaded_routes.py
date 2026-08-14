@@ -22,7 +22,10 @@ route may take slightly more sun in exchange for walking under trees,
 because that is what was asked for.
 
 At night there is no sun to avoid: one A* over bare lengths, both legs
-identical, ``status: "night"``.
+identical, ``status: "night"``. The shaded leg still carries its segments,
+all reporting zero sun and zero canopy: there is nothing to classify then,
+and a client should say so rather than paint every street as building
+shade.
 """
 
 import math
@@ -35,11 +38,12 @@ from fastapi import APIRouter, HTTPException, Query, Response
 
 from shade_api.registry import CityRuntime
 from shade_api.routes import _AT_DESCRIPTION, Registry, _locate, resolve_at
-from shade_api.routing import EdgePoint, EdgeSpan, RouteGraph, RouteLeg
+from shade_api.routing import EdgePoint, EdgeSpan, RouteGraph, RouteLeg, RouteSegment
 from shade_api.schemas import (
     RouteAlternativeOut,
     RouteLegOut,
     RoutePointOut,
+    RouteSegmentOut,
     ShadedRouteOut,
     SunOut,
 )
@@ -92,7 +96,47 @@ def _point_out(runtime: CityRuntime, lat: float, lon: float, point: EdgePoint) -
     )
 
 
-def _leg_out(runtime: CityRuntime, leg: RouteLeg) -> RouteLegOut:
+def _segments_out(
+    runtime: CityRuntime, segments: tuple[RouteSegment, ...]
+) -> list[RouteSegmentOut]:
+    """Per-edge pieces, reprojected in ONE batch instead of N pyproj calls.
+
+    Coordinates stay unrounded, like the leg's own geometry, so a segment
+    endpoint is bit-identical to the leg vertex it duplicates -- that is
+    what lets a client stitch the pieces back together.
+    """
+    if not segments:
+        return []
+    counts = [len(segment.xs) for segment in segments]
+    lons, lats = runtime.to_projected.transform(
+        np.concatenate([segment.xs for segment in segments]),
+        np.concatenate([segment.ys for segment in segments]),
+        direction="INVERSE",
+    )
+    out: list[RouteSegmentOut] = []
+    start = 0
+    for segment, count in zip(segments, counts, strict=True):
+        stop = start + count
+        geometry: dict[str, Any] = {
+            "type": "LineString",
+            "coordinates": [
+                [float(lon), float(lat)]
+                for lon, lat in zip(lons[start:stop], lats[start:stop], strict=True)
+            ],
+        }
+        out.append(
+            RouteSegmentOut(
+                geometry=geometry,
+                length_m=round(segment.length_m, 1),
+                sun_fraction=round(segment.sun_fraction, 3),
+                veg_shade_fraction=round(segment.veg_shade_fraction, 3),
+            )
+        )
+        start = stop
+    return out
+
+
+def _leg_out(runtime: CityRuntime, leg: RouteLeg, *, with_segments: bool = False) -> RouteLegOut:
     lons, lats = runtime.to_projected.transform(leg.xs, leg.ys, direction="INVERSE")
     coordinates: list[list[float]] = [
         [float(lon), float(lat)] for lon, lat in zip(lons, lats, strict=True)
@@ -104,6 +148,7 @@ def _leg_out(runtime: CityRuntime, leg: RouteLeg) -> RouteLegOut:
         sun_length_m=round(leg.sun_length_m, 1),
         sun_fraction=round(leg.sun_fraction, 3),
         veg_shade_length_m=round(leg.veg_shade_length_m, 1),
+        segments=_segments_out(runtime, leg.segments) if with_segments else None,
     )
 
 
@@ -290,7 +335,9 @@ def shaded_route(
         ),
         origin=_point_out(runtime, from_lat, from_lon, src),
         destination=_point_out(runtime, to_lat, to_lon, dst),
-        shaded=_leg_out(runtime, shaded_leg),
+        # Only the active leg carries its decomposition: the map colours
+        # that one, the other two are reference lines.
+        shaded=_leg_out(runtime, shaded_leg, with_segments=True),
         shortest=_leg_out(runtime, shortest_leg),
         alternatives=scored,
         attribution=list(

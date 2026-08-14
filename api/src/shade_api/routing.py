@@ -66,14 +66,38 @@ _MIN_SPAN_M = 1e-9
 
 
 @dataclass(frozen=True)
+class RouteSegment:
+    """One walked edge stretch, carrying that edge's own shade mix.
+
+    The edge is the router's decision unit -- the artifact stores one sun
+    and one canopy fraction per edge per ladder instant -- so this is the
+    finest honest slice of a route (docs/learning/edge-granularity.md). A
+    partial span inherits its edge's fractions pro rata, not scaled. The
+    polyline keeps both joint vertices, so consecutive segments touch and
+    dropping each one's first point rebuilds the leg exactly.
+    """
+
+    xs: npt.NDArray[np.float64]
+    ys: npt.NDArray[np.float64]
+    length_m: float
+    sun_fraction: float
+    veg_shade_fraction: float
+
+
+@dataclass(frozen=True)
 class RouteLeg:
-    """One assembled route: concatenated polyline plus its sun accounting."""
+    """One assembled route: concatenated polyline plus its sun accounting.
+
+    ``sun_fraction`` here is length-weighted over the whole leg, while a
+    :class:`RouteSegment`'s is its edge's own constant.
+    """
 
     xs: npt.NDArray[np.float64]
     ys: npt.NDArray[np.float64]
     length_m: float
     sun_length_m: float
     veg_shade_length_m: float
+    segments: tuple[RouteSegment, ...] = ()
 
     @property
     def sun_fraction(self) -> float:
@@ -484,28 +508,42 @@ class RouteGraph:
         terrain. Approximation worth naming: the artifact stores one
         fraction per *edge*, so a partial span is charged that fraction pro
         rata rather than resampling the stretch actually walked.
+
+        ``segments`` keeps the very decomposition this accounting sums
+        over, so a caller can colour the route by where its shade came from
+        without redoing the walk.
         """
         xs_parts: list[npt.NDArray[np.float64]] = []
         ys_parts: list[npt.NDArray[np.float64]] = []
+        segments: list[RouteSegment] = []
         length = 0.0
         sun_length = 0.0
         veg_length = 0.0
         for position, span in enumerate(spans):
             xs, ys = self._span_polyline(span)
+            walked = abs(span.s_to - span.s_from)
+            segment = RouteSegment(
+                xs=xs,
+                ys=ys,
+                length_m=walked,
+                sun_fraction=float(fractions[span.edge]),
+                veg_shade_fraction=float(veg_fractions[span.edge]),
+            )
+            segments.append(segment)
             if position > 0:  # the joint vertex is the previous span's last one
-                xs, ys = xs[1:], ys[1:]
+                xs, ys = xs[1:], ys[1:]  # a view; the segment kept the whole array
             xs_parts.append(xs)
             ys_parts.append(ys)
-            walked = abs(span.s_to - span.s_from)
             length += walked
-            sun_length += walked * float(fractions[span.edge])
-            veg_length += walked * float(veg_fractions[span.edge])
+            sun_length += walked * segment.sun_fraction
+            veg_length += walked * segment.veg_shade_fraction
         return RouteLeg(
             xs=np.concatenate(xs_parts),
             ys=np.concatenate(ys_parts),
             length_m=length,
             sun_length_m=sun_length,
             veg_shade_length_m=veg_length,
+            segments=tuple(segments),
         )
 
     def assemble(
