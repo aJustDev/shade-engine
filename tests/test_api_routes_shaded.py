@@ -204,6 +204,33 @@ def test_pareto_front_drops_dominated_routes() -> None:
     ]
 
 
+def test_pareto_front_collapses_indistinguishable_offers() -> None:
+    """Neighboring alphas often differ by a couple of meters of sun over a
+    kilometer: technically non-dominated, but the same offer on screen."""
+    import numpy as np
+
+    from shade_api.routing import RouteLeg
+    from shade_api.shaded_routes import _pareto_front
+
+    def leg(length: float, sun: float) -> RouteLeg:
+        return RouteLeg(
+            xs=np.zeros(2),
+            ys=np.zeros(2),
+            length_m=length,
+            sun_length_m=sun,
+            veg_shade_length_m=0.0,
+        )
+
+    front = _pareto_front(
+        [
+            (0.5, leg(1471.8, 299.2)),
+            (1.0, leg(1474.2, 294.7)),  # 2 m longer, 4 m less sun: same offer
+            (2.0, leg(1572.4, 214.3)),  # a real step down in sun: kept
+        ]
+    )
+    assert [round(item[1].sun_length_m) for item in front] == [299, 214]
+
+
 def test_alternatives_absent_by_default(routes_client: TestClient) -> None:
     assert _route(routes_client).json()["alternatives"] is None
 

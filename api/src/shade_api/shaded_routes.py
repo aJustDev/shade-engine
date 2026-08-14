@@ -52,6 +52,8 @@ DEFAULT_ALPHA = 1.0
 DEFAULT_BETA = 0.0
 ALTERNATIVE_ALPHAS: Final = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0)
 """The alpha sweep behind ``alternatives=true``; see ``_sweep_alternatives``."""
+MEANINGFUL_SUN_GAIN: Final = 0.05
+"""An alternative must cut this share of the incumbent's sun to be offered."""
 
 
 def _parse_point(value: str, name: str) -> tuple[float, float]:
@@ -141,19 +143,25 @@ def _sweep_alternatives(
 
 
 def _pareto_front(entries: list[tuple[float, RouteLeg]]) -> list[tuple[float, RouteLeg]]:
-    """Drop routes that are both longer and sunnier than another one.
+    """Keep the routes that are a real choice, cheapest first.
 
     The sweep scalarizes two objectives into one number, and with beta > 0
     that number is not monotone in (length, sun): a route can come back
     both longer and sunnier than a sibling, which no one would ever pick.
-    Sorting by length and keeping only strict improvements in sun leaves
-    the non-dominated set, cheapest first.
+    Sorting by length and keeping only improvements in sun leaves the
+    non-dominated set.
+
+    Improvements also have to be worth a row on screen. Neighboring alphas
+    routinely differ by a couple of meters of sun over a kilometer, which
+    is two identical-looking offers, so a route must cut the incumbent's
+    sun by ``MEANINGFUL_SUN_GAIN`` to earn its place.
     """
     ranked = sorted(entries, key=lambda item: (item[1].length_m, item[1].sun_length_m))
     front: list[tuple[float, RouteLeg]] = []
     best_sun = math.inf
     for step, leg in ranked:
-        if leg.sun_length_m < best_sun - 1e-6:
+        margin = 1e-6 if not front else max(1e-6, MEANINGFUL_SUN_GAIN * best_sun)
+        if leg.sun_length_m <= best_sun - margin:
             best_sun = leg.sun_length_m
             front.append((step, leg))
     return front
