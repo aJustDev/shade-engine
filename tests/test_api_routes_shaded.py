@@ -1,5 +1,6 @@
 """``GET /v1/routes/shaded`` against the routed cube fixture."""
 
+import itertools
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -171,6 +172,68 @@ def test_response_carries_beta_and_veg_breakdown(routes_client: TestClient) -> N
     for leg in (body["shaded"], body["shortest"]):
         assert leg["veg_shade_length_m"] == 0.0
         assert leg["sun_length_m"] + leg["veg_shade_length_m"] <= leg["length_m"] + 1e-6
+
+
+def test_pareto_front_drops_dominated_routes() -> None:
+    """Longer AND sunnier than a sibling means nobody would ever pick it."""
+    import numpy as np
+
+    from shade_api.routing import RouteLeg
+    from shade_api.shaded_routes import _pareto_front
+
+    def leg(length: float, sun: float) -> RouteLeg:
+        return RouteLeg(
+            xs=np.zeros(2),
+            ys=np.zeros(2),
+            length_m=length,
+            sun_length_m=sun,
+            veg_shade_length_m=0.0,
+        )
+
+    front = _pareto_front(
+        [
+            (0.0, leg(100.0, 80.0)),  # shortest, sunniest: survives
+            (1.0, leg(120.0, 90.0)),  # longer AND sunnier: dominated
+            (2.0, leg(140.0, 20.0)),  # buys real shade: survives
+            (4.0, leg(150.0, 20.0)),  # same sun for more length: dominated
+        ]
+    )
+    assert [(round(item[1].length_m), round(item[1].sun_length_m)) for item in front] == [
+        (100, 80),
+        (140, 20),
+    ]
+
+
+def test_alternatives_absent_by_default(routes_client: TestClient) -> None:
+    assert _route(routes_client).json()["alternatives"] is None
+
+
+def test_alternatives_are_sorted_and_nondominated(routes_client: TestClient) -> None:
+    """Every returned route must be the best at something: sorted by length,
+    each one strictly less sunny than the shorter ones before it."""
+    response = _route(routes_client, alternatives="true")
+    assert response.status_code == 200
+    body = response.json()
+    alternatives = body["alternatives"]
+    assert alternatives
+    lengths = [alt["length_m"] for alt in alternatives]
+    suns = [alt["sun_length_m"] for alt in alternatives]
+    assert lengths == sorted(lengths)
+    assert all(later < earlier for earlier, later in itertools.pairwise(suns))
+    # No duplicate offers, and each carries the alpha that produced it.
+    assert len({(a["length_m"], a["sun_length_m"]) for a in alternatives}) == len(alternatives)
+    for alt in alternatives:
+        assert 0.0 <= alt["alpha"] <= 10.0
+        assert "veg_shade_length_m" in alt
+    # The cheapest offer is the shortest route.
+    assert alternatives[0]["length_m"] == pytest.approx(body["shortest"]["length_m"])
+
+
+def test_alternatives_at_night_is_a_single_route(routes_client: TestClient) -> None:
+    body = _route(routes_client, at="2026-12-21T03:00", alternatives="true").json()
+    assert body["status"] == "night"
+    assert len(body["alternatives"]) == 1
+    assert body["alternatives"][0]["length_m"] == body["shortest"]["length_m"]
 
 
 def test_snap_beyond_threshold_is_400(

@@ -25,16 +25,24 @@ At night there is no sun to avoid: one A* over bare lengths, both legs
 identical, ``status: "night"``.
 """
 
+import math
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 import numpy as np
+import numpy.typing as npt
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from shade_api.registry import CityRuntime
 from shade_api.routes import _AT_DESCRIPTION, Registry, _locate, resolve_at
-from shade_api.routing import EdgePoint, RouteGraph, RouteLeg
-from shade_api.schemas import RouteLegOut, RoutePointOut, ShadedRouteOut, SunOut
+from shade_api.routing import EdgePoint, EdgeSpan, RouteGraph, RouteLeg
+from shade_api.schemas import (
+    RouteAlternativeOut,
+    RouteLegOut,
+    RoutePointOut,
+    ShadedRouteOut,
+    SunOut,
+)
 from shade_core.solar import sun_position
 
 router = APIRouter(prefix="/v1")
@@ -42,6 +50,8 @@ router = APIRouter(prefix="/v1")
 SNAP_MAX_M = 400.0
 DEFAULT_ALPHA = 1.0
 DEFAULT_BETA = 0.0
+ALTERNATIVE_ALPHAS: Final = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0)
+"""The alpha sweep behind ``alternatives=true``; see ``_sweep_alternatives``."""
 
 
 def _parse_point(value: str, name: str) -> tuple[float, float]:
@@ -95,6 +105,60 @@ def _leg_out(runtime: CityRuntime, leg: RouteLeg) -> RouteLegOut:
     )
 
 
+def _sweep_alternatives(
+    graph: RouteGraph,
+    src: EdgePoint,
+    dst: EdgePoint,
+    edge_len: npt.NDArray[np.float64],
+    fractions: npt.NDArray[np.float32],
+    veg_fractions: npt.NDArray[np.float32],
+    alpha: float,
+    beta: float,
+) -> list[tuple[float, RouteLeg]]:
+    """Run the router across a spread of alphas and keep the distinct routes.
+
+    Each alpha is one taste in "how far would you walk to dodge the sun",
+    and its optimum is one point of the length/sun trade-off. Beta rides
+    along at the same ratio the caller asked for, so tree preference does
+    not drift as alpha grows. Routes repeat across neighboring alphas, so
+    identical span sequences collapse, keeping the smallest alpha that
+    produced them.
+    """
+    ratio = beta / alpha if alpha > 0.0 else 0.0
+    other_shade = np.clip(1.0 - fractions - veg_fractions, 0.0, 1.0)
+    seen: dict[tuple[tuple[int, float, float], ...], tuple[float, list[EdgeSpan]]] = {}
+    for step in sorted({*ALTERNATIVE_ALPHAS, alpha}):
+        cost = edge_len * (1.0 + step * fractions + (ratio * step) * other_shade)
+        spans = graph.astar_points(src, dst, cost)
+        if not spans:
+            continue
+        key = tuple((span.edge, round(span.s_from, 3), round(span.s_to, 3)) for span in spans)
+        seen.setdefault(key, (step, spans))
+    return [
+        (step, graph.assemble_spans(spans, fractions, veg_fractions))
+        for step, spans in seen.values()
+    ]
+
+
+def _pareto_front(entries: list[tuple[float, RouteLeg]]) -> list[tuple[float, RouteLeg]]:
+    """Drop routes that are both longer and sunnier than another one.
+
+    The sweep scalarizes two objectives into one number, and with beta > 0
+    that number is not monotone in (length, sun): a route can come back
+    both longer and sunnier than a sibling, which no one would ever pick.
+    Sorting by length and keeping only strict improvements in sun leaves
+    the non-dominated set, cheapest first.
+    """
+    ranked = sorted(entries, key=lambda item: (item[1].length_m, item[1].sun_length_m))
+    front: list[tuple[float, RouteLeg]] = []
+    best_sun = math.inf
+    for step, leg in ranked:
+        if leg.sun_length_m < best_sun - 1e-6:
+            best_sun = leg.sun_length_m
+            front.append((step, leg))
+    return front
+
+
 @router.get("/routes/shaded", summary="Shaded vs shortest walking route")
 def shaded_route(
     registry: Registry,
@@ -127,6 +191,15 @@ def shaded_route(
             ),
         ),
     ] = DEFAULT_BETA,
+    alternatives: Annotated[
+        bool,
+        Query(
+            description=(
+                "Also return the distinct routes an alpha sweep produces, "
+                "each with its own length and sun accounting"
+            )
+        ),
+    ] = False,
 ) -> ShadedRouteOut:
     if beta > alpha:
         raise HTTPException(
@@ -182,6 +255,21 @@ def shaded_route(
         else:  # no preference or night: the shaded run already minimized length
             shortest_leg = shaded_leg
 
+    scored: list[RouteAlternativeOut] | None = None
+    if alternatives:
+        if status == "ok" and shaded_spans:
+            found = _pareto_front(
+                _sweep_alternatives(
+                    graph, src, dst, edge_len, fractions, veg_fractions, alpha, beta
+                )
+            )
+        else:  # at night, or pins on one spot, there is nothing to trade off
+            found = [(0.0, shortest_leg)]
+        scored = [
+            RouteAlternativeOut(alpha=step, **_leg_out(runtime, leg).model_dump())
+            for step, leg in found
+        ]
+
     response.headers["Cache-Control"] = "public, max-age=86400" if at is not None else "no-store"
     return ShadedRouteOut(
         city=runtime.config.id,
@@ -196,6 +284,7 @@ def shaded_route(
         destination=_point_out(runtime, to_lat, to_lon, dst),
         shaded=_leg_out(runtime, shaded_leg),
         shortest=_leg_out(runtime, shortest_leg),
+        alternatives=scored,
         attribution=list(
             dict.fromkeys([*runtime.metadata.attribution, *graph.artifact.meta.attribution])
         ),

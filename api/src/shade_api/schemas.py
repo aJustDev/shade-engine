@@ -164,6 +164,12 @@ class RouteLegOut(BaseModel):
     )
 
 
+class RouteAlternativeOut(RouteLegOut):
+    """One distinct route from the alpha sweep, with the taste that found it."""
+
+    alpha: float = Field(description="The smallest alpha of the sweep that produced this route")
+
+
 class ShadedRouteOut(BaseModel):
     """Shade-optimized walking route plus the shortest route as reference."""
 
@@ -186,6 +192,13 @@ class ShadedRouteOut(BaseModel):
     destination: RoutePointOut
     shaded: RouteLegOut
     shortest: RouteLegOut = Field(description="The alpha = 0 route, for comparison")
+    alternatives: list[RouteAlternativeOut] | None = Field(
+        default=None,
+        description=(
+            "Distinct non-dominated routes across an alpha sweep, shortest "
+            "first; only present when alternatives=true"
+        ),
+    )
     attribution: list[str]
 
 
