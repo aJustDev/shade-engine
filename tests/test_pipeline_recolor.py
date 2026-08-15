@@ -195,7 +195,7 @@ class TestRecolorCity:
 
         manifest = json.loads((report.destination / "index.json").read_text(encoding="utf-8"))
         assert manifest["palette"] == "light"
-        assert manifest["colors"]["shade"] == "#5a6896"
+        assert manifest["colors"]["shade"] == "#5e708a"
         # Untouched keys survive.
         assert manifest["schema_version"] == 2
 

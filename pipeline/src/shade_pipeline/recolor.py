@@ -56,10 +56,24 @@ RGBA = tuple[int, int, int, int]
 # (0.78); over a light basemap that reads as a blanket and swallows the street
 # names underneath. Shade is darkening, so the light theme keeps the same
 # metaphor with a desaturated slate blue at ~43%.
-LIGHT_ALPHA: Final = 110
-LIGHT_SHADE_COLOR: Final[RGBA] = (90, 104, 150, LIGHT_ALPHA)
-LIGHT_CANOPY_COLOR: Final[RGBA] = (58, 130, 106, LIGHT_ALPHA)
-LIGHT_BUILDINGS_COLOR: Final[RGBA] = (120, 128, 145, LIGHT_ALPHA)
+#
+# The two colours are told apart by HUE, not by intensity. The first attempt
+# failed there: shade at 226 deg and canopy at 160 deg (a teal, not a green)
+# left only 66 deg between them, and at 43% alpha over a pale basemap the teal
+# washed out until it read as another shade of the shade. Canopy is now a real
+# green (~140 deg) with more saturation, which is what stops it drifting grey.
+#
+# The ALPHA is deliberately the same for both. Under a crown there is shade
+# whenever the sun is up (the opaque-crown assumption), so the two layers answer
+# the same question -- "is this spot shaded" -- and neither should shout over
+# the other. Making canopy heavier would suggest it means something stronger
+# than cast shade, and it does not.
+LIGHT_SHADE_ALPHA: Final = 120
+LIGHT_CANOPY_ALPHA: Final = 120
+
+LIGHT_SHADE_COLOR: Final[RGBA] = (94, 112, 138, LIGHT_SHADE_ALPHA)  # 215 deg, cool grey-blue
+LIGHT_CANOPY_COLOR: Final[RGBA] = (44, 142, 76, LIGHT_CANOPY_ALPHA)  # 140 deg, foliage green
+LIGHT_BUILDINGS_COLOR: Final[RGBA] = (124, 130, 142, LIGHT_SHADE_ALPHA)
 
 _TRANSPARENT: Final[RGBA] = (0, 0, 0, 0)
 
