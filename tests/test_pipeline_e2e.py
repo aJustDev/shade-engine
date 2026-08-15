@@ -4,16 +4,24 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
+import pytest
+import rasterio
+import shapely
 from numpy.testing import assert_allclose
+from pyproj import Transformer
 from typer.testing import CliRunner
 
 import laz_fixture
 import synthetic
 from shade_core import artifacts
 from shade_core.horizon import compute_horizon_reference
-from shade_core.shade import ShadeState, ShadeType, is_shaded
+from shade_core.shade import NO_BLOCKER, ShadeState, ShadeType, is_shaded
 from shade_core.solar import sun_position
+from shade_pipeline.area import DrawnArea, area_geojson
+from shade_pipeline.build import build_city
 from shade_pipeline.cli import app
+from shade_pipeline.sources import LocalDirectory
 
 CORDOBA_LAT, CORDOBA_LON = 37.88, -4.78
 NEAR = (
@@ -77,6 +85,64 @@ def test_golden_queries_on_built_city(built_city: Path) -> None:
     assert winter.shade_type is ShadeType.BUILDING
     summer = is_shaded(scene, *NEAR, sun_position(CORDOBA_LAT, CORDOBA_LON, SUMMER_NOON))
     assert summer.state is ShadeState.SUN
+
+
+def test_build_masks_everything_outside_the_computation_area(tmp_path: Path) -> None:
+    """A city with an ``area`` builds the same grid, computed only where it says.
+
+    The whole chain in one go: a drawn polygon in WGS84, projected, burnt onto
+    the grid, tiles outside it never swept, and ``coverage.tif`` left behind so
+    a reader can tell "no data" from "open sky" -- which the cubes cannot, both
+    being zeros.
+    """
+    from conftest import CUBE_CITY
+
+    min_x, min_y, max_x, max_y = CUBE_CITY.bbox
+    middle = (min_x + max_x) / 2.0
+    western = shapely.box(min_x, min_y, middle, max_y)
+    area_file = tmp_path / "area.geojson"
+    area_file.write_text(
+        area_geojson(
+            DrawnArea(
+                projected=western,
+                wgs84=_to_wgs84(western, CUBE_CITY.crs),
+                features=1,
+                repaired=False,
+            ),
+            CUBE_CITY.id,
+        ),
+        encoding="utf-8",
+    )
+
+    lidar_dir = tmp_path / "lidar"
+    lidar_dir.mkdir()
+    laz_fixture.write_cube_laz(lidar_dir / "cube.laz", origin=synthetic.UTM_ORIGIN)
+    config = CUBE_CITY.model_copy(update={"area": str(area_file)})
+    out_dir = build_city(config, LocalDirectory(lidar_dir), tmp_path / "data")
+
+    metadata = artifacts.load_metadata(out_dir)
+    assert metadata.coverage is not None
+    assert metadata.coverage.source == str(area_file)
+    assert metadata.coverage.covered_fraction == pytest.approx(0.5, abs=0.02)
+
+    with rasterio.open(out_dir / artifacts.COVERAGE_FILENAME) as src:
+        coverage = src.read(1) != 0
+    assert coverage[:, :40].all() and not coverage[:, 41:].any()
+
+    # Outside the area the cubes say "nothing raises this sector, and nothing
+    # is the raiser": the only pair that satisfies the artifact invariants.
+    with rasterio.open(out_dir / artifacts.HORIZON_FILENAME) as src:
+        assert not src.read(1)[:, 41:].any()
+    with rasterio.open(out_dir / artifacts.BLOCKER_CLASS_FILENAME) as src:
+        assert (src.read(1)[:, 41:] == NO_BLOCKER).all()
+
+
+def _to_wgs84(geometry: shapely.Geometry, crs: str) -> shapely.Geometry:
+    transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    return shapely.transform(
+        geometry,
+        lambda coords: np.stack(transformer.transform(coords[:, 0], coords[:, 1]), axis=1),
+    )
 
 
 def test_cli_smoke(tmp_path: Path) -> None:

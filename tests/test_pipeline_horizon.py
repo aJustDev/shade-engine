@@ -196,6 +196,150 @@ def test_tiled_quantized_equals_quantized_reference(cube_grid: HorizonGrid) -> N
     assert_array_equal(result.angles_q, quantize_angles(cube_grid.angles_deg))
 
 
+def _western_half(shape: tuple[int, ...]) -> np.ndarray:
+    """A computation area covering the western half of the scene."""
+    rows, cols = shape
+    mask = np.zeros((rows, cols), dtype=bool)
+    mask[:, : cols // 2] = True
+    return mask
+
+
+def test_masked_sweep_does_not_depend_on_the_tile_size() -> None:
+    """The invariant the area mask could have broken, and the reason it masks late.
+
+    A tile the area only grazes is swept whole and masked afterwards, so the
+    tile size decides how much work is skipped and never what is written. The
+    three sizes here put the area's edge in a different place each time: 24
+    splits it on a tile boundary and leaves whole tiles outside, 120 makes the
+    entire scene one partially covered tile.
+    """
+    dsm, dtm = synthetic.cube_scene()
+    landcover = synthetic.cube_landcover()
+    coverage = _western_half(dsm.shape)
+    results = [
+        compute_horizon_tiled(
+            dsm,
+            dtm,
+            landcover,
+            1.0,
+            HorizonParams(max_distance_m=20.0, tile_size=size),
+            coverage=coverage,
+        )
+        for size in (24, 48, 120)
+    ]
+    for other in results[1:]:
+        assert_array_equal(other.angles_q, results[0].angles_q)
+        assert_array_equal(other.blocker_class, results[0].blocker_class)
+        assert_array_equal(other.angles_noveg_q, results[0].angles_noveg_q)
+
+
+def test_uncovered_pixels_are_open_sky_with_no_blocker() -> None:
+    """Outside the area: angle 0 with NO_BLOCKER, in both cubes.
+
+    Not a claim that the sky is open -- ``coverage.tif`` is what says there is
+    no data -- but the only pair that satisfies the artifact invariants:
+    ``verify`` treats an angle above 0 with no blocker as a hard failure, and
+    a zero angle with a real class as evidence of a cube that lost data.
+    """
+    dsm, dtm = synthetic.cube_scene()
+    coverage = _western_half(dsm.shape)
+    result = compute_horizon_tiled(
+        dsm,
+        dtm,
+        synthetic.cube_landcover(),
+        1.0,
+        HorizonParams(max_distance_m=20.0, tile_size=48),
+        coverage=coverage,
+    )
+    outside = (slice(None), slice(None), slice(dsm.shape[1] // 2, None))
+    assert_array_equal(result.angles_q[outside], 0)
+    assert_array_equal(result.angles_noveg_q[outside], 0)
+    assert_array_equal(result.blocker_class[outside], NO_BLOCKER)
+    # ...and the covered half is bit for bit what an unmasked sweep produced.
+    full = compute_horizon_tiled(
+        dsm,
+        dtm,
+        synthetic.cube_landcover(),
+        1.0,
+        HorizonParams(max_distance_m=20.0, tile_size=48),
+    )
+    inside = (slice(None), slice(None), slice(None, dsm.shape[1] // 2))
+    assert_array_equal(result.angles_q[inside], full.angles_q[inside])
+    assert_array_equal(result.blocker_class[inside], full.blocker_class[inside])
+    assert_array_equal(result.angles_noveg_q[inside], full.angles_noveg_q[inside])
+
+
+def test_masked_sweep_survives_the_workers(tmp_path: Path) -> None:
+    """Skipping tiles changes what is submitted; it must not change a value."""
+    dsm, dtm = synthetic.cube_scene()
+    landcover = synthetic.cube_landcover()
+    coverage = _western_half(dsm.shape)
+    serial = compute_horizon_tiled(
+        dsm,
+        dtm,
+        landcover,
+        1.0,
+        HorizonParams(max_distance_m=20.0, tile_size=24),
+        coverage=coverage,
+    )
+    parallel = compute_horizon_tiled(
+        dsm,
+        dtm,
+        landcover,
+        1.0,
+        HorizonParams(max_distance_m=20.0, tile_size=24, workers=2),
+        coverage=coverage,
+        scratch_dir=tmp_path,
+    )
+    assert_array_equal(np.asarray(parallel.angles_q), serial.angles_q)
+    assert_array_equal(np.asarray(parallel.blocker_class), serial.blocker_class)
+    assert_array_equal(np.asarray(parallel.angles_noveg_q), serial.angles_noveg_q)
+
+
+def test_the_sweep_reports_the_tiles_it_skips() -> None:
+    """The saving has to be visible: it is the only reason the area exists."""
+    dsm, dtm = synthetic.cube_scene()
+    lines: list[str] = []
+    compute_horizon_tiled(
+        dsm,
+        dtm,
+        synthetic.cube_landcover(),
+        1.0,
+        HorizonParams(max_distance_m=20.0, tile_size=24),
+        coverage=_western_half(dsm.shape),
+        progress=lines.append,
+    )
+    assert "sweeping 15 tiles serially (10 outside the area)" in lines[0]
+
+
+def test_an_area_that_misses_the_bbox_is_refused() -> None:
+    dsm, dtm = synthetic.cube_scene()
+    with pytest.raises(ValueError, match="covers no pixel"):
+        compute_horizon_tiled(
+            dsm,
+            dtm,
+            synthetic.cube_landcover(),
+            1.0,
+            HorizonParams(max_distance_m=20.0, tile_size=48),
+            coverage=np.zeros(dsm.shape, dtype=bool),
+        )
+
+
+def test_a_mask_of_the_wrong_shape_is_refused() -> None:
+    """The mask covers the inner window, not the padded raster; mixing them is a bug."""
+    dsm, dtm = synthetic.cube_scene()
+    with pytest.raises(ValueError, match="coverage mask is"):
+        compute_horizon_tiled(
+            dsm,
+            dtm,
+            synthetic.cube_landcover(),
+            1.0,
+            HorizonParams(max_distance_m=20.0, tile_size=48),
+            (20, 100, 20, 100),
+            coverage=np.ones(dsm.shape, dtype=bool),
+        )
+
+
 def test_inner_window_equals_reference_crop(cube_grid: HorizonGrid) -> None:
     """Sweeping only an inner window reproduces the reference crop (padding path)."""
     dsm, dtm = synthetic.cube_scene()

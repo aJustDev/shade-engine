@@ -20,6 +20,7 @@ import numpy.typing as npt
 from shade_core.artifacts import (
     BLOCKER_CLASS_FILENAME,
     CANOPY_FILENAME,
+    COVERAGE_FILENAME,
     DSM_FILENAME,
     DTM_FILENAME,
     HORIZON_FILENAME,
@@ -28,11 +29,13 @@ from shade_core.artifacts import (
     METADATA_FILENAME,
     ArtifactInput,
     BuildMetadata,
+    CoverageBuildParams,
     HorizonBuildParams,
     LandcoverBuildParams,
 )
 from shade_core.config import CityConfig
 from shade_core.shade import NO_BLOCKER, Landcover
+from shade_pipeline.area import coverage_mask, read_area
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, canopy_mask
 from shade_pipeline.cog import write_cog
 from shade_pipeline.footprints import (
@@ -87,6 +90,24 @@ def build_city(
     resolution = config.resolution_m
     pad = buffer_pixels(params.max_distance_m, resolution)
     padded = padded_bbox(config.bbox, resolution, pad)
+
+    # First of all, before any hour is spent: a computation area that does not
+    # parse, or does not touch the bbox, has to fail now.
+    coverage: npt.NDArray[np.bool_] | None = None
+    if config.area is not None:
+        drawn = read_area(Path(config.area), config.crs)
+        coverage = coverage_mask(drawn.projected, config.bbox, resolution)
+        covered = int(coverage.sum())
+        if covered == 0:
+            raise ValueError(
+                f"the area in {config.area} covers no pixel of {config.id}'s bbox; "
+                "run shade-engine area to check the two agree"
+            )
+        say(
+            f"computation area from {config.area}: {covered:,} of {coverage.size:,} px "
+            f"({100.0 * covered / coverage.size:.0f}% of the bbox)"
+        )
+
     files = source.files_covering(config.bbox, pad * resolution)
     say(
         f"{len(files)} lidar files ready in {format_duration(time.monotonic() - build_start)} "
@@ -159,6 +180,7 @@ def build_city(
             resolution,
             params,
             inner,
+            coverage=coverage,
             scratch_dir=Path(scratch),
             progress=progress,
         )
@@ -204,6 +226,16 @@ def build_city(
             "sieve_px": str(CANOPY_SIEVE_PX),
         },
     )
+    if coverage is not None:
+        # Written even though the cubes already encode it by construction:
+        # zeros in the horizon are indistinguishable from a genuinely open sky,
+        # so this file is the only thing standing between "no data" and a
+        # confident "it is sunny here".
+        timed_cog(
+            out_dir / COVERAGE_FILENAME,
+            coverage.astype(np.uint8),
+            tags={**common, "area_source": config.area or "", "covered_px": str(coverage.sum())},
+        )
 
     metadata = BuildMetadata(
         schema_version=2,
@@ -228,6 +260,13 @@ def build_city(
             footprint_count=len(outlines),
             footprint_relabelled=relabelled,
             roof_tolerance_m=ROOF_TOLERANCE_M if footprints is not None else None,
+        ),
+        coverage=None
+        if coverage is None or config.area is None
+        else CoverageBuildParams(
+            source=config.area,
+            covered_px=int(coverage.sum()),
+            covered_fraction=float(coverage.sum()) / coverage.size,
         ),
         no_blocker_value=NO_BLOCKER,
         software={name: importlib_metadata.version(name) for name in _VERSIONED_PACKAGES},

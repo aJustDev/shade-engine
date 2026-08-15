@@ -4,6 +4,12 @@ Each city is a deployment unit described by one YAML file under ``cities/``
 (spec, section 4). Adding a city to the engine means adding one file and
 running the pipeline; no code changes.
 
+``bbox`` sets the georeference and the shape of every raster; the optional
+``area`` polygon says which pixels inside it are worth computing, so a city
+whose shape is nothing like a rectangle stops paying for the corners. Without
+it, the whole bbox is the computation area, which is how every city built
+before it worked.
+
 A note on ``crs`` and ``bbox``: the bounding box is expressed in the city's
 *local projected* CRS (e.g. ``EPSG:25830``, UTM zone 30N for Cordoba), where
 coordinates are meters, not degrees. All raster processing and distance math
@@ -30,6 +36,12 @@ class CityConfig(BaseModel):
     timezone: str
     crs: str
     bbox: Bbox = Field(description="(min_x, min_y, max_x, max_y) in the local CRS, meters")
+    area: str | None = Field(
+        default=None,
+        description=(
+            "GeoJSON (EPSG:4326) of the computation area inside the bbox; None means the whole bbox"
+        ),
+    )
     resolution_m: float = Field(default=1.0, gt=0)
     horizon_sectors: int = Field(default=64, gt=0)
     horizon_max_distance_m: float = Field(

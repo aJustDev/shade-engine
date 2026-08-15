@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Final
 
 import numpy as np
+import numpy.typing as npt
+import rasterio.features
 import shapely
 from pyproj import Transformer
 from shapely.geometry import mapping, shape
@@ -39,7 +41,7 @@ from shade_pipeline.budget import (
     workers_that_fit,
 )
 from shade_pipeline.cnig import TILE_KM, expected_tiles, parse_tile_name
-from shade_pipeline.grid import buffer_pixels, grid_shape
+from shade_pipeline.grid import buffer_pixels, grid_shape, transform_from_bbox
 from shade_pipeline.horizon import tile_jobs
 from shade_pipeline.progress import format_bytes, format_duration
 
@@ -293,6 +295,28 @@ def tile_saving(
         total_px=int(pixels.sum()),
         swept_px=int(pixels[hits].sum()),
     )
+
+
+def coverage_mask(geometry: BaseGeometry, bbox: Bbox, resolution_m: float) -> npt.NDArray[np.bool_]:
+    """Burn the area onto the city grid: True where the build has data.
+
+    ``all_touched`` on purpose. Rasterizing a polygon is always an
+    approximation -- the drawn edge is a straight line, the burnt one a
+    staircase of whole pixels -- so the only choice is which way to err.
+    Erring outward keeps a street the user drew inside the area, and costs
+    nothing: those pixels get swept anyway as part of their tile. Erring
+    inward would silently drop them. See
+    ``shade-docs: learning/rasterizacion-de-poligonos.md``.
+    """
+    rows, cols = grid_shape(bbox, resolution_m)
+    burnt: npt.NDArray[np.uint8] = rasterio.features.rasterize(
+        [(geometry, 1)],
+        out_shape=(rows, cols),
+        transform=transform_from_bbox(bbox, resolution_m),
+        all_touched=True,
+        dtype="uint8",
+    )
+    return burnt.astype(bool)
 
 
 def sweep_seconds(
@@ -552,6 +576,7 @@ __all__ = [
     "TileSaving",
     "area_geojson",
     "bbox_literal",
+    "coverage_mask",
     "format_plan",
     "lidar_needs",
     "plan_area",

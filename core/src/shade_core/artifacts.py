@@ -42,6 +42,7 @@ CANOPY_FILENAME: Final = "canopy.tif"
 HORIZON_FILENAME: Final = "horizon.tif"
 HORIZON_NOVEG_FILENAME: Final = "horizon_noveg.tif"
 BLOCKER_CLASS_FILENAME: Final = "blocker_class.tif"
+COVERAGE_FILENAME: Final = "coverage.tif"
 METADATA_FILENAME: Final = "metadata.json"
 
 
@@ -70,6 +71,18 @@ class LandcoverBuildParams(BaseModel):
     roof_tolerance_m: float | None = None
 
 
+class CoverageBuildParams(BaseModel):
+    """Which pixels of the bbox the build actually computed.
+
+    Optional in :class:`BuildMetadata`: a city with no ``area`` in its config
+    computed all of them, which is what its absence means.
+    """
+
+    source: str
+    covered_px: int
+    covered_fraction: float
+
+
 class ArtifactInput(BaseModel):
     """One source file that fed the build."""
 
@@ -90,6 +103,7 @@ class BuildMetadata(BaseModel):
     horizon: HorizonBuildParams
     landcover_classes: dict[str, int]
     landcover: LandcoverBuildParams | None = None
+    coverage: CoverageBuildParams | None = None
     no_blocker_value: int
     software: dict[str, str]
     inputs: list[ArtifactInput]

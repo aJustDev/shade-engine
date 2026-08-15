@@ -283,6 +283,8 @@ class _SweepState:
     resolution_m: float
     params: HorizonParams
     pad: int
+    inner: Window
+    coverage: npt.NDArray[np.bool_] | None
 
 
 _SWEEP: _SweepState | None = None
@@ -308,12 +310,27 @@ def tile_jobs(inner: Window, tile_size: int) -> list[Window]:
     ]
 
 
+def _tile_coverage(state: _SweepState, job: Window) -> npt.NDArray[np.bool_] | None:
+    """The coverage mask cropped to ``job``, or None when the city is all covered."""
+    if state.coverage is None:
+        return None
+    t0, t1, u0, u1 = job
+    row0, _, col0, _ = state.inner
+    return state.coverage[t0 - row0 : t1 - row0, u0 - col0 : u1 - col0]
+
+
 def _sweep_tile(job: Window) -> SweptTile:
     """Sweep one tile against the inherited rasters; the unit of work.
 
     The same function on both paths -- called directly in serial, submitted to
     the pool in parallel -- so the two cannot drift apart. It reads and returns
     only; every write to an artifact happens in the parent.
+
+    A tile the computation area only partly covers is swept **whole** and
+    masked afterwards. Sweeping just the covered pixels would be faster, but
+    the saving is a fringe and the cost is the invariant that matters: masking
+    after the fact keeps the cubes identical for every ``tile_size``, so the
+    tile size decides how much work is skipped and never what is written.
     """
     state = _SWEEP
     assert state is not None, "_sweep_tile called outside a _sweep_state block"
@@ -329,6 +346,12 @@ def _sweep_tile(job: Window) -> SweptTile:
         state.params,
         (t0 - p0, t1 - p0, u0 - q0, u1 - q0),
     )
+    covered = _tile_coverage(state, job)
+    if covered is not None and not covered.all():
+        outside = ~covered
+        angles_q[:, outside] = 0
+        angles_noveg_q[:, outside] = 0
+        blocker[:, outside] = NO_BLOCKER
     return job, angles_q, blocker, angles_noveg_q
 
 
@@ -367,6 +390,7 @@ def compute_horizon_tiled(
     params: HorizonParams,
     inner: Window | None = None,
     *,
+    coverage: npt.NDArray[np.bool_] | None = None,
     scratch_dir: Path | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> HorizonResult:
@@ -387,6 +411,16 @@ def compute_horizon_tiled(
     ``params.workers`` above 1 spreads the tiles across processes. The write
     loop below is the same in both modes; only who produced the tile changes,
     which is why the cubes come out identical.
+
+    ``coverage`` is the city's computation area as a mask over ``inner``
+    (see shade-docs: learning/rasterizacion-de-poligonos.md). Tiles it does not
+    reach at all are never swept -- that is where the saving comes from -- and
+    the rest are swept whole and masked. Uncovered pixels end up at angle 0
+    with class ``NO_BLOCKER``, which is the pair the artifact invariants
+    expect: "nothing raises this sector" with nothing named as the raiser.
+    They are *not* a claim that the sky is open there; ``coverage.tif`` is what
+    tells readers there is no data, and readers that ignore it would report
+    sunshine over a hole.
     """
     rows, cols = dsm.shape
     if inner is None:
@@ -415,16 +449,39 @@ def compute_horizon_tiled(
             scratch_dir / "angles_noveg_q.u8", dtype=np.uint8, mode="w+", shape=shape
         )
     jobs = tile_jobs(inner, params.tile_size)
+    outside: list[Window] = []
+    if coverage is not None:
+        if coverage.shape != shape[1:]:
+            raise ValueError(
+                f"coverage mask is {coverage.shape}, expected {shape[1:]} for this inner window"
+            )
+        inside: list[Window] = []
+        for job in jobs:
+            t0, t1, u0, u1 = job
+            patch = coverage[t0 - row0 : t1 - row0, u0 - col0 : u1 - col0]
+            (inside if patch.any() else outside).append(job)
+        jobs = inside
+        # The cubes are allocated, not initialized, so the tiles nobody sweeps
+        # still have to be written: the same "open sky, no blocker" pair a
+        # swept-but-uncovered pixel gets.
+        for t0, t1, u0, u1 in outside:
+            out = (slice(None), slice(t0 - row0, t1 - row0), slice(u0 - col0, u1 - col0))
+            angles_q[out] = 0
+            angles_noveg_q[out] = 0
+            blocker[out] = NO_BLOCKER
+        if not jobs:
+            raise ValueError("the computation area covers no pixel of this city's bbox")
     if progress is not None:
+        skipped = f" ({len(outside)} outside the area)" if outside else ""
         if workers > 1:
-            progress(f"sweeping {len(jobs)} tiles on {workers} workers")
+            progress(f"sweeping {len(jobs)} tiles on {workers} workers{skipped}")
         else:
             progress(
-                f"sweeping {len(jobs)} tiles serially "
+                f"sweeping {len(jobs)} tiles serially{skipped} "
                 f"({cpu_budget()} cores available; --workers N to parallelise)"
             )
     sweep_start = time.monotonic()
-    state = _SweepState(dsm, dtm, landcover, resolution_m, params, pad)
+    state = _SweepState(dsm, dtm, landcover, resolution_m, params, pad, inner, coverage)
     # Both producers are closeable generators, so `closing` tears the pool down
     # at a known point instead of whenever the collector gets round to it.
     producer: Generator[SweptTile] = (
