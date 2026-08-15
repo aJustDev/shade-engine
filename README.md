@@ -71,7 +71,7 @@ count.
 Then point the API at the artifacts:
 
 ```bash
-SHADE_ARTIFACTS_ROOT=data/cities uv run uvicorn shade_api.app:create_app --factory
+SHADE_API_ARTIFACTS_ROOT=data/cities uv run uvicorn shade_api.app:create_app --factory
 ```
 
 ## Adding a city
