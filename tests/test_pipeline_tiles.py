@@ -34,12 +34,12 @@ from shade_pipeline.shade_raster import (
     compute_state_raster,
 )
 from shade_pipeline.tiles import (
-    _PALETTE_STATES,
     BUILDINGS_COLORS,
     BUILDINGS_TILES_FILENAME,
     CANOPY_COLORS,
     CANOPY_TILES_FILENAME,
     MANIFEST_FILENAME,
+    PALETTE_STATES,
     SHADE_COLORS,
     bounds_wgs84,
     build_tiles,
@@ -98,7 +98,7 @@ def _state_at(reader: Reader, crs: str, x: float, y: float, zoom: int) -> int:
     assert image.mode == "P"
     index = image.getpixel((px, py))
     assert isinstance(index, int)
-    return _PALETTE_STATES[index]
+    return PALETTE_STATES[index]
 
 
 @pytest.mark.parametrize("when", [WINTER_NOON, SUMMER_NOON], ids=["winter", "summer"])

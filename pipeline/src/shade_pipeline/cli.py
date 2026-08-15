@@ -1,4 +1,4 @@
-"""CLI: ``shade-engine build|predict|canopy|verify|import-layer|tiles|graph <city>``."""
+"""CLI: ``shade-engine build|predict|canopy|verify|import-layer|tiles|recolor|graph <city>``."""
 
 import time
 from datetime import date, datetime
@@ -20,6 +20,7 @@ from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.layers import import_parking_layer
 from shade_pipeline.predict import prediction_table, read_points
 from shade_pipeline.progress import format_bytes, format_duration
+from shade_pipeline.recolor import PALETTES, recolor_city
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 from shade_pipeline.tiles import (
     DEFAULT_MAX_ZOOM,
@@ -310,3 +311,36 @@ def import_layer(
     finally:
         engine.dispose()
     typer.echo(f"imported {count} {layer} zones for {config.id}")
+
+
+@app.command()
+def recolor(
+    city: str,
+    palette: Annotated[str, typer.Option(help="Theme name; only 'light' for now")] = "light",
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+) -> None:
+    """Write CITY's tile tree in another theme WITHOUT recomputing any shade.
+
+    The tiles are paletted PNGs, so a theme swap rewrites 20 bytes per tile and
+    leaves the pixel data alone: minutes of I/O instead of the hours a render
+    costs. Output goes to a sibling tree (``v1/tiles-<palette>/``), which Caddy
+    serves with no configuration change.
+    """
+    chosen = PALETTES.get(palette)
+    if chosen is None:
+        known = ", ".join(sorted(PALETTES))
+        typer.echo(f"error: unknown palette {palette!r} (known: {known})", err=True)
+        raise typer.Exit(1)
+
+    started = time.perf_counter()
+    try:
+        report = recolor_city(output_root, city, chosen, progress=typer.echo)
+    except FileNotFoundError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(1) from error
+
+    elapsed = format_duration(time.perf_counter() - started)
+    typer.echo(
+        f"{report.palette}: {report.tiles} tiles across {report.archives} archives "
+        f"({', '.join(report.copied)} copied) -> {report.destination} in {elapsed}"
+    )

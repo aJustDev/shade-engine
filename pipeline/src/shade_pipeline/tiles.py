@@ -136,7 +136,7 @@ LADDER_PRESET_2026: Final[tuple[tuple[str, int, int], ...]] = (
 # PNG palette: state code -> palette index; colors and per-index alpha (tRNS
 # chunk) travel with every tile. Browsers decode paletted PNG natively and
 # the flat-color tiles compress to a few KB each.
-_PALETTE_STATES: Final = (
+PALETTE_STATES: Final = (
     STATE_SUN,
     STATE_SHADE_BUILDING,
     STATE_SHADE_VEGETATION,
@@ -145,16 +145,16 @@ _PALETTE_STATES: Final = (
 )
 
 
-def _palette_bytes(colors: Mapping[int, tuple[int, int, int, int]]) -> tuple[bytes, bytes]:
+def palette_bytes(colors: Mapping[int, tuple[int, int, int, int]]) -> tuple[bytes, bytes]:
     """(RGB palette, per-index alpha) PNG chunks for a state->RGBA mapping."""
-    rgb = bytes(channel for state in _PALETTE_STATES for channel in colors[state][:3])
-    trns = bytes(colors[state][3] for state in _PALETTE_STATES)
+    rgb = bytes(channel for state in PALETTE_STATES for channel in colors[state][:3])
+    trns = bytes(colors[state][3] for state in PALETTE_STATES)
     return rgb, trns
 
 
 def _palette_index() -> npt.NDArray[np.uint8]:
     index = np.zeros(256, dtype=np.uint8)
-    for position, state in enumerate(_PALETTE_STATES):
+    for position, state in enumerate(PALETTE_STATES):
         index[state] = position
     return index
 
@@ -260,7 +260,7 @@ def write_instant_pmtiles(
     PNG only once.
     """
     west, south, east, north = bounds
-    palette = _palette_bytes(colors)
+    palette = palette_bytes(colors)
     written = 0
     skipped = 0
     with MemoryFile() as memory:
