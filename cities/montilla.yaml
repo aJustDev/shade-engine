@@ -3,7 +3,8 @@ name: Montilla
 country: ES
 timezone: Europe/Madrid
 crs: EPSG:25830 # UTM 30N ETRS89, mismo huso que Cordoba
-bbox: [353600, 4159400, 356600, 4161900] # casco urbano + margen, en CRS local (metros)
+bbox: [352889, 4157095, 357142, 4163509] # casco urbano + margen, en CRS local (metros)
+area: cities/montilla/area.geojson
 resolution_m: 1.0
 horizon_sectors: 64
 horizon_max_distance_m: 500 # radio del barrido; tambien buffer del bbox
