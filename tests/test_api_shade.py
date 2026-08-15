@@ -1,12 +1,17 @@
 """/v1/shade: golden verdicts, timezone semantics and cache headers."""
 
+from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 from fastapi.testclient import TestClient
 from pyproj import Transformer
 
 import synthetic
+from conftest import CUBE_CITY
+from shade_api.app import create_app
+from shade_api.settings import ApiSettings
 
 # The golden NEAR point (10 m north of the cube wall) in WGS84, computed the
 # same way the API will invert it. Roundtrip error is nanometers: same pixel.
@@ -77,6 +82,39 @@ def test_point_outside_coverage_is_400(client: TestClient) -> None:
     response = _shade(client, lat=NEAR_LAT + 0.01)  # ~1.1 km north of the bbox
     assert response.status_code == 400
     assert "coverage" in response.json()["detail"]
+
+
+def test_point_inside_the_bbox_but_outside_the_area_is_400(
+    masked_city: Path, tmp_path: Path
+) -> None:
+    """The check this whole feature exists for: no data is not sunshine.
+
+    Same bbox, same rasters; the eastern half was simply never computed, and
+    its horizon cube is zeros, which the engine reads as an open sky. The API
+    has to refuse it exactly as it refuses a point in the next province.
+
+    The city YAML here carries no ``area`` on purpose: the artifact is what
+    knows, so a server that has not seen the config still answers correctly.
+    """
+    cities_dir = tmp_path / "cities"
+    cities_dir.mkdir()
+    (cities_dir / "cube.yaml").write_text(yaml.safe_dump(CUBE_CITY.model_dump(mode="json")))
+    settings = ApiSettings(
+        cities_dir=cities_dir,
+        artifacts_root=masked_city.parent.parent,
+        rate_limit_enabled=False,
+    )
+    east = _TO_WGS84.transform(synthetic.UTM_ORIGIN[0] + 90.0, synthetic.UTM_ORIGIN[1] + 60.0)
+    west = _TO_WGS84.transform(synthetic.UTM_ORIGIN[0] + 30.0, synthetic.UTM_ORIGIN[1] + 60.0)
+    with TestClient(create_app(settings)) as instance:
+        query = {"city": "cube", "at": "2026-06-21T14:20:00+02:00"}
+        outside = instance.get("/v1/shade", params={**query, "lon": east[0], "lat": east[1]})
+        assert outside.status_code == 400
+        assert outside.json()["detail"] == "point outside city coverage"
+
+        inside = instance.get("/v1/shade", params={**query, "lon": west[0], "lat": west[1]})
+        assert inside.status_code == 200
+        assert inside.json()["state"] in ("sun", "shade")
 
 
 def test_unknown_city_is_404(client: TestClient) -> None:

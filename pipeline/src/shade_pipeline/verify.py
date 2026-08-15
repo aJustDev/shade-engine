@@ -255,12 +255,15 @@ def _check_coverage(directory: Path, metadata: BuildMetadata, window_size: int) 
                 covered += int((~outside).sum())
                 if not outside.any():
                     continue
-                leaked_angle += int(horizon.read(window=window)[:, outside].any(axis=0).sum())
+                # One count per pixel, not per cube: a leak usually shows in
+                # both horizons at once and a doubled number reads as two bugs.
+                leak = horizon.read(window=window)[:, outside].any(axis=0)
+                if noveg is not None:
+                    leak |= noveg.read(window=window)[:, outside].any(axis=0)
+                leaked_angle += int(leak.sum())
                 leaked_class += int(
                     (blocker.read(window=window)[:, outside] != no_blocker).any(axis=0).sum()
                 )
-                if noveg is not None:
-                    leaked_angle += int(noveg.read(window=window)[:, outside].any(axis=0).sum())
         finally:
             if noveg is not None:
                 noveg.close()

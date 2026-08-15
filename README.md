@@ -58,11 +58,15 @@ uv run ruff check . && uv run mypy
 Building a city needs LiDAR tiles and takes hours. The short version:
 
 ```bash
+uv run shade-engine area cordoba drawn.geojson   # price a computation area
 uv run shade-engine build cordoba     # DSM, DTM, land cover, horizon
 uv run shade-engine verify cordoba    # integrity + physical sanity checks
 uv run shade-engine tiles cordoba     # PMTiles overlays for the viewer
 uv run shade-engine graph cordoba     # pedestrian graph for routing
 ```
+
+`build` and `tiles` take `--workers N`; the output is identical whatever the
+count.
 
 Then point the API at the artifacts:
 
@@ -75,6 +79,15 @@ SHADE_ARTIFACTS_ROOT=data/cities uv run uvicorn shade_api.app:create_app --facto
 One YAML in `cities/` plus one pipeline run. The file declares the projected
 CRS (UTM for Spain), the bounding box in metres, pixel resolution, the number
 of azimuth sectors and the sweep radius.
+
+Cities are not rectangles, so the bounding box can carry an optional `area`
+polygon: the box still sets the georeference, the polygon says which pixels
+inside it are worth computing. `shade-engine area` prices a drawn polygon
+before anything is built -- the sweep tiles it skips at each tile size, the
+minutes and memory, the LiDAR tiles still missing -- and the build writes a
+`coverage.tif` alongside the rasters, because outside the area the horizon
+cube is zeros and zero means open sky. Everything that answers a question
+reads it: a point with no data is refused, never called sunny.
 
 The important constraint: **all computation happens in a projected CRS**,
 never in degrees. Distances in degrees are meaningless, and Web Mercator

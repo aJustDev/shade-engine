@@ -253,6 +253,8 @@ def test_cli_reports_without_touching_anything(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "1 feature(s), 1.00 km2 in EPSG:25830" in result.output
     assert "bbox: [354000, 4160000, 355000, 4161000]" in result.output
+    # The count the build will write to metadata.json, not an approximation.
+    assert "1,000,000 px inside the area, 100% of the box" in result.output
     assert "nothing written" in result.output
     # The report is a report: the config still says what it said.
     assert (cities_dir / "teso.yaml").read_text(encoding="utf-8") == CITY_YAML

@@ -52,12 +52,12 @@ SWEEP_PX_PER_CORE_S: Final = 1340.0
 """Inner pixels one core sweeps per second, at the reference configuration.
 
 Measured on ``montilla-test`` (1489 x 860 px, 64 sectors, 500 m radius,
-1 m/px, ``--tile-size 256``): 15m 56s serial, so 1.339 px/s. Cost per pixel is
+1 m/px, ``--tile-size 256``): 15m 56s serial, so 1,339 px/s. Cost per pixel is
 proportional to sectors times samples per sector, which is what the
 ``REFERENCE_*`` constants below normalise against.
 """
 PARALLEL_PENALTY: Final = 0.114
-"""Amdahl-style term fitted to the same city: x2,67 on 3 workers, x4,16 on 7.
+"""Amdahl-style term fitted to the same city: x2.67 on 3 workers, x4.16 on 7.
 
 Sweep workers share memory bandwidth, and the last cores of an SMT machine are
 not whole cores. Ignoring this would promise a linear speedup the machine has
@@ -67,12 +67,14 @@ REFERENCE_SECTORS: Final = 64
 REFERENCE_SAMPLES: Final = 500.0
 """``max_distance_m / resolution_m`` of the timed build: samples per sector."""
 
-ARTIFACT_BYTES_PER_SWEPT_PIXEL: Final = 155
-"""Compressed size of a finished artifact directory, per swept pixel.
+ARTIFACT_BYTES_PER_COVERED_PIXEL: Final = 155
+"""Compressed size of a finished artifact directory, per covered pixel.
 
-Cordoba's 56 Mpx build writes about 8,6 GB of COGs, nearly all of it the three
-horizon cubes. Uncovered pixels are constant and compress to almost nothing,
-so the estimate scales with swept pixels rather than with the grid.
+Cordoba's 56 Mpx build writes about 8.6 GB of COGs, nearly all of it the three
+horizon cubes. Per *covered* pixel, not per swept one: a tile the area only
+grazes is swept whole but written masked, and a masked pixel is a run of zeros
+that compresses to nothing. Checked against a masked montilla-test build (517k
+covered px, 71.4 MiB written): 7% high, which is the direction a plan wants.
 """
 
 
@@ -135,6 +137,7 @@ class AreaPlan:
     previous_bbox: Bbox
     rows: int
     cols: int
+    covered_px: int
     savings: tuple[TileSaving, ...]
     tile_size: int
     workers: int
@@ -378,6 +381,9 @@ def plan_area(
     rows, cols = grid_shape(bbox, resolution)
     sizes = tuple(sorted({*tile_sizes, tile_size}))
     savings = tuple(tile_saving(area.projected, bbox, resolution, size) for size in sizes)
+    # The same burn the build will do, so the pixel count in the report is the
+    # one that ends up in metadata.json rather than an approximation of it.
+    covered_px = int(coverage_mask(area.projected, bbox, resolution).sum())
     pad = buffer_pixels(config.horizon_max_distance_m, resolution)
     sweep_bytes = estimate_sweep_worker_bytes(config.horizon_sectors, tile_size, pad)
     tiles_bytes = estimate_tiles_worker_bytes(rows, cols)
@@ -389,6 +395,7 @@ def plan_area(
         previous_bbox=config.bbox,
         rows=rows,
         cols=cols,
+        covered_px=covered_px,
         savings=savings,
         tile_size=tile_size,
         workers=workers,
@@ -429,13 +436,11 @@ def format_plan(plan: AreaPlan, config: CityConfig) -> str:
         f"  {bbox_literal(plan.bbox)}",
         f"  {plan.cols} x {plan.rows} px at {config.resolution_m:g} m "
         f"({plan.rows * plan.cols / 1e6:.1f} Mpx), box {plan.box_km2:.2f} km2",
-        f"  the area is {100.0 * area.area_km2 / plan.box_km2:.0f}% of its bounding box",
+        f"  {plan.covered_px:,} px inside the area, "
+        f"{100.0 * plan.covered_px / (plan.rows * plan.cols):.0f}% of the box",
     ]
     if plan.bbox != plan.previous_bbox:
-        lines.append(
-            f"  note: {plan.config_path} still says {bbox_literal(plan.previous_bbox)}; "
-            "existing artifacts stop matching until the city is rebuilt"
-        )
+        lines.append(f"  note: {plan.config_path} still says {bbox_literal(plan.previous_bbox)}")
 
     lines += [
         "",
@@ -481,7 +486,7 @@ def format_plan(plan: AreaPlan, config: CityConfig) -> str:
         f"  scratch {format_bytes(plan.scratch_bytes)} "
         f"(3 cubes of {config.horizon_sectors} x {plan.rows} x {plan.cols})",
         f"  artifacts about "
-        f"{format_bytes(ARTIFACT_BYTES_PER_SWEPT_PIXEL * plan.chosen.swept_px)} (estimate)",
+        f"{format_bytes(ARTIFACT_BYTES_PER_COVERED_PIXEL * plan.covered_px)} (estimate)",
         "",
         f"lidar ({config.sources.get('pnoa_series', 'LIDA3')}, {plan.lidar.tile_km} km tiles)",
         f"  {plan.lidar.needed} tiles cover the padded bbox, "
@@ -495,6 +500,7 @@ def format_plan(plan: AreaPlan, config: CityConfig) -> str:
         f"{plan.config_path}",
         f"  bbox: {bbox_literal(plan.bbox)}",
         f"  area: {plan.area_path}",
+        f"  applying this invalidates any artifacts already built for {plan.city_id}",
     ]
     return "\n".join(lines)
 
@@ -509,7 +515,7 @@ def bbox_literal(bbox: Bbox) -> str:
 
 
 def _rounded(value: object) -> object:
-    """Round every coordinate to 6 decimals: ~0,1 m of longitude, plenty."""
+    """Round every coordinate to 6 decimals: ~0.1 m of longitude, plenty."""
     if isinstance(value, float):
         return round(value, 6)
     if isinstance(value, (list, tuple)):
@@ -522,7 +528,7 @@ def _rounded(value: object) -> object:
 def wgs84_geometry(area: DrawnArea) -> object:
     """The area as a GeoJSON geometry in lon/lat, rounded for transport.
 
-    Six decimals is ~0,1 m of longitude: far finer than an area drawn by hand
+    Six decimals is ~0.1 m of longitude: far finer than an area drawn by hand
     over a basemap, and it keeps the manifest the web client downloads small.
     """
     return _rounded(mapping(area.wgs84))
