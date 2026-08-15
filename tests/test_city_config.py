@@ -13,7 +13,8 @@ def test_load_cordoba() -> None:
     assert city.id == "cordoba"
     assert city.timezone == "Europe/Madrid"
     assert city.crs == "EPSG:25830"
-    assert city.bbox == (341000, 4192000, 349000, 4199000)
+    assert city.bbox == (338415, 4189828, 347432, 4200642)
+    assert city.area == "cities/cordoba/area.geojson"
     assert city.resolution_m == 1.0
     assert city.horizon_sectors == 64
     assert city.attribution  # IGN attribution is a license requirement
