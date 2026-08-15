@@ -16,6 +16,15 @@ Two things make the whole-city pass cheap:
   Dequantizing the full horizon cube to float32 would cost ~14 GB at city
   scale; two uint8 bands are ~110 MB.
 
+The blocker class alone cannot split shade into layers a viewer can toggle:
+it names whichever obstacle won the argmax, so a pixel covered by a wall *and*
+a crown lands in one bucket by centimetres, and hiding the trees erases shade
+that the wall casts anyway. The vegetation-free horizon answers the actual
+question -- would this be shade with no trees -- and splits cast shade into
+"holds without trees" and "only the trees hold it". ``STATE_SHADE_BOTH`` keeps
+the first group's crowns visible to consumers that care about comfort (the
+route graph) without merging the two questions.
+
 Parity with the point engine is bit-exact away from float boundaries and is
 enforced by tests: the interpolation runs in float32 exactly like
 ``HorizonGrid.horizon_at``, the final comparison promotes to float64 (core
@@ -31,15 +40,27 @@ import numpy as np
 import numpy.typing as npt
 import rasterio
 
-from shade_core.artifacts import BLOCKER_CLASS_FILENAME, CANOPY_FILENAME, HORIZON_FILENAME
+from shade_core.artifacts import (
+    BLOCKER_CLASS_FILENAME,
+    CANOPY_FILENAME,
+    HORIZON_FILENAME,
+    HORIZON_NOVEG_FILENAME,
+)
 from shade_core.shade import NO_BLOCKER, Landcover
 from shade_core.solar import SunPosition
 
 STATE_SUN: Final = 0
 STATE_SHADE_BUILDING: Final = 1
 STATE_SHADE_VEGETATION: Final = 2
+"""Shaded, and only the trees hold it: fell them and the sun reaches here."""
 STATE_SHADE_OTHER: Final = 3
 """Shaded, but the blocker is bare ground or open sky (interpolation edge)."""
+STATE_SHADE_BOTH: Final = 4
+"""Shaded by a crown, and by the skyline that would remain without it.
+
+Never reaches a tile: ``tiles.py`` folds it into ``STATE_SHADE_BUILDING`` when
+writing the building set, so the PNG palette keeps its five entries.
+"""
 STATE_OUTSIDE: Final = 255
 """Nodata for pixels outside the city raster; only appears after warping."""
 
@@ -48,10 +69,15 @@ def compute_state_raster(artifact_dir: str | Path, sun: SunPosition) -> npt.NDAr
     """Shade state code per pixel of a city's artifacts under a given sun.
 
     Mirrors :func:`shade_core.shade.is_shaded` decision by decision: canopy
-    overrides everything (a pixel under the canopy mask is vegetation-shaded
-    whenever the sun is up), then the horizon comparison, then the blocker
-    classification at the contributing sector. Night has no raster: callers
-    must not ask (raises ``ValueError``), since every pixel would be NIGHT.
+    overrides everything (a pixel under the canopy mask is shaded by
+    vegetation whenever the sun is up), then the horizon comparison, then the
+    blocker classification at the contributing sector, then the promotion to
+    ``STATE_SHADE_BOTH`` where the vegetation-free horizon closes the sky too.
+    Night has no raster: callers must not ask (raises ``ValueError``), since
+    every pixel would be NIGHT.
+
+    Artifacts without ``horizon_noveg.tif`` fall back to the pre-decomposition
+    states, which is exactly what they encoded.
     """
     if not sun.is_up:
         raise ValueError(
@@ -95,10 +121,29 @@ def compute_state_raster(artifact_dir: str | Path, sun: SunPosition) -> npt.NDAr
     # raw uint8 bands is equivalent to comparing the dequantized floats.
     blocker = np.where(lower_q >= upper_q, blocker_lower, blocker_upper)
 
+    # Would the sun still be blocked with the trees felled? A building blocker
+    # answers itself (the vegetation-free skyline reaches at least its angle),
+    # so `holds` only ever differs from `shaded` on vegetation blockers -- and
+    # without the cube the old artifacts' implicit answer was "no".
+    noveg_path = directory / HORIZON_NOVEG_FILENAME
+    if noveg_path.exists():
+        with rasterio.open(noveg_path) as src:
+            noveg_lower_q = src.read([lower + 1])[0]
+            noveg_upper_q = src.read([upper + 1])[0]
+        horizon_noveg = (1.0 - fraction) * (
+            noveg_lower_q.astype(np.float32) * np.float32(scale)
+        ) + fraction * (noveg_upper_q.astype(np.float32) * np.float32(scale))
+        holds = np.float64(sun.elevation_deg) < horizon_noveg
+    else:
+        holds = shaded & (blocker != Landcover.VEGETATION)
+
     state = np.zeros(horizon.shape, dtype=np.uint8)  # STATE_SUN
-    state[shaded & (blocker == Landcover.BUILDING)] = STATE_SHADE_BUILDING
-    state[shaded & (blocker == Landcover.VEGETATION)] = STATE_SHADE_VEGETATION
-    state[shaded & ((blocker == Landcover.GROUND) | (blocker == NO_BLOCKER))] = STATE_SHADE_OTHER
+    state[shaded & holds & (blocker == Landcover.BUILDING)] = STATE_SHADE_BUILDING
+    state[shaded & holds & (blocker == Landcover.VEGETATION)] = STATE_SHADE_BOTH
+    state[shaded & holds & ((blocker == Landcover.GROUND) | (blocker == NO_BLOCKER))] = (
+        STATE_SHADE_OTHER
+    )
+    state[shaded & ~holds] = STATE_SHADE_VEGETATION
 
     # Canopy override, applied last: is_shaded checks canopy *before* the
     # horizon, and an unconditional overwrite here yields the same result.
@@ -112,5 +157,7 @@ def compute_state_raster(artifact_dir: str | Path, sun: SunPosition) -> npt.NDAr
         )
     with rasterio.open(canopy_path) as src:
         canopy = src.read()[0]
-    state[canopy != 0] = STATE_SHADE_VEGETATION
+    under_canopy = canopy != 0
+    state[under_canopy & ~holds] = STATE_SHADE_VEGETATION
+    state[under_canopy & holds] = STATE_SHADE_BOTH
     return state

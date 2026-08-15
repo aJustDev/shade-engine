@@ -77,6 +77,13 @@ def artifact_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         crs,
         tags={"no_blocker": "255"},
     )
+    write_cog(
+        directory / artifacts.HORIZON_NOVEG_FILENAME,
+        result.angles_noveg_q,
+        transform,
+        crs,
+        tags={"angle_max_deg": "90.0", "sectors": "64"},
+    )
     # Canopy deliberately decoupled from the landcover (one pixel, far from
     # the golden queries): proves the loaders read the artifact, not the old
     # landcover-derived formula.
@@ -102,8 +109,10 @@ def test_load_scene_arrays(artifact_dir: Path) -> None:
     assert scene.landcover is not None and scene.canopy is not None
     assert scene.dsm is not None and scene.dtm is not None
     assert scene.sector_classes is not None
+    assert scene.horizon_noveg is not None
     assert scene.dsm.shape == scene.dtm.shape == scene.landcover.shape == (120, 120)
     assert scene.sector_classes.shape == (64, 120, 120)
+    assert scene.horizon_noveg.angles_deg.shape == (64, 120, 120)
     assert scene.dsm.dtype == np.float64 and scene.landcover.dtype == np.uint8
     assert scene.observer_height_m == 1.6
     expected_canopy = np.zeros((120, 120), dtype=bool)
@@ -146,3 +155,12 @@ def test_missing_canopy_raises(artifact_dir: Path, tmp_path: Path) -> None:
     (stripped / artifacts.CANOPY_FILENAME).unlink()
     with pytest.raises(FileNotFoundError, match="shade-engine canopy"):
         artifacts.load_scene(stripped)
+
+
+def test_missing_noveg_horizon_loads(artifact_dir: Path, tmp_path: Path) -> None:
+    """Unlike the canopy, the second horizon is optional: absent means no BOTH."""
+    stripped = tmp_path / "v1"
+    shutil.copytree(artifact_dir, stripped)
+    (stripped / artifacts.HORIZON_NOVEG_FILENAME).unlink()
+    scene = artifacts.load_scene(stripped)
+    assert scene.horizon_noveg is None

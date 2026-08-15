@@ -46,7 +46,11 @@ class ShadeOut(BaseModel):
     )
     in_shade: bool = Field(description="True exactly when state is 'shade'")
     shade_type: ShadeType | None = Field(
-        description="What casts the shade; null in sun, at night or when unknown"
+        description=(
+            "What casts the shade: 'building', 'vegetation' when only the trees "
+            "hold it, or 'both' when a crown covers the point and the skyline "
+            "would shade it anyway. Null in sun, at night or when unknown"
+        )
     )
     sun: SunOut
     attribution: list[str]

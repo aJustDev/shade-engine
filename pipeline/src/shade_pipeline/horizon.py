@@ -21,6 +21,17 @@ pixel's max angle, its landcover class is kept. Strict ``>`` with ascending
 distances means the nearest blocker wins ties, matching core's ray-march
 intuition. Sectors whose final angle is 0 (open sky) get ``NO_BLOCKER``.
 
+A single class per sector cannot answer "would this pixel be shaded anyway
+without the trees": the class only names whichever obstacle won the argmax,
+often by centimetres. So the same pass builds a **second horizon** over the
+surface with vegetation lowered to the ground, and the two cubes together give
+a real decomposition (see ``shade_pipeline.shade_raster``). That accumulator
+keeps ``(dz / d)`` -- the tangent -- and converts once per sector instead of
+once per sample: ``arctan`` is monotonic, so the maximum is the same, and the
+measured cost of the whole second cube is +9% of sweep time (a second
+``arctan2`` per sample would be +109%). The exact path above is untouched, so
+``horizon.tif`` stays bit-identical to the oracle.
+
 ``geometric`` step mode grows the distance step multiplicatively in the far
 field (constant relative error, far fewer samples) as a future knob for
 city-scale runs; it can skip thin distant obstacles and is never validated
@@ -37,7 +48,7 @@ from typing import Final, Literal
 import numpy as np
 import numpy.typing as npt
 
-from shade_core.shade import NO_BLOCKER
+from shade_core.shade import NO_BLOCKER, Landcover
 from shade_pipeline.grid import buffer_pixels
 from shade_pipeline.progress import format_duration
 
@@ -69,10 +80,15 @@ class HorizonParams:
 
 @dataclass(frozen=True)
 class HorizonResult:
-    """Quantized horizon angles and blocker classes, shape (sectors, rows, cols)."""
+    """Quantized horizon angles and blocker classes, shape (sectors, rows, cols).
+
+    ``angles_noveg_q`` is the same horizon over a surface with vegetation
+    lowered to the terrain: the sky as it would be with no trees.
+    """
 
     angles_q: npt.NDArray[np.uint8]
     blocker_class: npt.NDArray[np.uint8]
+    angles_noveg_q: npt.NDArray[np.uint8]
 
 
 def sector_offsets(
@@ -114,24 +130,30 @@ def compute_horizon_block(
     resolution_m: float,
     params: HorizonParams,
     inner: tuple[int, int, int, int],
-) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint8]]:
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint8], npt.NDArray[np.float32]]:
     """Sweep the ``inner`` (row0, row1, col0, col1) window against the full arrays.
 
-    Returns pre-quantization float32 angles and uint8 blocker classes for the
-    window. Samples come from anywhere in the given arrays; the caller is
-    responsible for passing enough surrounding context (see the tiled driver).
+    Returns pre-quantization float32 angles, uint8 blocker classes and the
+    float32 angles of the vegetation-free surface, for the window. Samples come
+    from anywhere in the given arrays; the caller is responsible for passing
+    enough surrounding context (see the tiled driver).
     """
     row0, row1, col0, col1 = inner
     rows, cols = dsm.shape
     height, width = row1 - row0, col1 - col0
     observer_z = dtm[row0:row1, col0:col1].astype(np.float64) + params.observer_height_m
     surface_z = dsm.astype(np.float64)
+    # Felling the trees means exposing the ground under them, not deleting the
+    # cell: on a wooded slope the terrain itself still blocks.
+    surface_noveg_z = np.where(landcover == Landcover.VEGETATION, dtm, dsm).astype(np.float64)
 
     angles = np.empty((params.sectors, height, width), dtype=np.float32)
     blocker = np.empty((params.sectors, height, width), dtype=np.uint8)
+    angles_noveg = np.empty((params.sectors, height, width), dtype=np.float32)
     for k in range(params.sectors):
         best = np.full((height, width), -np.inf)
         best_class = np.full((height, width), NO_BLOCKER, dtype=np.uint8)
+        best_slope = np.full((height, width), -np.inf)
         for d_row, d_col, distance in sector_offsets(k, params, resolution_m):
             # Target pixel (i, j) samples array cell (row0 + i + d_row, ...);
             # clamp to the sub-rectangle of targets whose sample is in range.
@@ -150,10 +172,18 @@ def compute_horizon_block(
             improved = angle > best[sub]
             best[sub] = np.where(improved, angle, best[sub])
             best_class[sub] = np.where(improved, landcover[src], best_class[sub])
+            np.maximum(
+                best_slope[sub],
+                (surface_noveg_z[src] - observer_z[sub]) / distance,
+                out=best_slope[sub],
+            )
         angles[k] = np.maximum(best, 0.0).astype(np.float32)
         best_class[best <= 0.0] = NO_BLOCKER
         blocker[k] = best_class
-    return angles, blocker
+        # One arctan per sector, on the accumulated tangent. -inf (no sample in
+        # range) lands on -90 and the floor at 0 absorbs it, same as above.
+        angles_noveg[k] = np.maximum(np.degrees(np.arctan(best_slope)), 0.0).astype(np.float32)
+    return angles, blocker, angles_noveg
 
 
 def compute_horizon_tiled(
@@ -174,7 +204,7 @@ def compute_horizon_tiled(
     memory per tile stays bounded while cost stays proportional to inner
     pixels (buffer pixels are read, never swept).
 
-    With ``scratch_dir`` the two output cubes live in memory-mapped files
+    With ``scratch_dir`` the three output cubes live in memory-mapped files
     there instead of anonymous RAM. City-scale cubes are the build's largest
     allocation (64 x 7000 x 8000 uint8 ~= 3.35 GB apiece for Cordoba) and the
     access pattern is mmap-friendly -- written tile by tile, then read back
@@ -191,9 +221,13 @@ def compute_horizon_tiled(
     if scratch_dir is None:
         angles_q = np.empty(shape, dtype=np.uint8)
         blocker = np.empty(shape, dtype=np.uint8)
+        angles_noveg_q = np.empty(shape, dtype=np.uint8)
     else:
         angles_q = np.memmap(scratch_dir / "angles_q.u8", dtype=np.uint8, mode="w+", shape=shape)
         blocker = np.memmap(scratch_dir / "blocker.u8", dtype=np.uint8, mode="w+", shape=shape)
+        angles_noveg_q = np.memmap(
+            scratch_dir / "angles_noveg_q.u8", dtype=np.uint8, mode="w+", shape=shape
+        )
     tile_count = math.ceil((row1 - row0) / params.tile_size) * math.ceil(
         (col1 - col0) / params.tile_size
     )
@@ -216,7 +250,7 @@ def compute_horizon_tiled(
                     )
             p0, p1 = max(0, t0 - pad), min(rows, t1 + pad)
             q0, q1 = max(0, u0 - pad), min(cols, u1 + pad)
-            tile_angles, tile_blocker = compute_horizon_block(
+            tile_angles, tile_blocker, tile_noveg = compute_horizon_block(
                 dsm[p0:p1, q0:q1],
                 dtm[p0:p1, q0:q1],
                 landcover[p0:p1, q0:q1],
@@ -227,14 +261,14 @@ def compute_horizon_tiled(
             out = (slice(None), slice(t0 - row0, t1 - row0), slice(u0 - col0, u1 - col0))
             angles_q[out] = quantize_angles(tile_angles)
             blocker[out] = tile_blocker
+            angles_noveg_q[out] = quantize_angles(tile_noveg)
     # Push the scratch cubes through msync before anything reads them back:
     # flush() raises OSError on write-back failure, whereas a silently
     # dropped dirty page would resurface as zeroed sectors in the artifacts.
-    if isinstance(angles_q, np.memmap):
-        angles_q.flush()
-    if isinstance(blocker, np.memmap):
-        blocker.flush()
-    return HorizonResult(angles_q=angles_q, blocker_class=blocker)
+    for cube in (angles_q, blocker, angles_noveg_q):
+        if isinstance(cube, np.memmap):
+            cube.flush()
+    return HorizonResult(angles_q=angles_q, blocker_class=blocker, angles_noveg_q=angles_noveg_q)
 
 
 def quantize_angles(angles_deg: npt.NDArray[np.float32]) -> npt.NDArray[np.uint8]:

@@ -58,6 +58,7 @@ from shade_pipeline.grid import transform_from_bbox
 from shade_pipeline.progress import format_duration
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
+    STATE_SHADE_BOTH,
     STATE_SHADE_VEGETATION,
     STATE_SUN,
     compute_state_raster,
@@ -239,11 +240,16 @@ def edge_state_fractions(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Per-edge fractions under one state raster: (in the sun, under canopy).
 
-    Two numbers per edge because the three shade states are not equivalent
-    for a walker: a plane tree cools far better than a wall does (see
-    shade-docs: learning/vegetation-cooling.md), so vegetation shade is kept apart
-    from building and terrain shade, which stay implicit as
+    Two numbers per edge because the shade states are not equivalent for a
+    walker: a plane tree cools far better than a wall does (see shade-docs:
+    learning/vegetation-cooling.md), so vegetation shade is kept apart from
+    building and terrain shade, which stay implicit as
     ``1 - sun - vegetation``.
+
+    The question here is comfort -- is there a crown over or behind me -- not
+    the counterfactual the map layers answer, so ``STATE_SHADE_BOTH`` (crown
+    *and* skyline) counts as vegetation. Splitting it the other way would tell
+    the router that a shaded, tree-lined street is a wall.
 
     Out-of-grid samples and ``STATE_OUTSIDE`` pixels count as sun (and never
     as canopy): claiming shade where there is no data would fabricate
@@ -257,7 +263,9 @@ def edge_state_fractions(
     vegetation = np.zeros(len(sample_x), dtype=np.float64)
     values = state[rows[inside], cols[inside]]
     sun[inside] = ((values == STATE_SUN) | (values == STATE_OUTSIDE)).astype(np.float64)
-    vegetation[inside] = (values == STATE_SHADE_VEGETATION).astype(np.float64)
+    vegetation[inside] = np.isin(values, (STATE_SHADE_VEGETATION, STATE_SHADE_BOTH)).astype(
+        np.float64
+    )
     counts = np.bincount(sample_edge, minlength=n_edges)
     sunny = np.bincount(sample_edge, weights=sun, minlength=n_edges)
     shaded_by_trees = np.bincount(sample_edge, weights=vegetation, minlength=n_edges)

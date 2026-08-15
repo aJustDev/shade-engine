@@ -23,21 +23,30 @@ from shade_core.artifacts import (
     DSM_FILENAME,
     DTM_FILENAME,
     HORIZON_FILENAME,
+    HORIZON_NOVEG_FILENAME,
     LANDCOVER_FILENAME,
     METADATA_FILENAME,
     ArtifactInput,
     BuildMetadata,
     HorizonBuildParams,
+    LandcoverBuildParams,
 )
 from shade_core.config import CityConfig
 from shade_core.shade import NO_BLOCKER, Landcover
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, canopy_mask
 from shade_pipeline.cog import write_cog
+from shade_pipeline.footprints import (
+    ROOF_TOLERANCE_M,
+    FootprintSource,
+    apply_footprint_override,
+    footprint_ids,
+)
 from shade_pipeline.grid import buffer_pixels, grid_shape, padded_bbox, transform_from_bbox
 from shade_pipeline.horizon import ANGLE_MAX_DEG, HorizonParams, compute_horizon_tiled
 from shade_pipeline.progress import format_bytes, format_duration
-from shade_pipeline.rasterize import rasterize_lidar
+from shade_pipeline.rasterize import BUILDING_MARGIN_M, rasterize_lidar
 from shade_pipeline.sources import LidarSource
+from shade_pipeline.tiles import bounds_wgs84
 from shade_pipeline.verify import ensure_verified
 
 ARTIFACT_VERSION = "v1"
@@ -50,6 +59,7 @@ def build_city(
     output_root: Path,
     params: HorizonParams | None = None,
     progress: Callable[[str], None] | None = None,
+    footprints: FootprintSource | None = None,
 ) -> Path:
     """Produce ``<output_root>/<city>/v1/`` artifacts; returns that directory.
 
@@ -57,6 +67,10 @@ def build_city(
     tile swept (with running average and ETA), plus a summary with the
     elapsed time as each phase closes -- city builds run for hours and
     silence reads as a hang.
+
+    ``footprints`` corrects the LiDAR landcover with OSM building outlines
+    (see :mod:`shade_pipeline.footprints`). None skips it, which is the only
+    way to build with no network.
     """
     if params is None:
         params = HorizonParams(
@@ -79,6 +93,18 @@ def build_city(
         f"({format_bytes(sum(path.stat().st_size for path in files))})"
     )
 
+    # Before the hours of binning and sweeping: a dead Overpass has to fail now,
+    # not three phases in. The polygons cover the padded bbox because obstacles
+    # outside the city still cast into it.
+    outlines = []
+    if footprints is not None:
+        phase_start = time.monotonic()
+        outlines = footprints.fetch(bounds_wgs84(config.crs, padded), config.crs)
+        say(
+            f"{len(outlines)} osm building footprints in "
+            f"{format_duration(time.monotonic() - phase_start)}"
+        )
+
     phase_start = time.monotonic()
     stack = rasterize_lidar(files, padded, resolution, progress=progress)
     total_points = sum(stack.point_counts.values())
@@ -86,6 +112,18 @@ def build_city(
         f"binning done in {format_duration(time.monotonic() - phase_start)} "
         f"({total_points:,} points)"
     )
+
+    relabelled = 0
+    if footprints is not None:
+        phase_start = time.monotonic()
+        ids = footprint_ids(outlines, stack.transform, stack.landcover.shape)
+        chm = stack.dsm - stack.dtm
+        relabelled = apply_footprint_override(stack.landcover, chm, ids)
+        del ids, chm  # both are city-sized; the sweep wants the room
+        say(
+            f"footprints relabelled {relabelled:,} cells as building in "
+            f"{format_duration(time.monotonic() - phase_start)}"
+        )
 
     rows, cols = grid_shape(config.bbox, resolution)
     inner = (pad, pad + rows, pad, pad + cols)
@@ -141,6 +179,18 @@ def build_city(
             result.blocker_class,
             tags={**common, "no_blocker": str(NO_BLOCKER)},
         )
+        timed_cog(
+            out_dir / HORIZON_NOVEG_FILENAME,
+            result.angles_noveg_q,
+            tags={
+                **common,
+                "angle_max_deg": str(ANGLE_MAX_DEG),
+                "sectors": str(params.sectors),
+                "max_distance_m": str(params.max_distance_m),
+                "observer_height_m": str(params.observer_height_m),
+                "surface": "vegetation lowered to terrain",
+            },
+        )
         del result
     timed_cog(out_dir / DSM_FILENAME, stack.dsm[crop], tags=common)
     timed_cog(out_dir / DTM_FILENAME, stack.dtm[crop], tags=common)
@@ -156,7 +206,7 @@ def build_city(
     )
 
     metadata = BuildMetadata(
-        schema_version=1,
+        schema_version=2,
         city_id=config.id,
         artifact_version=ARTIFACT_VERSION,
         built_at=datetime.now(UTC),
@@ -172,6 +222,13 @@ def build_city(
             tile_size=params.tile_size,
         ),
         landcover_classes={member.name.lower(): int(member) for member in Landcover},
+        landcover=LandcoverBuildParams(
+            building_margin_m=BUILDING_MARGIN_M,
+            footprints="osm" if footprints is not None else None,
+            footprint_count=len(outlines),
+            footprint_relabelled=relabelled,
+            roof_tolerance_m=ROOF_TOLERANCE_M if footprints is not None else None,
+        ),
         no_blocker_value=NO_BLOCKER,
         software={name: importlib_metadata.version(name) for name in _VERSIONED_PACKAGES},
         inputs=[

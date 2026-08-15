@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 import synthetic
@@ -28,7 +29,7 @@ def _full_window(dsm: np.ndarray) -> tuple[int, int, int, int]:
 
 def test_exact_block_matches_reference_cube(cube_grid: HorizonGrid) -> None:
     dsm, dtm = synthetic.cube_scene()
-    angles, _ = compute_horizon_block(
+    angles, _, _ = compute_horizon_block(
         dsm, dtm, synthetic.cube_landcover(), 1.0, CUBE_PARAMS, _full_window(dsm)
     )
     assert_allclose(angles, cube_grid.angles_deg, atol=1e-4)
@@ -37,8 +38,65 @@ def test_exact_block_matches_reference_cube(cube_grid: HorizonGrid) -> None:
 def test_exact_block_matches_reference_tree(tree_shade_scene: ShadeScene) -> None:
     dsm, dtm, landcover, _ = synthetic.tree_scene()
     params = HorizonParams(max_distance_m=40.0)
-    angles, _ = compute_horizon_block(dsm, dtm, landcover, 1.0, params, _full_window(dsm))
+    angles, _, _ = compute_horizon_block(dsm, dtm, landcover, 1.0, params, _full_window(dsm))
     assert_allclose(angles, tree_shade_scene.horizon.angles_deg, atol=1e-4)
+
+
+def _wall_behind_tree() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Flat 40x40 with a 10 m wall and, 6 m in front of it, a 12 m crown.
+
+    Looking north from row 19 the crown wins the sector by ~29 degrees, so the
+    blocker class reads VEGETATION -- and felling it still leaves the wall.
+    That gap between "who won" and "what would remain" is the whole reason the
+    second cube exists.
+    """
+    size = 40
+    dsm = np.zeros((size, size))
+    dtm = np.zeros((size, size))
+    landcover = np.zeros((size, size), dtype=np.uint8)
+
+    def fill(y0: int, y1: int, target: np.ndarray, value: float) -> None:
+        target[size - y1 : size - y0, :] = value
+
+    fill(30, 32, dsm, 10.0)
+    fill(30, 32, landcover, Landcover.BUILDING)
+    fill(24, 26, dsm, 12.0)
+    fill(24, 26, landcover, Landcover.VEGETATION)
+    return dsm, dtm, landcover
+
+
+def test_noveg_horizon_keeps_the_wall_behind_the_tree() -> None:
+    dsm, dtm, landcover = _wall_behind_tree()
+    params = HorizonParams(max_distance_m=20.0)
+    angles, blocker, noveg = compute_horizon_block(
+        dsm, dtm, landcover, 1.0, params, _full_window(dsm)
+    )
+    north, row, col = 0, 19, 20
+    assert blocker[north, row, col] == Landcover.VEGETATION
+    # Distances are the half-pixel schedule deduped to the *smallest* distance
+    # that lands on each cell, so the cell 4 rows north is sampled at 3.5 m and
+    # the one 10 rows north at 9.5. Eye at 1.6 m: crown 12, wall 10.
+    assert angles[north, row, col] == pytest.approx(np.degrees(np.arctan2(10.4, 3.5)), abs=1e-3)
+    assert noveg[north, row, col] == pytest.approx(np.degrees(np.arctan2(8.4, 9.5)), abs=1e-3)
+
+
+def test_noveg_horizon_never_rises_above_the_full_one() -> None:
+    """Felling trees can only open the sky. True pixel by pixel, sector by sector."""
+    dsm, dtm, landcover = _wall_behind_tree()
+    result = compute_horizon_tiled(dsm, dtm, landcover, 1.0, HorizonParams(max_distance_m=20.0))
+    assert (result.angles_noveg_q <= result.angles_q).all()
+
+
+def test_noveg_horizon_equals_the_full_one_without_vegetation(cube_grid: HorizonGrid) -> None:
+    """No crowns, nothing to fell: the two cubes describe the same skyline.
+
+    Within one quantum, because the two reach it by different arithmetic (one
+    arctan2 per sample against one arctan of an accumulated tangent).
+    """
+    dsm, dtm = synthetic.cube_scene()
+    result = compute_horizon_tiled(dsm, dtm, synthetic.cube_landcover(), 1.0, CUBE_PARAMS)
+    difference = result.angles_q.astype(np.int16) - result.angles_noveg_q.astype(np.int16)
+    assert np.abs(difference).max() <= 1
 
 
 def test_tiled_quantized_equals_quantized_reference(cube_grid: HorizonGrid) -> None:
@@ -120,7 +178,7 @@ def test_geometric_mode_close_to_reference(cube_grid: HorizonGrid) -> None:
     """
     dsm, dtm = synthetic.cube_scene()
     params = HorizonParams(max_distance_m=80.0, step_mode="geometric")
-    angles, _ = compute_horizon_block(
+    angles, _, _ = compute_horizon_block(
         dsm, dtm, synthetic.cube_landcover(), 1.0, params, _full_window(dsm)
     )
     difference = np.abs(angles - cube_grid.angles_deg)

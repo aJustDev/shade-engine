@@ -36,6 +36,7 @@ from shade_pipeline.graph import (
 )
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
+    STATE_SHADE_BOTH,
     STATE_SHADE_BUILDING,
     STATE_SHADE_VEGETATION,
 )
@@ -157,6 +158,27 @@ def test_edge_state_fractions_splits_vegetation() -> None:
     assert vegetation[0] == pytest.approx(0.4)
     # What is left is shade cast by buildings or terrain.
     assert 1.0 - fractions[0] - vegetation[0] == pytest.approx(0.4)
+
+
+def test_edge_state_fractions_count_both_as_vegetation() -> None:
+    """Shade under a crown counts as canopy even when a wall also casts it.
+
+    The router's question is comfort -- is there a crown over me -- not the
+    counterfactual the map layers answer, so BOTH belongs on this side.
+    """
+    state = np.zeros((10, 10), dtype=np.uint8)
+    state[:, 2:6] = STATE_SHADE_BOTH
+    state[:, 6:] = STATE_SHADE_VEGETATION
+    transform = from_origin(0.0, 10.0, 1.0, 1.0)
+
+    sample_x = np.array([0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5])
+    sample_y = np.array([4.5] * 10)
+    sample_edge = np.zeros(10, dtype=np.int64)
+    fractions, vegetation = edge_state_fractions(
+        sample_x, sample_y, sample_edge, 1, state, transform
+    )
+    assert fractions[0] == pytest.approx(0.2)
+    assert vegetation[0] == pytest.approx(0.8)
 
 
 # --- ladder columns -----------------------------------------------------------

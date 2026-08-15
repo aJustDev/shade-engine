@@ -25,13 +25,14 @@ CHECK_NAMES = [
     "files",
     "layout",
     "horizon-blocker invariant",
+    "horizon-noveg invariant",
     "elevation sanity",
     "class values",
 ]
 
 
-def _zero_horizon_tail(artifact_dir: Path) -> int:
-    """Zero the horizon cube from its most-blockered band onward; returns it.
+def _zero_tail(artifact_dir: Path, filename: str = artifacts.HORIZON_FILENAME) -> int:
+    """Zero an angle cube from its most-blockered band onward; returns that band.
 
     Models the real Cordoba corruption (a silently lost band tail) while
     staying deterministic for any fixture geometry: the band with the most
@@ -43,13 +44,13 @@ def _zero_horizon_tail(artifact_dir: Path) -> int:
     fractions = (blocker != NO_BLOCKER).mean(axis=(1, 2))
     worst = int(fractions.argmax())
     assert fractions[worst] > Q0_BLOCKER_MAX_FRACTION, "fixture cannot exercise the invariant"
-    with rasterio.open(artifact_dir / artifacts.HORIZON_FILENAME) as src:
+    with rasterio.open(artifact_dir / filename) as src:
         cube = src.read()
         tags = src.tags()
         transform = src.transform
         crs = str(src.crs)
     cube[worst:] = 0
-    write_cog(artifact_dir / artifacts.HORIZON_FILENAME, cube, transform, crs, tags=tags)
+    write_cog(artifact_dir / filename, cube, transform, crs, tags=tags)
     return worst
 
 
@@ -63,13 +64,45 @@ def test_verify_passes_on_fresh_build(built_city: Path) -> None:
 def test_verify_catches_zeroed_horizon_tail(built_city: Path, tmp_path: Path) -> None:
     artifact_dir = tmp_path / "cube"
     shutil.copytree(built_city, artifact_dir)
-    _zero_horizon_tail(artifact_dir)
+    _zero_tail(artifact_dir)
 
     results = verify_artifacts(artifact_dir)
     failing = {result.name for result in results if not result.passed}
-    assert failing == {"horizon-blocker invariant"}
+    # Both cross-cube invariants catch it: the classes disagree with the zeroed
+    # angles, and a vegetation-free horizon standing above a zeroed full one is
+    # impossible.
+    assert failing == {"horizon-blocker invariant", "horizon-noveg invariant"}
     with pytest.raises(VerificationError, match="horizon-blocker"):
         ensure_verified(artifact_dir)
+
+
+def test_verify_catches_zeroed_noveg_tail(built_city: Path, tmp_path: Path) -> None:
+    """A cube the blocker classes cannot police: only the noveg check sees it.
+
+    Zeroing angles *downward* passes "never above the full horizon" -- what
+    gives it away is that a sector a building blocks must read the same in
+    both cubes, and zero is not that.
+    """
+    artifact_dir = tmp_path / "cube"
+    shutil.copytree(built_city, artifact_dir)
+    _zero_tail(artifact_dir, artifacts.HORIZON_NOVEG_FILENAME)
+
+    results = verify_artifacts(artifact_dir)
+    failing = {result.name for result in results if not result.passed}
+    assert failing == {"horizon-noveg invariant"}
+    with pytest.raises(VerificationError, match="blocked by a building"):
+        ensure_verified(artifact_dir)
+
+
+def test_verify_skips_noveg_check_on_older_artifacts(built_city: Path, tmp_path: Path) -> None:
+    """Artifacts predating the second cube verify green on what they do have."""
+    artifact_dir = tmp_path / "cube"
+    shutil.copytree(built_city, artifact_dir)
+    (artifact_dir / artifacts.HORIZON_NOVEG_FILENAME).unlink()
+
+    results = verify_artifacts(artifact_dir)
+    assert "horizon-noveg invariant" not in [result.name for result in results]
+    ensure_verified(artifact_dir)  # must not raise
 
 
 def test_verify_reports_missing_files(built_city: Path, tmp_path: Path) -> None:
@@ -96,7 +129,7 @@ def test_cli_verify_green_then_corrupted(built_city: Path, tmp_path: Path) -> No
     assert result.exit_code == 0, result.output
     assert f"{len(CHECK_NAMES)}/{len(CHECK_NAMES)} checks passed" in result.output
 
-    _zero_horizon_tail(artifact_dir)
+    _zero_tail(artifact_dir)
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 1
     assert "FAIL horizon-blocker invariant" in result.output

@@ -15,6 +15,7 @@ from shade_core.db import make_engine
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, derive_canopy
 from shade_pipeline.cnig import CnigError, CnigSource
+from shade_pipeline.footprints import OsmnxFootprintSource
 from shade_pipeline.graph import DEFAULT_OSM_CACHE, DEFAULT_SPACING_M, OsmnxWalkSource, build_graph
 from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.layers import import_parking_layer
@@ -79,6 +80,13 @@ def build(
         StepMode,
         typer.Option(help="Horizon distance schedule: exact (half-pixel) or geometric (growing)"),
     ] = StepMode.exact,
+    footprints: Annotated[
+        bool,
+        typer.Option(
+            "--footprints/--no-footprints",
+            help="Correct roof-height vegetation with OSM building outlines (needs Overpass)",
+        ),
+    ] = True,
 ) -> None:
     """Build the raster artifacts for CITY, downloading LiDAR tiles if configured."""
     config = load_city(cities_dir / f"{city}.yaml")
@@ -91,7 +99,14 @@ def build(
         step_mode="exact" if step_mode is StepMode.exact else "geometric",
     )
     try:
-        out_dir = build_city(config, source, output_root, params, progress=typer.echo)
+        out_dir = build_city(
+            config,
+            source,
+            output_root,
+            params,
+            progress=typer.echo,
+            footprints=OsmnxFootprintSource() if footprints else None,
+        )
     except (CoverageError, CnigError, VerificationError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc

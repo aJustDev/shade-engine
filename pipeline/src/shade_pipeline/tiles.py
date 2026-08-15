@@ -62,6 +62,7 @@ from shade_pipeline.grid import transform_from_bbox
 from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
+    STATE_SHADE_BOTH,
     STATE_SHADE_BUILDING,
     STATE_SHADE_OTHER,
     STATE_SHADE_VEGETATION,
@@ -449,18 +450,24 @@ def build_tiles(
         # Under-canopy pixels move to the static canopy layer: the
         # per-instant sets keep only *cast* shade. Dropped pixels become
         # STATE_SUN (transparent), keeping STATE_OUTSIDE strictly for roofs
-        # and out-of-coverage pixels.
+        # and out-of-coverage pixels. Under a crown that also sits in a
+        # building's shadow the state is BOTH, which stays here: felling that
+        # tree would not put the pixel in the sun.
         state[canopy & (state == STATE_SHADE_VEGETATION)] = STATE_SUN
         echo(
             f"[{index}/{len(ordered)}] {instant_id}: state raster in "
             f"{format_duration(time.monotonic() - phase_start)}"
         )
 
-        # Two independently toggleable cast-shade sets, same color: hiding
-        # the trees set answers "how much street shade does the canopy add"
-        # (the streets-without-trees scenario, intervention-planning bait).
+        # Two disjoint cast-shade sets of the same color, cut by "would this
+        # hold without the trees" and not by which obstacle won the argmax --
+        # which is why STATE_SHADE_BOTH goes in the building set. Hiding the
+        # trees set is then literally the street without its trees, and hiding
+        # the buildings set is the shade the trees *add*. Disjoint matters:
+        # both files paint at OVERLAY_ALPHA, so an overlap would double-darken.
         building_state = state.copy()
         building_state[state == STATE_SHADE_VEGETATION] = STATE_SUN
+        building_state[state == STATE_SHADE_BOTH] = STATE_SHADE_BUILDING
         trees_state = state.copy()
         trees_state[(state != STATE_SHADE_VEGETATION) & (state != STATE_OUTSIDE)] = STATE_SUN
 

@@ -19,6 +19,12 @@ ray-marches from the observer toward the sun's azimuth until the first pixel
 whose top edge reaches above the sun's elevation, then reads its landcover
 class. Whether production uses this ray-march over COG windows or a
 precomputed per-sector class raster is an open phase-2 decision.
+
+Naming the winner is not the same as asking *what would still be shade
+without it*: a wall and a crown often cover the same pixel and the argmax
+picks one by centimetres. So a scene can carry a second horizon built over a
+vegetation-free surface, and a pixel whose blocker is a crown but whose sky is
+closed by a building anyway comes back as :attr:`ShadeType.BOTH`.
 """
 
 import math
@@ -55,6 +61,8 @@ class ShadeState(StrEnum):
 class ShadeType(StrEnum):
     BUILDING = "building"
     VEGETATION = "vegetation"
+    BOTH = "both"
+    """Vegetation blocks the sun here, and so would the skyline without it."""
 
 
 _SHADE_TYPE_BY_LANDCOVER = {
@@ -74,6 +82,11 @@ class ShadeScene:
     ``dsm``/``dtm`` feed the reference ray-march. Shade classification uses
     ``sector_classes`` when present, else the ray-march; with neither,
     queries still work but shade comes back untyped.
+
+    ``horizon_noveg`` is the same skyline over a surface with vegetation
+    lowered to the terrain. Without it nothing breaks and nothing is ever
+    typed :attr:`ShadeType.BOTH`, which is what artifacts built before the
+    second cube existed get.
     """
 
     horizon: HorizonGrid
@@ -82,6 +95,7 @@ class ShadeScene:
     dsm: npt.NDArray[np.float64] | None = None
     dtm: npt.NDArray[np.float64] | None = None
     sector_classes: npt.NDArray[np.uint8] | None = None
+    horizon_noveg: HorizonGrid | None = None
     observer_height_m: float = 1.6
 
 
@@ -107,14 +121,45 @@ def is_shaded(scene: ShadeScene, x: float, y: float, sun: SunPosition) -> ShadeR
         return ShadeResult(ShadeState.NIGHT)
     row, col = scene.horizon.rowcol(x, y)
     if scene.canopy is not None and bool(scene.canopy[row, col]):
-        return ShadeResult(ShadeState.SHADE, ShadeType.VEGETATION)
+        # Under a crown, but the wall across the street may be closing the sky
+        # regardless: that is BOTH, not VEGETATION.
+        under_canopy = (
+            ShadeType.BOTH if holds_without_trees(scene, x, y, sun) else ShadeType.VEGETATION
+        )
+        return ShadeResult(ShadeState.SHADE, under_canopy)
     if sun.elevation_deg < scene.horizon.horizon_at(x, y, sun.azimuth_deg):
         return ShadeResult(ShadeState.SHADE, classify_shade(scene, x, y, sun))
     return ShadeResult(ShadeState.SUN)
 
 
+def holds_without_trees(scene: ShadeScene, x: float, y: float, sun: SunPosition) -> bool:
+    """Would the sun still be blocked here with every crown felled?
+
+    False whenever the scene has no vegetation-free horizon: never claim a
+    counterfactual the artifacts cannot support.
+    """
+    if scene.horizon_noveg is None:
+        return False
+    return sun.elevation_deg < scene.horizon_noveg.horizon_at(x, y, sun.azimuth_deg)
+
+
 def classify_shade(scene: ShadeScene, x: float, y: float, sun: SunPosition) -> ShadeType | None:
-    """What casts the shade here? Two strategies, picked by what the scene has.
+    """What casts the shade here, and would it hold without the trees?
+
+    Names the blocker (below), then promotes ``VEGETATION`` to
+    :attr:`ShadeType.BOTH` when the vegetation-free horizon closes the sky at
+    this azimuth too. ``BUILDING`` needs no such check: if a building won the
+    argmax, the vegetation-free skyline reaches at least that angle by
+    construction.
+    """
+    shade_type = _blocker_type(scene, x, y, sun)
+    if shade_type is ShadeType.VEGETATION and holds_without_trees(scene, x, y, sun):
+        return ShadeType.BOTH
+    return shade_type
+
+
+def _blocker_type(scene: ShadeScene, x: float, y: float, sun: SunPosition) -> ShadeType | None:
+    """Which obstacle wins the sun's azimuth? Two strategies, picked by the scene.
 
     **Per-sector blocker classes** (the production artifact): the pipeline's
     horizon sweep already recorded which landcover class produced each

@@ -40,6 +40,7 @@ from shade_core.artifacts import (
     DSM_FILENAME,
     DTM_FILENAME,
     HORIZON_FILENAME,
+    HORIZON_NOVEG_FILENAME,
     LANDCOVER_FILENAME,
     METADATA_FILENAME,
     BuildMetadata,
@@ -49,6 +50,16 @@ from shade_core.shade import Landcover
 from shade_pipeline.grid import grid_shape, transform_from_bbox
 
 WINDOW_SIZE: Final = 512
+QUANTUM_TOLERANCE: Final = 1
+"""Slack, in quantization steps, between the two horizon cubes.
+
+Where no vegetation is involved both cubes describe the same skyline, but one
+reaches it through ``arctan2`` per sample and the other through ``arctan`` of
+an accumulated tangent (see ``shade_pipeline.horizon``). The two agree to
+floating-point noise, which lands on a different quantum only if the true
+angle sits exactly on a rounding boundary. One step of slack absorbs that; a
+real disagreement is orders of magnitude larger.
+"""
 Q0_BLOCKER_MAX_FRACTION: Final = 0.05
 """Tolerated per-band fraction of (angle == 0, blocker set) pixels.
 
@@ -109,6 +120,8 @@ def _check_layout(directory: Path, metadata: BuildMetadata) -> CheckResult:
         HORIZON_FILENAME: (metadata.horizon.sectors, "uint8"),
         BLOCKER_CLASS_FILENAME: (metadata.horizon.sectors, "uint8"),
     }
+    if (directory / HORIZON_NOVEG_FILENAME).exists():
+        expected[HORIZON_NOVEG_FILENAME] = (metadata.horizon.sectors, "uint8")
     problems: list[str] = []
     for name, (bands, dtype) in expected.items():
         with rasterio.open(directory / name) as src:
@@ -122,9 +135,52 @@ def _check_layout(directory: Path, metadata: BuildMetadata) -> CheckResult:
                 problems.append(f"{name}: transform mismatch")
             if src.crs != crs:
                 problems.append(f"{name}: crs {src.crs} != {crs}")
-            if name == HORIZON_FILENAME and "angle_max_deg" not in src.tags():
+            if (
+                name in (HORIZON_FILENAME, HORIZON_NOVEG_FILENAME)
+                and "angle_max_deg" not in src.tags()
+            ):
                 problems.append(f"{name}: missing angle_max_deg tag")
     return CheckResult("layout", "; ".join(problems) or None)
+
+
+def _check_horizon_noveg(directory: Path, metadata: BuildMetadata, window_size: int) -> CheckResult:
+    """The vegetation-free cube against the full one, band by band.
+
+    Two facts hold by construction and a storage failure breaks both:
+
+    - Felling trees can only open the sky, never close it, so the
+      vegetation-free angle never exceeds the full one.
+    - Where a *building* won the sector, felling changes nothing at all: the
+      winning cell keeps its height, so the two angles are the same number.
+
+    A cube that lost bands scores massively on the first check (zeros against
+    real angles pass) and on the second (zeros where a building blocks).
+    """
+    rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
+    above = 0
+    building_mismatch = 0
+    with (
+        rasterio.open(directory / HORIZON_FILENAME) as horizon,
+        rasterio.open(directory / HORIZON_NOVEG_FILENAME) as noveg,
+        rasterio.open(directory / BLOCKER_CLASS_FILENAME) as blocker,
+    ):
+        for window in _windows(rows, cols, window_size):
+            full = horizon.read(window=window).astype(np.int16)
+            free = noveg.read(window=window).astype(np.int16)
+            classes = blocker.read(window=window)
+            above += int((free > full + QUANTUM_TOLERANCE).sum())
+            by_building = classes == Landcover.BUILDING
+            building_mismatch += int(
+                (by_building & (np.abs(full - free) > QUANTUM_TOLERANCE)).sum()
+            )
+    problems: list[str] = []
+    if above:
+        problems.append(f"{above} px where the vegetation-free horizon is above the full one")
+    if building_mismatch:
+        problems.append(
+            f"{building_mismatch} px blocked by a building where the two horizons disagree"
+        )
+    return CheckResult("horizon-noveg invariant", "; ".join(problems) or None)
 
 
 def _check_horizon_blocker(
@@ -237,6 +293,9 @@ def verify_artifacts(
 
     echo("verifying horizon-blocker invariant")
     results.append(_check_horizon_blocker(directory, metadata, window_size))
+    if (directory / HORIZON_NOVEG_FILENAME).exists():
+        echo("verifying horizon-noveg invariant")
+        results.append(_check_horizon_noveg(directory, metadata, window_size))
     echo("verifying elevation rasters")
     results.append(_check_elevation(directory, metadata, window_size))
     echo("verifying class rasters")

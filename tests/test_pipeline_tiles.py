@@ -8,6 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import mercantile
+import numpy as np
 import pytest
 import rasterio
 import yaml
@@ -20,13 +21,14 @@ from typer.testing import CliRunner
 import synthetic
 from conftest import CUBE_CITY
 from shade_core import artifacts
-from shade_core.shade import ShadeResult, ShadeState, ShadeType, is_shaded
-from shade_core.solar import sun_position
+from shade_core.shade import Landcover, ShadeResult, ShadeState, ShadeType, is_shaded
+from shade_core.solar import SunPosition, sun_position
 from shade_pipeline.cli import app
 from shade_pipeline.cog import write_cog
 from shade_pipeline.grid import transform_from_bbox
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
+    STATE_SHADE_BOTH,
     STATE_SHADE_BUILDING,
     STATE_SHADE_OTHER,
     STATE_SHADE_VEGETATION,
@@ -59,8 +61,28 @@ _STATE_OF_RESULT = {
     (ShadeState.SUN, None): STATE_SUN,
     (ShadeState.SHADE, ShadeType.BUILDING): STATE_SHADE_BUILDING,
     (ShadeState.SHADE, ShadeType.VEGETATION): STATE_SHADE_VEGETATION,
+    (ShadeState.SHADE, ShadeType.BOTH): STATE_SHADE_BOTH,
     (ShadeState.SHADE, None): STATE_SHADE_OTHER,
 }
+
+
+def _overwrite_band(artifact_dir: Path, filename: str, row: int, col: int, value: int) -> None:
+    """Set one pixel across every band of a cube, in place on disk."""
+    with rasterio.open(artifact_dir / filename) as src:
+        cube = src.read()
+        tags = src.tags()
+        transform = src.transform
+        crs = str(src.crs)
+    cube[:, row, col] = value
+    write_cog(artifact_dir / filename, cube, transform, crs, tags=tags)
+
+
+def _shaded_by_building(artifact_dir: Path, sun: SunPosition) -> tuple[int, int]:
+    """A pixel the artifacts put in a building's shadow; first one in raster order."""
+    state = compute_state_raster(artifact_dir, sun)
+    rows, cols = np.nonzero(state == STATE_SHADE_BUILDING)
+    assert rows.size, "fixture has no building shade at this instant"
+    return int(rows[0]), int(cols[0])
 
 
 def _expected_state(result: ShadeResult) -> int:
@@ -149,6 +171,85 @@ def test_state_raster_canopy_overrides_sun(built_city: Path, tmp_path: Path) -> 
     sun = sun_position(CORDOBA_LAT, CORDOBA_LON, SUMMER_NOON)
     state = compute_state_raster(target, sun)
     assert int(state[row, col]) == STATE_SHADE_VEGETATION
+
+
+def test_state_raster_splits_vegetation_by_the_counterfactual(
+    built_city: Path, tmp_path: Path
+) -> None:
+    """Same crown, two answers, decided by what the sky looks like without it.
+
+    The blocker class is forced to VEGETATION on a pixel the cube shades, which
+    is the Corredera case in miniature: a crown wins the argmax over a wall
+    that closes the sky anyway.
+    """
+    sun = sun_position(CORDOBA_LAT, CORDOBA_LON, WINTER_NOON)
+    row, col = _shaded_by_building(built_city, sun)
+
+    both = tmp_path / "both"
+    shutil.copytree(built_city, both)
+    _overwrite_band(both, artifacts.BLOCKER_CLASS_FILENAME, row, col, Landcover.VEGETATION)
+    assert int(compute_state_raster(both, sun)[row, col]) == STATE_SHADE_BOTH
+
+    only_trees = tmp_path / "only-trees"
+    shutil.copytree(built_city, only_trees)
+    _overwrite_band(only_trees, artifacts.BLOCKER_CLASS_FILENAME, row, col, Landcover.VEGETATION)
+    # Open the vegetation-free sky at that pixel: now the crown is all there is.
+    _overwrite_band(only_trees, artifacts.HORIZON_NOVEG_FILENAME, row, col, 0)
+    assert int(compute_state_raster(only_trees, sun)[row, col]) == STATE_SHADE_VEGETATION
+
+
+def test_state_raster_canopy_inside_building_shade_is_both(
+    built_city: Path, tmp_path: Path
+) -> None:
+    """Standing under a tree in a wall's shadow: felling it changes nothing."""
+    sun = sun_position(CORDOBA_LAT, CORDOBA_LON, WINTER_NOON)
+    row, col = _shaded_by_building(built_city, sun)
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    with rasterio.open(target / artifacts.CANOPY_FILENAME) as src:
+        canopy = src.read()[0]
+        transform = src.transform
+        crs = str(src.crs)
+    canopy[row, col] = 1
+    write_cog(target / artifacts.CANOPY_FILENAME, canopy, transform, crs)
+
+    assert int(compute_state_raster(target, sun)[row, col]) == STATE_SHADE_BOTH
+
+
+def test_shade_that_holds_without_trees_goes_to_the_building_set(
+    built_city: Path, tmp_path: Path
+) -> None:
+    """A BOTH pixel paints in the building set and stays out of the trees set.
+
+    That is the whole point of the split: unchecking trees must not erase
+    shade the buildings cast anyway.
+    """
+    sun = sun_position(CORDOBA_LAT, CORDOBA_LON, WINTER_NOON)
+    row, col = _shaded_by_building(built_city, sun)
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    _overwrite_band(target, artifacts.BLOCKER_CLASS_FILENAME, row, col, Landcover.VEGETATION)
+
+    metadata = artifacts.load_metadata(target)
+    min_x, _, _, max_y = metadata.bbox
+    point = (
+        min_x + (col + 0.5) * metadata.resolution_m,
+        max_y - (row + 0.5) * metadata.resolution_m,
+    )
+
+    tiles_dir = build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=18)
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    urls = manifest["instants"][0]["urls"]
+
+    with open(tiles_dir / str(urls["building"]).split("?")[0], "rb") as handle:
+        reader = Reader(MmapSource(handle))
+        assert _rgba_at(reader, metadata.crs, *point, 18) == SHADE_COLORS[STATE_SHADE_BUILDING]
+        assert _state_at(reader, metadata.crs, *point, 18) == STATE_SHADE_BUILDING
+    with open(tiles_dir / str(urls["trees"]).split("?")[0], "rb") as handle:
+        # Read at min_zoom: with nothing left for the trees set, the archive
+        # holds only its blank overview tiles.
+        reader = Reader(MmapSource(handle))
+        assert _rgba_at(reader, metadata.crs, *point, 14)[3] == 0
 
 
 def test_pmtiles_roundtrip(built_city: Path, tmp_path: Path) -> None:

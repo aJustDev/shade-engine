@@ -10,8 +10,13 @@ import numpy as np
 import pytest
 
 import synthetic
-from shade_core.artifacts import CANOPY_FILENAME, SceneReader, load_scene
-from shade_core.shade import ShadeScene, is_shaded, shade_timeline
+from shade_core.artifacts import (
+    CANOPY_FILENAME,
+    HORIZON_NOVEG_FILENAME,
+    SceneReader,
+    load_scene,
+)
+from shade_core.shade import ShadeScene, ShadeState, ShadeType, is_shaded, shade_timeline
 from shade_core.solar import SunPosition, sun_position
 from shade_pipeline.cog import write_cog
 from shade_pipeline.grid import transform_from_bbox
@@ -140,3 +145,22 @@ def test_missing_canopy_raises(built_city: Path, tmp_path: Path) -> None:
     (stripped / CANOPY_FILENAME).unlink()
     with pytest.raises(FileNotFoundError, match="shade-engine canopy"):
         SceneReader(stripped)
+
+
+def test_serves_artifacts_without_the_second_horizon(built_city: Path, tmp_path: Path) -> None:
+    """Optional on purpose: the API deploys either side of a rebuild.
+
+    Without the cube every verdict is what it was before, minus the BOTH
+    refinement -- so the reader opens, answers, and never claims a
+    counterfactual it cannot support.
+    """
+    older = tmp_path / "v1"
+    shutil.copytree(built_city, older)
+    (older / HORIZON_NOVEG_FILENAME).unlink()
+
+    with SceneReader(older) as reader:
+        scene, x, y = reader.scene_for(X0 + synthetic.QUERY_X, Y0 + 60.0)
+        assert scene.horizon_noveg is None
+        result = is_shaded(scene, x, y, sun_position(CORDOBA_LAT, CORDOBA_LON, WINTER_NOON))
+        assert result.state is ShadeState.SHADE
+        assert result.shade_type is ShadeType.BUILDING

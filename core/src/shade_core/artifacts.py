@@ -40,6 +40,7 @@ DTM_FILENAME: Final = "dtm.tif"
 LANDCOVER_FILENAME: Final = "landcover.tif"
 CANOPY_FILENAME: Final = "canopy.tif"
 HORIZON_FILENAME: Final = "horizon.tif"
+HORIZON_NOVEG_FILENAME: Final = "horizon_noveg.tif"
 BLOCKER_CLASS_FILENAME: Final = "blocker_class.tif"
 METADATA_FILENAME: Final = "metadata.json"
 
@@ -53,6 +54,20 @@ class HorizonBuildParams(BaseModel):
     angle_max_deg: float
     step_mode: str
     tile_size: int
+
+
+class LandcoverBuildParams(BaseModel):
+    """How the build decided which cell is a building and which a crown.
+
+    Optional in :class:`BuildMetadata`: artifacts written before the
+    classification had knobs simply do not carry it.
+    """
+
+    building_margin_m: float
+    footprints: str | None = None
+    footprint_count: int = 0
+    footprint_relabelled: int = 0
+    roof_tolerance_m: float | None = None
 
 
 class ArtifactInput(BaseModel):
@@ -74,6 +89,7 @@ class BuildMetadata(BaseModel):
     resolution_m: float
     horizon: HorizonBuildParams
     landcover_classes: dict[str, int]
+    landcover: LandcoverBuildParams | None = None
     no_blocker_value: int
     software: dict[str, str]
     inputs: list[ArtifactInput]
@@ -99,6 +115,9 @@ def load_scene(artifact_dir: str | Path) -> ShadeScene:
     The canopy mask is its own artifact (``canopy.tif``): vegetation pixels
     tall enough to stand under, per the pipeline's height threshold and
     speckle sieve (params recorded as COG tags; see shade_pipeline.canopy).
+
+    ``horizon_noveg.tif`` is optional: artifacts built before it existed load
+    fine and simply never report :attr:`ShadeType.BOTH`.
     """
     directory = Path(artifact_dir)
     metadata = load_metadata(directory)
@@ -110,6 +129,15 @@ def load_scene(artifact_dir: str | Path) -> ShadeScene:
     dtm = _read_single_band(directory / DTM_FILENAME, georef).astype(np.float64)
     sector_classes, _, _, _ = _read_north_up(directory / BLOCKER_CLASS_FILENAME, georef)
     canopy: npt.NDArray[np.bool_] = _read_single_band(_canopy_path(directory), georef) != 0
+    horizon_noveg = None
+    noveg_path = directory / HORIZON_NOVEG_FILENAME
+    if noveg_path.exists():
+        horizon_noveg = load_horizon(noveg_path)
+        if (horizon_noveg.resolution_m, horizon_noveg.origin) != georef:
+            raise ValueError(
+                f"{noveg_path}: georeference does not match {HORIZON_FILENAME}; "
+                "mixed artifact versions?"
+            )
     return ShadeScene(
         horizon=horizon,
         landcover=landcover,
@@ -117,6 +145,7 @@ def load_scene(artifact_dir: str | Path) -> ShadeScene:
         dsm=dsm,
         dtm=dtm,
         sector_classes=sector_classes.astype(np.uint8),
+        horizon_noveg=horizon_noveg,
         observer_height_m=metadata.horizon.observer_height_m,
     )
 
@@ -162,11 +191,18 @@ class SceneReader:
         self._horizon = rasterio.open(directory / HORIZON_FILENAME)
         self._blocker = rasterio.open(directory / BLOCKER_CLASS_FILENAME)
         self._canopy = rasterio.open(_canopy_path(directory))
+        # Optional so the API can be deployed either side of a rebuild: without
+        # it every verdict is what it was before, minus the BOTH refinement.
+        noveg_path = directory / HORIZON_NOVEG_FILENAME
+        self._noveg = rasterio.open(noveg_path) if noveg_path.exists() else None
         georef = _georef_of(self._horizon, directory / HORIZON_FILENAME)
-        for src, name in (
+        companions = [
             (self._blocker, BLOCKER_CLASS_FILENAME),
             (self._canopy, CANOPY_FILENAME),
-        ):
+        ]
+        if self._noveg is not None:
+            companions.append((self._noveg, HORIZON_NOVEG_FILENAME))
+        for src, name in companions:
             if _georef_of(src, directory / name) != georef:
                 raise ValueError(
                     f"{directory / name}: georeference does not match the horizon's; "
@@ -174,6 +210,8 @@ class SceneReader:
                 )
         sectors = self.metadata.horizon.sectors
         if self._horizon.count != sectors or self._blocker.count != sectors:
+            raise ValueError(f"{directory}: band counts do not match {sectors} sectors")
+        if self._noveg is not None and self._noveg.count != sectors:
             raise ValueError(f"{directory}: band counts do not match {sectors} sectors")
         self._resolution_m, self._origin = georef
         self._rows = int(self._horizon.height)
@@ -235,16 +273,25 @@ class SceneReader:
             min(self._block_size, self._cols - col0),
             min(self._block_size, self._rows - row0),
         )
+        origin = (
+            self._origin[0] + col0 * self._resolution_m,
+            self._origin[1] - row0 * self._resolution_m,
+        )
+        scale = np.float32(self._angle_max_deg / 255.0)
         quantized = self._horizon.read(window=window)
-        angles = quantized.astype(np.float32) * np.float32(self._angle_max_deg / 255.0)
+        angles = quantized.astype(np.float32) * scale
         grid = HorizonGrid(
             angles_deg=angles,
             resolution_m=self._resolution_m,
-            origin=(
-                self._origin[0] + col0 * self._resolution_m,
-                self._origin[1] - row0 * self._resolution_m,
-            ),
+            origin=origin,
         )
+        grid_noveg = None
+        if self._noveg is not None:
+            grid_noveg = HorizonGrid(
+                angles_deg=self._noveg.read(window=window).astype(np.float32) * scale,
+                resolution_m=self._resolution_m,
+                origin=origin,
+            )
         sector_classes = self._blocker.read(window=window).astype(np.uint8)
         # read()[0] instead of read(1): rasterio's single-band path reshapes in
         # place, which numpy 2.5 deprecates.
@@ -253,6 +300,7 @@ class SceneReader:
             horizon=grid,
             canopy=canopy,
             sector_classes=sector_classes,
+            horizon_noveg=grid_noveg,
             observer_height_m=self.metadata.horizon.observer_height_m,
         )
 
@@ -260,6 +308,8 @@ class SceneReader:
         self._horizon.close()
         self._blocker.close()
         self._canopy.close()
+        if self._noveg is not None:
+            self._noveg.close()
 
     def __enter__(self) -> SceneReader:
         return self

@@ -29,6 +29,7 @@ ARTIFACT_FILES = (
     artifacts.LANDCOVER_FILENAME,
     artifacts.CANOPY_FILENAME,
     artifacts.HORIZON_FILENAME,
+    artifacts.HORIZON_NOVEG_FILENAME,
     artifacts.BLOCKER_CLASS_FILENAME,
     artifacts.METADATA_FILENAME,
 )
@@ -98,6 +99,9 @@ def test_cli_smoke(tmp_path: Path) -> None:
             str(lidar_dir),
             "--output-root",
             str(output_root),
+            # The suite never talks to Overpass; the footprint path has its own
+            # tests with an injected source.
+            "--no-footprints",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -134,6 +138,7 @@ def test_cli_step_mode_geometric(tmp_path: Path) -> None:
             str(output_root),
             "--step-mode",
             "geometric",
+            "--no-footprints",
         ],
     )
     assert result.exit_code == 0, result.output
