@@ -37,6 +37,7 @@ from rasterio.windows import Window
 from shade_core.artifacts import (
     BLOCKER_CLASS_FILENAME,
     CANOPY_FILENAME,
+    COVERAGE_FILENAME,
     DSM_FILENAME,
     DTM_FILENAME,
     HORIZON_FILENAME,
@@ -203,7 +204,11 @@ def _check_horizon_blocker(
     problems: list[str] = []
     if sky_with_blocker:
         problems.append(f"{sky_with_blocker} px with angle > 0 but blocker == {no_blocker}")
-    fractions = zero_with_blocker / float(rows * cols)
+    # Against the pixels that were computed, not against the grid: an area
+    # covering a fifth of its bbox would otherwise divide by five times the
+    # population and dilute the detector to uselessness.
+    computed = metadata.coverage.covered_px if metadata.coverage is not None else rows * cols
+    fractions = zero_with_blocker / float(computed)
     worst = int(fractions.argmax())
     if fractions[worst] > Q0_BLOCKER_MAX_FRACTION:
         bad = int((fractions > Q0_BLOCKER_MAX_FRACTION).sum())
@@ -213,6 +218,66 @@ def _check_horizon_blocker(
             f"{fractions[worst]:.0%}) -- the horizon cube likely lost data"
         )
     return CheckResult("horizon-blocker invariant", "; ".join(problems) or None)
+
+
+def _check_coverage(directory: Path, metadata: BuildMetadata, window_size: int) -> CheckResult:
+    """Outside the computation area, the cubes say nothing at all.
+
+    The one check that cannot be derived from the others: a pixel outside the
+    area must be angle 0 with class ``NO_BLOCKER`` in both cubes. Any other
+    value there is a leak from a masking bug, and it would be read downstream
+    as a real, confident answer about a pixel the build never computed.
+
+    Also pins the mask against the metadata's own count, which is what
+    ``_check_horizon_blocker`` divides by.
+    """
+    rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
+    no_blocker = metadata.no_blocker_value
+    leaked_angle = 0
+    leaked_class = 0
+    covered = 0
+    has_noveg = (directory / HORIZON_NOVEG_FILENAME).exists()
+    with (
+        rasterio.open(directory / COVERAGE_FILENAME) as coverage,
+        rasterio.open(directory / HORIZON_FILENAME) as horizon,
+        rasterio.open(directory / BLOCKER_CLASS_FILENAME) as blocker,
+    ):
+        if (int(coverage.height), int(coverage.width)) != (rows, cols):
+            return CheckResult(
+                "coverage",
+                f"{COVERAGE_FILENAME} is {coverage.height}x{coverage.width}, "
+                f"expected {rows}x{cols}",
+            )
+        noveg = rasterio.open(directory / HORIZON_NOVEG_FILENAME) if has_noveg else None
+        try:
+            for window in _windows(rows, cols, window_size):
+                outside = coverage.read(1, window=window) == 0
+                covered += int((~outside).sum())
+                if not outside.any():
+                    continue
+                leaked_angle += int(horizon.read(window=window)[:, outside].any(axis=0).sum())
+                leaked_class += int(
+                    (blocker.read(window=window)[:, outside] != no_blocker).any(axis=0).sum()
+                )
+                if noveg is not None:
+                    leaked_angle += int(noveg.read(window=window)[:, outside].any(axis=0).sum())
+        finally:
+            if noveg is not None:
+                noveg.close()
+
+    problems: list[str] = []
+    if covered == 0:
+        problems.append(f"{COVERAGE_FILENAME} covers no pixel at all")
+    if leaked_angle:
+        problems.append(f"{leaked_angle} px outside the area with a horizon angle above 0")
+    if leaked_class:
+        problems.append(f"{leaked_class} px outside the area with a blocker class set")
+    if metadata.coverage is not None and metadata.coverage.covered_px != covered:
+        problems.append(
+            f"metadata says {metadata.coverage.covered_px} covered px, "
+            f"{COVERAGE_FILENAME} has {covered}"
+        )
+    return CheckResult("coverage", "; ".join(problems) or None)
 
 
 def _check_elevation(directory: Path, metadata: BuildMetadata, window_size: int) -> CheckResult:
@@ -296,6 +361,9 @@ def verify_artifacts(
     if (directory / HORIZON_NOVEG_FILENAME).exists():
         echo("verifying horizon-noveg invariant")
         results.append(_check_horizon_noveg(directory, metadata, window_size))
+    if (directory / COVERAGE_FILENAME).exists():
+        echo("verifying computation area")
+        results.append(_check_coverage(directory, metadata, window_size))
     echo("verifying elevation rasters")
     results.append(_check_elevation(directory, metadata, window_size))
     echo("verifying class rasters")

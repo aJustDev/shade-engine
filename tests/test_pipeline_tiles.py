@@ -386,6 +386,46 @@ def test_build_tiles_manifest(built_city: Path, tmp_path: Path) -> None:
         assert entry["sun"]["elevation_deg"] > 0
 
 
+def test_tiles_paint_nothing_outside_the_computation_area(
+    masked_city: Path, tmp_path: Path
+) -> None:
+    """Outside the area a tile is OUTSIDE, not SUN, and the manifest says where.
+
+    Both states are transparent, so the map looks the same either way; what
+    differs is the claim. compute_state_raster reads the uncovered zeros as an
+    open sky and would hand back a confident STATE_SUN, which is the one answer
+    the data does not support.
+    """
+    target = tmp_path / "city"
+    shutil.copytree(masked_city, target)
+    metadata = artifacts.load_metadata(target)
+    # Either side of the area's edge, close enough to share a zoom-18 tile: a
+    # tile with nothing but uncovered pixels is dropped as blank (that is the
+    # saving), so the comparison has to happen inside a tile that survives.
+    min_x, min_y, _, max_y = metadata.bbox
+    middle_y = (min_y + max_y) / 2.0
+    inside = (min_x + 36.0, middle_y)
+    outside = (min_x + 44.0, middle_y)
+
+    assert metadata.coverage is not None
+    config = CUBE_CITY.model_copy(update={"area": metadata.coverage.source})
+    tiles_dir = build_tiles(config, target, [WINTER_NOON], min_zoom=14, max_zoom=18)
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert manifest["coverage"]["type"] in {"Polygon", "MultiPolygon"}
+
+    with open(tiles_dir / str(manifest["instants"][0]["urls"]["building"]).split("?")[0], "rb") as (
+        handle
+    ):
+        reader = Reader(MmapSource(handle))
+        assert _state_at(reader, metadata.crs, *outside, 18) == STATE_OUTSIDE
+        assert _state_at(reader, metadata.crs, *inside, 18) != STATE_OUTSIDE
+    # The static sets carry the same hole: they are drawn from rasters that
+    # cover the whole bbox and know nothing about the area on their own.
+    with open(tiles_dir / str(manifest["buildings_url"]).split("?")[0], "rb") as handle:
+        reader = Reader(MmapSource(handle))
+        assert _state_at(reader, metadata.crs, *outside, 18) == STATE_OUTSIDE
+
+
 def test_roof_mask_and_canopy_split(built_city: Path, tmp_path: Path) -> None:
     """Roofs are OUTSIDE in the shade set; canopy pixels live in the static set only."""
     target = tmp_path / "city"

@@ -231,28 +231,68 @@ class SceneReader:
         self._rows = int(self._horizon.height)
         self._cols = int(self._horizon.width)
         self._angle_max_deg = float(self._horizon.tags()["angle_max_deg"])
+        self._coverage = self._load_coverage(directory, georef)
         self._block_size = block_size
         self._max_blocks = max_blocks
         self._blocks: OrderedDict[tuple[int, int], ShadeScene] = OrderedDict()
         self._lock = threading.Lock()
+
+    def _load_coverage(
+        self, directory: Path, georef: tuple[float, tuple[float, float]]
+    ) -> npt.NDArray[np.bool_] | None:
+        """The computation-area mask, read whole; None when the city has none.
+
+        Whole rather than windowed on purpose. It is one byte per pixel (56 MB
+        for Cordoba, beside a block cache of ~84 MiB) and it is consulted by
+        :meth:`contains`, which runs *before* any block is loaded: paying a COG
+        read there would put a decompression on the rejection path of every
+        query that lands outside the city.
+
+        Optional, like the vegetation-free cube: an artifact directory built
+        before areas existed simply computed its whole bbox.
+        """
+        path = directory / COVERAGE_FILENAME
+        if not path.exists():
+            return None
+        with rasterio.open(path) as src:
+            if _georef_of(src, path) != georef:
+                raise ValueError(
+                    f"{path}: georeference does not match the horizon's; mixed artifact versions?"
+                )
+            if (int(src.height), int(src.width)) != (self._rows, self._cols):
+                raise ValueError(f"{path}: shape does not match {HORIZON_FILENAME}")
+            mask: npt.NDArray[np.bool_] = src.read(1) != 0
+        return mask
 
     @property
     def cached_blocks(self) -> int:
         return len(self._blocks)
 
     def contains(self, x: float, y: float) -> bool:
-        """True when (x, y) falls on the artifact grid (half-open extent).
+        """True when (x, y) has data: on the grid, and inside the computation area.
 
         Matches the floor arithmetic of :meth:`scene_for`: a point exactly on
         the max-x or min-y edge maps past the last pixel and is outside. Also
         rejects the non-finite coordinates a CRS transform yields for points
         outside its domain (every comparison with nan/inf is False).
+
+        A city with an ``area`` has pixels inside its bbox that were never
+        computed, and their horizon is all zeros -- indistinguishable from a
+        rooftop with nothing around it. Answering those from the cubes would
+        report confident sunshine over a hole in the data, so they are outside
+        as firmly as a point in the next province.
         """
         x_min, y_max = self._origin
-        return (
+        if not (
             x_min <= x < x_min + self._cols * self._resolution_m
             and y_max - self._rows * self._resolution_m < y <= y_max
-        )
+        ):
+            return False
+        if self._coverage is None:
+            return True
+        col = math.floor((x - x_min) / self._resolution_m)
+        row = math.floor((y_max - y) / self._resolution_m)
+        return bool(self._coverage[row, col])
 
     def scene_for(self, x: float, y: float) -> tuple[ShadeScene, float, float]:
         """Block-local scene plus the pixel-center point to query it with.

@@ -61,6 +61,65 @@ def test_verify_passes_on_fresh_build(built_city: Path) -> None:
     ensure_verified(built_city)  # must not raise
 
 
+def test_verify_passes_on_a_city_with_an_area(masked_city: Path) -> None:
+    """Half the grid uncomputed and every check still green, plus the new one."""
+    results = verify_artifacts(masked_city)
+    assert "coverage" in [result.name for result in results]
+    assert [result.failure for result in results if not result.passed] == []
+    ensure_verified(masked_city)  # must not raise
+
+
+def test_verify_catches_a_leak_outside_the_area(masked_city: Path, tmp_path: Path) -> None:
+    """A masking bug leaves real angles where the build claims it computed nothing.
+
+    Nothing else would notice: the leaked values are perfectly plausible
+    horizons, and the two cross-cube invariants hold among themselves. Only the
+    comparison against ``coverage.tif`` can tell that they should not be there.
+    """
+    artifact_dir = tmp_path / "cube"
+    shutil.copytree(masked_city, artifact_dir)
+    # Copy a computed column onto an uncomputed one, cube by cube: the values
+    # are a real pixel's, so every cross-cube invariant still holds among them.
+    # The busiest column, or the leak would be zeros and indistinguishable from
+    # a correctly masked one.
+    with rasterio.open(artifact_dir / artifacts.HORIZON_FILENAME) as src:
+        computed = src.read()[:, :, :40]
+    source_col = int((computed > 0).sum(axis=(0, 1)).argmax())
+    assert (computed[:, :, source_col] > 0).any(), "the fixture has no blocked column"
+
+    for name in (
+        artifacts.HORIZON_FILENAME,
+        artifacts.HORIZON_NOVEG_FILENAME,
+        artifacts.BLOCKER_CLASS_FILENAME,
+    ):
+        with rasterio.open(artifact_dir / name) as src:
+            data, transform, crs = src.read(), src.transform, src.crs
+            tags = src.tags()
+        data[:, :, -1] = data[:, :, source_col]
+        write_cog(artifact_dir / name, data, transform, str(crs), tags=tags)
+
+    results = verify_artifacts(artifact_dir)
+    failing = {result.name for result in results if not result.passed}
+    assert failing == {"coverage"}
+    with pytest.raises(VerificationError, match="outside the area"):
+        ensure_verified(artifact_dir)
+
+
+def test_verify_catches_a_coverage_mask_that_lies_about_its_count(
+    masked_city: Path, tmp_path: Path
+) -> None:
+    """The mask is what the blocker check divides by; it has to match the metadata."""
+    artifact_dir = tmp_path / "cube"
+    shutil.copytree(masked_city, artifact_dir)
+    with rasterio.open(artifact_dir / artifacts.COVERAGE_FILENAME) as src:
+        coverage, transform, crs = src.read(1), src.transform, src.crs
+    coverage[0, 0] = 0  # one pixel fewer than the build recorded
+    write_cog(artifact_dir / artifacts.COVERAGE_FILENAME, coverage, transform, str(crs))
+
+    failing = {result.name for result in verify_artifacts(artifact_dir) if not result.passed}
+    assert failing == {"coverage"}
+
+
 def test_verify_catches_zeroed_horizon_tail(built_city: Path, tmp_path: Path) -> None:
     artifact_dir = tmp_path / "cube"
     shutil.copytree(built_city, artifact_dir)

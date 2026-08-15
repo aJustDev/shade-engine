@@ -519,6 +519,15 @@ def _rounded(value: object) -> object:
     return value
 
 
+def wgs84_geometry(area: DrawnArea) -> object:
+    """The area as a GeoJSON geometry in lon/lat, rounded for transport.
+
+    Six decimals is ~0,1 m of longitude: far finer than an area drawn by hand
+    over a basemap, and it keeps the manifest the web client downloads small.
+    """
+    return _rounded(mapping(area.wgs84))
+
+
 def area_geojson(area: DrawnArea, city_id: str) -> str:
     """The normalized area as a one-feature FeatureCollection in EPSG:4326.
 
@@ -528,7 +537,7 @@ def area_geojson(area: DrawnArea, city_id: str) -> str:
     feature = {
         "type": "Feature",
         "properties": {"city": city_id},
-        "geometry": _rounded(mapping(area.wgs84)),
+        "geometry": wgs84_geometry(area),
     }
     return json.dumps({"type": "FeatureCollection", "features": [feature]}, indent=2) + "\n"
 
@@ -585,4 +594,5 @@ __all__ = [
     "snap_bbox",
     "sweep_seconds",
     "tile_saving",
+    "wgs84_geometry",
 ]

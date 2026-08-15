@@ -82,6 +82,52 @@ def built_city(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return build_city(CUBE_CITY, LocalDirectory(lidar_dir), root / "data")
 
 
+def write_cube_area(path: Path) -> Path:
+    """A computation area over the western half of ``CUBE_CITY``, in WGS84.
+
+    Written through the tool's own normalizer, so the fixture exercises the
+    same file format a user would produce with ``shade-engine area --write``.
+    """
+    import shapely
+    import shapely.ops
+    from pyproj import Transformer
+
+    from shade_pipeline.area import DrawnArea, area_geojson
+
+    min_x, min_y, max_x, max_y = CUBE_CITY.bbox
+    western = shapely.box(min_x, min_y, (min_x + max_x) / 2.0, max_y)
+    to_wgs84 = Transformer.from_crs(CUBE_CITY.crs, "EPSG:4326", always_xy=True)
+    path.write_text(
+        area_geojson(
+            DrawnArea(
+                projected=western,
+                wgs84=shapely.ops.transform(to_wgs84.transform, western),
+                features=1,
+                repaired=False,
+            ),
+            CUBE_CITY.id,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture(scope="session")
+def masked_city(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """``built_city``'s twin, built with a computation area over its west half.
+
+    Same bbox, same rasters, same georeference: only half of it was computed.
+    Everything that reads an artifact has to tell that half from the other,
+    because the uncovered cubes are zeros and zeros mean "open sky".
+    """
+    root = tmp_path_factory.mktemp("masked_city")
+    lidar_dir = root / "lidar"
+    lidar_dir.mkdir()
+    laz_fixture.write_cube_laz(lidar_dir / "cube.laz", origin=synthetic.UTM_ORIGIN)
+    config = CUBE_CITY.model_copy(update={"area": str(write_cube_area(root / "area.geojson"))})
+    return build_city(config, LocalDirectory(lidar_dir), root / "data")
+
+
 @pytest.fixture(scope="session")
 def routed_city(built_city: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
     """``built_city`` copy with the pedestrian graph artifact built on top.

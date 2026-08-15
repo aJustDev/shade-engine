@@ -124,6 +124,28 @@ def test_outside_grid(reader: SceneReader) -> None:
     assert not reader.contains(float("nan"), float("nan"))
 
 
+def test_contains_is_false_outside_the_computation_area(masked_city: Path) -> None:
+    """A point inside the bbox but outside the area has no data, so it has no answer.
+
+    Its cubes are zeros, which the engine reads as an open sky: answering it
+    would report confident sunshine over a hole. The API turns this False into
+    the same 400 it gives a point in the next province, which is the honest
+    equivalence.
+    """
+    with SceneReader(masked_city) as reader:
+        west = (X_MIN + 10.0, Y_MIN + 40.0)
+        east = (X_MAX - 10.0, Y_MIN + 40.0)
+        assert reader.contains(*west)
+        assert not reader.contains(*east)
+        # Still on the grid, though: the raster covers the whole bbox either way.
+        assert reader.metadata.bbox == (X_MIN, Y_MIN, X_MAX, Y_MAX)
+
+
+def test_a_city_without_an_area_contains_its_whole_bbox(reader: SceneReader) -> None:
+    """No coverage.tif means every pixel was computed, which is how it was before."""
+    assert reader.contains(X_MAX - 10.0, Y_MIN + 40.0)
+
+
 def test_metadata_is_loaded(reader: SceneReader) -> None:
     assert reader.metadata.city_id == "cube"
     assert reader.metadata.horizon.sectors == 64

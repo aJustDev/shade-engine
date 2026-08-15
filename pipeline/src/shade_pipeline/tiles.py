@@ -58,10 +58,16 @@ from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window
 
-from shade_core.artifacts import CANOPY_FILENAME, LANDCOVER_FILENAME, load_metadata
+from shade_core.artifacts import (
+    CANOPY_FILENAME,
+    COVERAGE_FILENAME,
+    LANDCOVER_FILENAME,
+    load_metadata,
+)
 from shade_core.config import Bbox, CityConfig
 from shade_core.shade import Landcover
 from shade_core.solar import SunPosition, sun_position
+from shade_pipeline.area import read_area, wgs84_geometry
 from shade_pipeline.budget import check_worker_budget, cpu_budget, estimate_tiles_worker_bytes
 from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.progress import format_bytes, format_duration
@@ -439,6 +445,23 @@ def _write(
     return FileSummary(filename, written, skipped, (job.tiles_dir / filename).stat().st_size)
 
 
+def _outside_the_area(directory: Path) -> npt.NDArray[np.bool_] | None:
+    """Pixels the build never computed, or None when the city has no area.
+
+    Every raster of a city covers the whole bbox, area or no area, so the
+    layers have to hide what was never computed themselves. STATE_OUTSIDE is
+    already transparent in all three palettes and already means "nothing to
+    say here" (it is what roofs get), so an uncovered pixel needs no new state
+    and no client change: it simply never paints.
+    """
+    path = directory / COVERAGE_FILENAME
+    if not path.exists():
+        return None
+    with rasterio.open(path) as src:
+        outside: npt.NDArray[np.bool_] = src.read(1) == 0
+    return outside
+
+
 def _render_static(job: RenderJob) -> RenderResult:
     """The two hour-independent sets: the crowns and the LiDAR footprint.
 
@@ -446,15 +469,20 @@ def _render_static(job: RenderJob) -> RenderResult:
     """
     start = time.monotonic()
     directory = Path(job.artifact_dir)
+    outside = _outside_the_area(directory)
     if job.static == "canopy":
         with rasterio.open(directory / CANOPY_FILENAME) as src:
             mask = src.read()[0] != 0
         state = np.where(mask, STATE_SHADE_VEGETATION, STATE_SUN).astype(np.uint8)
+        if outside is not None:
+            state[outside] = STATE_OUTSIDE
         summary = _write(job, CANOPY_TILES_FILENAME, state, "tree canopy", CANOPY_COLORS)
     else:
         with rasterio.open(directory / LANDCOVER_FILENAME) as src:
             mask = src.read()[0] == Landcover.BUILDING
         state = np.where(mask, STATE_SHADE_BUILDING, STATE_SUN).astype(np.uint8)
+        if outside is not None:
+            state[outside] = STATE_OUTSIDE
         summary = _write(
             job, BUILDINGS_TILES_FILENAME, state, "buildings (lidar)", BUILDINGS_COLORS
         )
@@ -484,6 +512,12 @@ def _render_instant(job: RenderJob) -> RenderResult:
     with rasterio.open(directory / CANOPY_FILENAME) as src:
         canopy = src.read()[0] != 0
     state[roof] = STATE_OUTSIDE
+    outside = _outside_the_area(directory)
+    if outside is not None:
+        # Before anything else reads it: outside the computation area the cubes
+        # are zeros, and compute_state_raster has already read those zeros as an
+        # open sky. Sunlit is precisely the wrong answer where there is no data.
+        state[outside] = STATE_OUTSIDE
     # Under-canopy pixels move to the static canopy layer: the per-instant sets
     # keep only *cast* shade. Dropped pixels become STATE_SUN (transparent),
     # keeping STATE_OUTSIDE strictly for roofs and out-of-coverage pixels.
@@ -730,6 +764,14 @@ def build_tiles(
         },
         "canopy_url": canopy_url,
         "buildings_url": buildings_url,
+        # Additive, and absent for a city without an area. bounds_wgs84 is the
+        # rectangle the rasters cover; this is the part of it that was actually
+        # computed, which is what a client should veil.
+        **(
+            {"coverage": wgs84_geometry(read_area(Path(config.area), config.crs))}
+            if config.area is not None
+            else {}
+        ),
         "ladder": declination_ladder(),
         "basemap_url": BASEMAP_FILENAME,
         "instants": entries,
