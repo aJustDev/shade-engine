@@ -63,7 +63,12 @@ from shade_core.config import Bbox, CityConfig
 from shade_core.shade import Landcover
 from shade_core.solar import SunPosition, sun_position
 from shade_pipeline.area import read_area, wgs84_geometry
-from shade_pipeline.budget import check_worker_budget, cpu_budget, estimate_tiles_worker_bytes
+from shade_pipeline.budget import (
+    check_worker_budget,
+    cpu_budget,
+    estimate_tiles_worker_bytes,
+    warn_if_serial_is_tight,
+)
 from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.shade_raster import (
@@ -648,11 +653,17 @@ def build_tiles(
         jobs.append(RenderJob(**common, when=when, sun=sun))
 
     workers = max(1, workers)
+    rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
+    per_worker = estimate_tiles_worker_bytes(rows, cols)
     if workers > 1:
-        rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
         # Before the pool exists, never after. Unlike the sweep this footprint
         # is fixed by the city, so the only lever left is fewer workers.
-        check_worker_budget(workers, estimate_tiles_worker_bytes(rows, cols))
+        check_worker_budget(workers, per_worker)
+    else:
+        # ...and when there is no lever left, say so anyway. A metropolitan
+        # bbox at 1 m/px puts tens of GiB in one instant, and without this the
+        # serial path walks into the OOM killer in silence.
+        warn_if_serial_is_tight(per_worker, progress)
 
     build_start = time.monotonic()
     total_written = 0

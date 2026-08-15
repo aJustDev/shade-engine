@@ -54,7 +54,8 @@ from shade_core.routegraph import (
     load_route_graph,
 )
 from shade_core.solar import sun_position
-from shade_pipeline.grid import transform_from_bbox
+from shade_pipeline.budget import estimate_tiles_worker_bytes, warn_if_serial_is_tight
+from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.progress import format_duration
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
@@ -460,6 +461,14 @@ def build_graph(
                 f"computation area: {dropped:,} edges dropped ({lost_km:.1f} km), "
                 f"{n_nodes:,} nodes and {n_edges:,} edges left"
             )
+
+    # Same wall as the tile phase, and for the same reason: this loop calls
+    # compute_state_raster once per ladder instant, each one a whole-raster
+    # pass. It runs in this process and cannot be turned down, so all it can
+    # do is say so before spending the first hour.
+    warn_if_serial_is_tight(
+        estimate_tiles_worker_bytes(*grid_shape(metadata.bbox, metadata.resolution_m)), progress
+    )
 
     instants = season_preset_instants(zone)
     center_lon = (bounds[0] + bounds[2]) / 2.0

@@ -13,6 +13,7 @@ the host view when they are absent (a laptop, a plain systemd scope).
 """
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
@@ -180,11 +181,39 @@ def workers_that_fit(per_worker_bytes: int) -> int | None:
 
     The same arithmetic :func:`check_worker_budget` enforces, exposed as a
     number so a planner can print it before anything is built.
+
+    **Zero is a real answer.** A city big enough that one worker does not fit
+    exists (a metropolitan area at 1 m/px puts tens of GiB in a single
+    instant), and flooring this at 1 would report that case as "one fits",
+    which is the opposite of the truth and the exact number a planner acts on.
     """
     available = available_bytes()
     if available is None:
         return None
-    return max(1, int(available * HEADROOM) // per_worker_bytes)
+    return int(available * HEADROOM) // per_worker_bytes
+
+
+def warn_if_serial_is_tight(
+    per_worker_bytes: int, say: Callable[[str], None] | None, hint: str = ""
+) -> None:
+    """Say so when even a serial run looks too big for this machine.
+
+    Deliberately a warning and not a refusal. The estimates err high by design
+    and the kernel has swap, so a serial run that the model dislikes may still
+    finish; refusing would take away the last escape hatch on a tight box. What
+    is not acceptable is silence: without this, a city whose single unit of
+    work needs tens of GiB runs until the OOM killer ends it, with no warning
+    that it was ever going to.
+    """
+    if say is None:
+        return
+    available = available_bytes()
+    if available is None or per_worker_bytes <= int(available * HEADROOM):
+        return
+    say(
+        f"warning: one unit of work needs about {per_worker_bytes / 2**30:.1f} GiB and only "
+        f"{available / 2**30:.1f} GiB is available; this may be killed by the OOM killer{hint}"
+    )
 
 
 def check_worker_budget(workers: int, per_worker_bytes: int, hint: str = "") -> None:
@@ -192,8 +221,9 @@ def check_worker_budget(workers: int, per_worker_bytes: int, hint: str = "") -> 
 
     Silence means either the run fits or the machine would not say -- an
     unreadable budget is not a reason to block a build that may well be fine.
-    ``hint`` names whatever else the caller can turn down, appended to the
-    advice to lower ``--workers``.
+    ``hint`` names whatever else the caller can turn down, as a bare phrase
+    ("a smaller --tile-size"): the wording around it differs depending on
+    whether lowering ``--workers`` is still an option at all.
     """
     available = available_bytes()
     if available is None:
@@ -201,9 +231,18 @@ def check_worker_budget(workers: int, per_worker_bytes: int, hint: str = "") -> 
     budget = int(available * HEADROOM)
     if workers * per_worker_bytes <= budget:
         return
-    fits = max(1, budget // per_worker_bytes)
+    fits = budget // per_worker_bytes
+    if fits >= 1:
+        advice = f"use --workers {fits} or fewer" + (f", or {hint}" if hint else "")
+    else:
+        # Nothing to turn down: one unit of work does not fit on this machine.
+        # Saying "--workers 0 or fewer" would be nonsense, and saying
+        # "--workers 1" would send the caller straight into the OOM killer.
+        advice = "not even one worker fits; " + (
+            f"try {hint}" if hint else "this needs a bigger machine"
+        )
     raise MemoryBudgetError(
         f"--workers {workers} needs about {workers * per_worker_bytes / 2**30:.1f} GiB "
         f"({per_worker_bytes / 2**30:.1f} GiB each) but only {available / 2**30:.1f} GiB is "
-        f"available; use --workers {fits} or fewer{hint}"
+        f"available; {advice}"
     )

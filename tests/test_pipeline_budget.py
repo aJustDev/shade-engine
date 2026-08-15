@@ -75,9 +75,9 @@ def test_budget_refuses_and_names_what_would_fit(monkeypatch: pytest.MonkeyPatch
 
 def test_budget_hint_names_the_other_lever(monkeypatch: pytest.MonkeyPatch) -> None:
     """The sweep can also shrink its tile; the tile phase cannot, and says so."""
-    monkeypatch.setattr(budget, "available_bytes", lambda: GIB)
-    with pytest.raises(MemoryBudgetError, match="smaller --tile-size"):
-        check_worker_budget(8, GIB, hint=", or a smaller --tile-size")
+    monkeypatch.setattr(budget, "available_bytes", lambda: 4 * GIB)
+    with pytest.raises(MemoryBudgetError, match=r"or a smaller --tile-size$"):
+        check_worker_budget(8, GIB, hint="a smaller --tile-size")
     with pytest.raises(MemoryBudgetError, match=r"or fewer$"):
         check_worker_budget(8, GIB)
 
@@ -123,3 +123,39 @@ def test_cgroup_available_discounts_the_page_cache(monkeypatch: pytest.MonkeyPat
 def test_unlimited_cgroup_falls_back_to_meminfo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(budget, "_read_cgroup", lambda name: "max")
     assert budget._cgroup_available() is None
+
+
+def test_zero_is_a_real_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A city whose single unit of work does not fit must report 0, not 1.
+
+    Flooring at 1 was a real bug: a metropolitan bbox at 1 m/px needs tens of
+    GiB for one instant, and "1 worker fits" reads as "you can do it serially"
+    -- which is how a plan walks into the OOM killer.
+    """
+    monkeypatch.setattr(budget, "available_bytes", lambda: 8 * GIB)
+    assert budget.workers_that_fit(34 * GIB) == 0
+    assert budget.workers_that_fit(1 * GIB) == 6  # 8 GiB * 0.8 headroom
+
+
+def test_refusal_says_so_when_nothing_fits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "--workers 0 or fewer" would be nonsense; "--workers 1" would be a trap."""
+    monkeypatch.setattr(budget, "available_bytes", lambda: 8 * GIB)
+    with pytest.raises(MemoryBudgetError, match="not even one worker fits"):
+        check_worker_budget(2, 34 * GIB)
+    with pytest.raises(MemoryBudgetError, match="--workers 6 or fewer"):
+        check_worker_budget(8, 1 * GIB)
+
+
+def test_serial_path_warns_instead_of_failing_silently(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serial keeps its escape hatch, but stops being a silent walk into the OOM."""
+    monkeypatch.setattr(budget, "available_bytes", lambda: 8 * GIB)
+    lines: list[str] = []
+    budget.warn_if_serial_is_tight(34 * GIB, lines.append)
+    assert len(lines) == 1
+    assert "34.0 GiB" in lines[0] and "OOM" in lines[0]
+
+    quiet: list[str] = []
+    budget.warn_if_serial_is_tight(1 * GIB, quiet.append)
+    assert quiet == []
+    # No progress sink means no warning, and never an exception.
+    budget.warn_if_serial_is_tight(34 * GIB, None)

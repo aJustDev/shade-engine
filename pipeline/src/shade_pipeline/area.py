@@ -421,6 +421,11 @@ def _fits(count: int | None) -> str:
         return "this machine does not say how much memory is available"
     available = available_bytes()
     room = f" in {available / 2**30:.1f} GiB" if available is not None else ""
+    if count == 0:
+        # The answer a planner has to act on: this phase cannot run here at
+        # all, not even serially. Reporting it as "1 fits" would send the
+        # build straight into the OOM killer hours later.
+        return f"NOT EVEN ONE FITS{room} -- this phase cannot run on this machine"
     return f"up to {count} workers fit{room}"
 
 
