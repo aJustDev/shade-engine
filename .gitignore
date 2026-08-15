@@ -18,3 +18,11 @@ data/
 
 # Scratch del MCP de Playwright (capturas y logs de sesiones de agente)
 .playwright-mcp/
+
+# Capturas sueltas en la raiz. Ya se colaron 6,3 MB en un commit por un
+# `git add -A`, y este repo es publico: una vez empujado, el blob se queda en
+# la historia para siempre. Las capturas que documenten algo van al vault.
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
