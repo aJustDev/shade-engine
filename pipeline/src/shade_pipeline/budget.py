@@ -175,6 +175,18 @@ def estimate_tiles_worker_bytes(rows: int, cols: int) -> int:
     return TILES_BYTES_PER_PIXEL * rows * cols + TILES_BASE_BYTES
 
 
+def workers_that_fit(per_worker_bytes: int) -> int | None:
+    """How many workers of that size the budget allows; None when unreadable.
+
+    The same arithmetic :func:`check_worker_budget` enforces, exposed as a
+    number so a planner can print it before anything is built.
+    """
+    available = available_bytes()
+    if available is None:
+        return None
+    return max(1, int(available * HEADROOM) // per_worker_bytes)
+
+
 def check_worker_budget(workers: int, per_worker_bytes: int, hint: str = "") -> None:
     """Raise unless ``workers`` processes of that size fit in the memory available.
 

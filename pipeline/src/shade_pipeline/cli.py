@@ -1,4 +1,4 @@
-"""CLI: ``shade-engine build|predict|canopy|verify|import-layer|tiles|recolor|graph <city>``."""
+"""CLI: ``shade-engine area|build|predict|canopy|verify|import-layer|tiles|recolor|graph``."""
 
 import time
 from datetime import date, datetime
@@ -12,7 +12,16 @@ import typer
 from shade_core.artifacts import METADATA_FILENAME
 from shade_core.config import CityConfig, load_city
 from shade_core.db import make_engine
-from shade_pipeline.budget import MemoryBudgetError
+from shade_pipeline.area import (
+    WGS84,
+    AreaError,
+    area_geojson,
+    format_plan,
+    plan_area,
+    read_area,
+    rewrite_config,
+)
+from shade_pipeline.budget import MemoryBudgetError, cpu_budget
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, derive_canopy
 from shade_pipeline.cnig import CnigError, CnigSource
@@ -60,6 +69,82 @@ class StepMode(StrEnum):
 @app.callback()
 def main() -> None:
     """Group callback so commands stay subcommands (build, predict)."""
+
+
+@app.command()
+def area(
+    city: str,
+    geojson: Annotated[
+        Path, typer.Argument(help="Drawn area as GeoJSON (EPSG:4326 unless --geojson-crs)")
+    ],
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    geojson_crs: Annotated[
+        str, typer.Option(help="CRS of the input file; GeoJSON is EPSG:4326 by RFC 7946")
+    ] = WGS84,
+    tile_size: Annotated[int, typer.Option(help="Sweep tile size the estimates assume")] = 256,
+    workers: Annotated[
+        int | None, typer.Option(min=1, help="Workers to price (default: the cores available)")
+    ] = None,
+    cache_dir: Annotated[
+        Path | None, typer.Option(help="LiDAR cache to check (default: data/lidar/<city>)")
+    ] = None,
+    area_path: Annotated[
+        Path | None,
+        typer.Option(
+            help="Where the normalized area goes (default: <cities-dir>/<city>/area.geojson)"
+        ),
+    ] = None,
+    write: Annotated[
+        bool, typer.Option("--write", help="Apply: write the area file and edit the city YAML")
+    ] = False,
+) -> None:
+    """Price CITY's computation area from a drawn polygon, and optionally apply it.
+
+    Drawing is somebody else's job (geojson.io, QGIS); this does the arithmetic
+    that decides whether the shape is worth it: the bbox it implies, the sweep
+    tiles it skips at each tile size, the minutes and memory it costs, and the
+    PNOA tiles still missing from the cache. Without ``--write`` it only reports.
+    """
+    config_path = cities_dir / f"{city}.yaml"
+    if not config_path.exists():
+        typer.echo(
+            f"error: {config_path} not found; write the city YAML first "
+            "(a provisional bbox is enough, this command replaces it)",
+            err=True,
+        )
+        raise typer.Exit(1)
+    config = load_city(config_path)
+    destination = area_path if area_path is not None else cities_dir / config.id / "area.geojson"
+    try:
+        drawn = read_area(geojson, config.crs, source_crs=geojson_crs)
+    except AreaError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    plan = plan_area(
+        config,
+        drawn,
+        geojson,
+        tile_size=tile_size,
+        workers=workers if workers is not None else cpu_budget(),
+        cache_dir=cache_dir if cache_dir is not None else Path("data/lidar") / config.id,
+        area_path=destination,
+        config_path=config_path,
+    )
+    typer.echo(format_plan(plan, config))
+    if not write:
+        typer.echo("\nnothing written; rerun with --write to apply")
+        return
+    try:
+        updated = rewrite_config(config_path.read_text(encoding="utf-8"), plan.bbox, destination)
+    except (AreaError, OSError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(area_geojson(drawn, config.id), encoding="utf-8")
+    config_path.write_text(updated, encoding="utf-8")
+    typer.echo(f"\nwrote {destination} and updated {config_path}")
 
 
 @app.command()
