@@ -12,6 +12,7 @@ import typer
 from shade_core.artifacts import METADATA_FILENAME
 from shade_core.config import CityConfig, load_city
 from shade_core.db import make_engine
+from shade_pipeline.budget import MemoryBudgetError
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, derive_canopy
 from shade_pipeline.cnig import CnigError, CnigSource
@@ -76,6 +77,14 @@ def build(
         typer.Option(help="Download cache for the CNIG driver (default: data/lidar/<city>)"),
     ] = None,
     tile_size: Annotated[int, typer.Option(help="Horizon sweep tile size, pixels")] = 512,
+    workers: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Processes sweeping horizon tiles in parallel (1 = serial); "
+            "output is identical whatever the count",
+        ),
+    ] = 1,
     step_mode: Annotated[
         StepMode,
         typer.Option(help="Horizon distance schedule: exact (half-pixel) or geometric (growing)"),
@@ -97,6 +106,7 @@ def build(
         observer_height_m=config.observer_height_m,
         tile_size=tile_size,
         step_mode="exact" if step_mode is StepMode.exact else "geometric",
+        workers=workers,
     )
     try:
         out_dir = build_city(
@@ -107,7 +117,7 @@ def build(
             progress=typer.echo,
             footprints=OsmnxFootprintSource() if footprints else None,
         )
-    except (CoverageError, CnigError, VerificationError) as exc:
+    except (CoverageError, CnigError, VerificationError, MemoryBudgetError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"artifacts written to {out_dir}")

@@ -1,5 +1,6 @@
 """The production horizon sweep against the brute-force oracle from core."""
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,8 @@ from numpy.testing import assert_allclose, assert_array_equal
 import synthetic
 from shade_core.horizon import HorizonGrid
 from shade_core.shade import Landcover, ShadeScene
+from shade_pipeline import horizon as horizon_module
+from shade_pipeline.budget import MemoryBudgetError
 from shade_pipeline.grid import buffer_pixels
 from shade_pipeline.horizon import (
     NO_BLOCKER,
@@ -16,7 +19,9 @@ from shade_pipeline.horizon import (
     compute_horizon_block,
     compute_horizon_tiled,
     quantize_angles,
+    quantized_horizon_block,
     sector_offsets,
+    tile_jobs,
 )
 
 CUBE_PARAMS = HorizonParams(max_distance_m=80.0)
@@ -97,6 +102,90 @@ def test_noveg_horizon_equals_the_full_one_without_vegetation(cube_grid: Horizon
     result = compute_horizon_tiled(dsm, dtm, synthetic.cube_landcover(), 1.0, CUBE_PARAMS)
     difference = result.angles_q.astype(np.int16) - result.angles_noveg_q.astype(np.int16)
     assert np.abs(difference).max() <= 1
+
+
+def test_quantized_block_equals_quantizing_the_float_block() -> None:
+    """The memory-lean path and the oracle's peer are the same numbers.
+
+    ``quantized_horizon_block`` exists only to avoid holding float32 cubes;
+    if it ever computed anything different the parallel sweep would be
+    silently wrong, so the two are pinned together here.
+    """
+    dsm, dtm, landcover = _wall_behind_tree()
+    params = HorizonParams(max_distance_m=20.0)
+    inner = _full_window(dsm)
+    angles, blocker, noveg = compute_horizon_block(dsm, dtm, landcover, 1.0, params, inner)
+    angles_q, blocker_q, noveg_q = quantized_horizon_block(dsm, dtm, landcover, 1.0, params, inner)
+    assert_array_equal(angles_q, quantize_angles(angles))
+    assert_array_equal(blocker_q, blocker)
+    assert_array_equal(noveg_q, quantize_angles(noveg))
+
+
+def test_tile_jobs_partition_the_inner_window() -> None:
+    """Every inner pixel is swept exactly once, ragged last row/column included."""
+    inner = (10, 130, 20, 100)
+    jobs = tile_jobs(inner, 48)
+    covered = np.zeros((inner[1] - inner[0], inner[3] - inner[2]), dtype=np.int32)
+    for t0, t1, u0, u1 in jobs:
+        covered[t0 - inner[0] : t1 - inner[0], u0 - inner[2] : u1 - inner[2]] += 1
+    assert (covered == 1).all()
+    assert len(jobs) == 3 * 2  # 120 = 48 + 48 + 24 rows, 80 = 48 + 32 cols
+
+
+@pytest.mark.parametrize("scratch", [False, True])
+def test_parallel_sweep_matches_serial(scratch: bool, tmp_path: Path) -> None:
+    """The exit criterion: workers change the schedule, never a single value.
+
+    Run with a scratch dir too, because memmapped cubes are what production
+    writes into and the parallel path files tiles into them out of order.
+    """
+    dsm, dtm = synthetic.cube_scene()
+    landcover = synthetic.cube_landcover()
+    params = HorizonParams(max_distance_m=20.0, tile_size=48)
+    serial = compute_horizon_tiled(dsm, dtm, landcover, 1.0, params)
+    parallel = compute_horizon_tiled(
+        dsm,
+        dtm,
+        landcover,
+        1.0,
+        HorizonParams(max_distance_m=20.0, tile_size=48, workers=2),
+        scratch_dir=tmp_path if scratch else None,
+    )
+    assert_array_equal(np.asarray(parallel.angles_q), serial.angles_q)
+    assert_array_equal(np.asarray(parallel.blocker_class), serial.blocker_class)
+    assert_array_equal(np.asarray(parallel.angles_noveg_q), serial.angles_noveg_q)
+
+
+def _suicidal_block(*args: object, **kwargs: object) -> None:
+    """Stand-in for the sweep that kills its own process, like the OOM killer."""
+    os._exit(1)
+
+
+def test_dead_worker_fails_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worker that dies ends the build; it never degrades to serial in silence.
+
+    Patching what the tile *calls* rather than ``_sweep_tile`` itself: that one
+    is pickled by qualified name and has to stay the real function. ``fork``
+    hands the patched module straight to the children.
+    """
+    monkeypatch.setattr(horizon_module, "quantized_horizon_block", _suicidal_block)
+    dsm, dtm = synthetic.cube_scene()
+    params = HorizonParams(max_distance_m=20.0, tile_size=48, workers=2)
+    with pytest.raises(RuntimeError, match="worker died"):
+        compute_horizon_tiled(dsm, dtm, synthetic.cube_landcover(), 1.0, params)
+
+
+def test_sweep_refuses_workers_that_do_not_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guardrail fires before the pool exists, naming what would fit."""
+    monkeypatch.setattr(horizon_module, "check_worker_budget", _raise_budget)
+    dsm, dtm = synthetic.cube_scene()
+    params = HorizonParams(max_distance_m=20.0, tile_size=48, workers=4)
+    with pytest.raises(MemoryBudgetError, match="--workers 1"):
+        compute_horizon_tiled(dsm, dtm, synthetic.cube_landcover(), 1.0, params)
+
+
+def _raise_budget(*args: object, **kwargs: object) -> None:
+    raise MemoryBudgetError("needs more than there is; use --workers 1 or fewer")
 
 
 def test_tiled_quantized_equals_quantized_reference(cube_grid: HorizonGrid) -> None:

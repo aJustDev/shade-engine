@@ -36,11 +36,22 @@ measured cost of the whole second cube is +9% of sweep time (a second
 field (constant relative error, far fewer samples) as a future knob for
 city-scale runs; it can skip thin distant obstacles and is never validated
 against the oracle at tight tolerance.
+
+Because tiles are independent by construction, the sweep parallelizes by tile
+(``workers``). Two properties keep the output bit-identical to a serial run:
+the same ``_sweep_tile`` runs in both modes, and **only the parent writes** --
+workers return quantized tiles and the main process files them into the
+memmaps exactly as the serial loop does, leaving the hardened
+scratch -> flush -> COG -> verify path untouched.
 """
 
 import math
+import multiprocessing
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterator
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -49,6 +60,7 @@ import numpy as np
 import numpy.typing as npt
 
 from shade_core.shade import NO_BLOCKER, Landcover
+from shade_pipeline.budget import check_worker_budget, cpu_budget
 from shade_pipeline.grid import buffer_pixels
 from shade_pipeline.progress import format_duration
 
@@ -61,14 +73,28 @@ __all__ = [
     "HorizonResult",
     "compute_horizon_block",
     "compute_horizon_tiled",
+    "iter_horizon_sectors",
     "quantize_angles",
+    "quantized_horizon_block",
     "sector_offsets",
+    "tile_jobs",
 ]
+
+Window = tuple[int, int, int, int]
+"""A (row0, row1, col0, col1) rectangle in array coordinates."""
+
+SweptTile = tuple[Window, npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]]
+"""One finished tile travelling back to the writer: where it goes, then the cubes."""
 
 
 @dataclass(frozen=True)
 class HorizonParams:
-    """Knobs of the horizon sweep; defaults match the spec."""
+    """Knobs of the horizon sweep; defaults match the spec.
+
+    ``workers`` is the one knob that is not physics: it splits the tiles
+    across processes and cannot change a single output value. It defaults to
+    1 so no existing runbook changes behavior by upgrading.
+    """
 
     sectors: int = 64
     max_distance_m: float = 500.0
@@ -76,6 +102,7 @@ class HorizonParams:
     tile_size: int = 512
     step_mode: Literal["exact", "geometric"] = "exact"
     geometric_growth: float = 1.02
+    workers: int = 1
 
 
 @dataclass(frozen=True)
@@ -123,20 +150,23 @@ def sector_offsets(
     return [(d_row, d_col, d) for (d_row, d_col), d in kept.items()]
 
 
-def compute_horizon_block(
+def iter_horizon_sectors(
     dsm: npt.NDArray[np.floating],
     dtm: npt.NDArray[np.floating],
     landcover: npt.NDArray[np.uint8],
     resolution_m: float,
     params: HorizonParams,
-    inner: tuple[int, int, int, int],
-) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint8], npt.NDArray[np.float32]]:
-    """Sweep the ``inner`` (row0, row1, col0, col1) window against the full arrays.
+    inner: Window,
+) -> Iterator[tuple[npt.NDArray[np.float32], npt.NDArray[np.uint8], npt.NDArray[np.float32]]]:
+    """Sweep the ``inner`` window one sector at a time, in sector order.
 
-    Returns pre-quantization float32 angles, uint8 blocker classes and the
-    float32 angles of the vegetation-free surface, for the window. Samples come
-    from anywhere in the given arrays; the caller is responsible for passing
-    enough surrounding context (see the tiled driver).
+    Yields (angles, blocker classes, vegetation-free angles) for sector k as
+    single planes rather than accumulating cubes, so a consumer that only
+    wants the quantized result never holds a float32 cube at all -- the
+    difference between 326 MiB and 87 MiB of peak per sweep process.
+
+    Samples come from anywhere in the given arrays; the caller is responsible
+    for passing enough surrounding context (see the tiled driver).
     """
     row0, row1, col0, col1 = inner
     rows, cols = dsm.shape
@@ -147,9 +177,6 @@ def compute_horizon_block(
     # cell: on a wooded slope the terrain itself still blocks.
     surface_noveg_z = np.where(landcover == Landcover.VEGETATION, dtm, dsm).astype(np.float64)
 
-    angles = np.empty((params.sectors, height, width), dtype=np.float32)
-    blocker = np.empty((params.sectors, height, width), dtype=np.uint8)
-    angles_noveg = np.empty((params.sectors, height, width), dtype=np.float32)
     for k in range(params.sectors):
         best = np.full((height, width), -np.inf)
         best_class = np.full((height, width), NO_BLOCKER, dtype=np.uint8)
@@ -177,13 +204,159 @@ def compute_horizon_block(
                 (surface_noveg_z[src] - observer_z[sub]) / distance,
                 out=best_slope[sub],
             )
-        angles[k] = np.maximum(best, 0.0).astype(np.float32)
         best_class[best <= 0.0] = NO_BLOCKER
-        blocker[k] = best_class
         # One arctan per sector, on the accumulated tangent. -inf (no sample in
         # range) lands on -90 and the floor at 0 absorbs it, same as above.
-        angles_noveg[k] = np.maximum(np.degrees(np.arctan(best_slope)), 0.0).astype(np.float32)
+        yield (
+            np.maximum(best, 0.0).astype(np.float32),
+            best_class,
+            np.maximum(np.degrees(np.arctan(best_slope)), 0.0).astype(np.float32),
+        )
+
+
+def compute_horizon_block(
+    dsm: npt.NDArray[np.floating],
+    dtm: npt.NDArray[np.floating],
+    landcover: npt.NDArray[np.uint8],
+    resolution_m: float,
+    params: HorizonParams,
+    inner: Window,
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint8], npt.NDArray[np.float32]]:
+    """Pre-quantization cubes for the ``inner`` window: this is the oracle's peer.
+
+    Full float32 precision, which is what the reference comparisons need;
+    production goes through :func:`quantized_horizon_block` instead.
+    """
+    row0, row1, col0, col1 = inner
+    shape = (params.sectors, row1 - row0, col1 - col0)
+    angles = np.empty(shape, dtype=np.float32)
+    blocker = np.empty(shape, dtype=np.uint8)
+    angles_noveg = np.empty(shape, dtype=np.float32)
+    sectors = iter_horizon_sectors(dsm, dtm, landcover, resolution_m, params, inner)
+    for k, (sector_angles, sector_blocker, sector_noveg) in enumerate(sectors):
+        angles[k] = sector_angles
+        blocker[k] = sector_blocker
+        angles_noveg[k] = sector_noveg
     return angles, blocker, angles_noveg
+
+
+def quantized_horizon_block(
+    dsm: npt.NDArray[np.floating],
+    dtm: npt.NDArray[np.floating],
+    landcover: npt.NDArray[np.uint8],
+    resolution_m: float,
+    params: HorizonParams,
+    inner: Window,
+) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]]:
+    """The same block, quantized sector by sector: three uint8 cubes.
+
+    Identical to quantizing :func:`compute_horizon_block`'s output (a test
+    pins that), at a quarter of the peak memory because no float32 cube ever
+    exists. This is what the sweep and its workers call.
+    """
+    row0, row1, col0, col1 = inner
+    shape = (params.sectors, row1 - row0, col1 - col0)
+    angles_q = np.empty(shape, dtype=np.uint8)
+    blocker = np.empty(shape, dtype=np.uint8)
+    angles_noveg_q = np.empty(shape, dtype=np.uint8)
+    sectors = iter_horizon_sectors(dsm, dtm, landcover, resolution_m, params, inner)
+    for k, (sector_angles, sector_blocker, sector_noveg) in enumerate(sectors):
+        angles_q[k] = quantize_angles(sector_angles)
+        blocker[k] = sector_blocker
+        angles_noveg_q[k] = quantize_angles(sector_noveg)
+    return angles_q, blocker, angles_noveg_q
+
+
+@dataclass(frozen=True)
+class _SweepState:
+    """Everything a tile needs, held module-global so ``fork`` inherits it.
+
+    Worker arguments are pickled, so passing the rasters per task would ship
+    tens of megabytes down a pipe for every tile and undo the entire point.
+    Set once before the pool exists, the children inherit these arrays
+    copy-on-write and read-only, and a job travels as four integers.
+    """
+
+    dsm: npt.NDArray[np.floating]
+    dtm: npt.NDArray[np.floating]
+    landcover: npt.NDArray[np.uint8]
+    resolution_m: float
+    params: HorizonParams
+    pad: int
+
+
+_SWEEP: _SweepState | None = None
+
+
+@contextmanager
+def _sweep_state(state: _SweepState) -> Iterator[None]:
+    global _SWEEP
+    _SWEEP = state
+    try:
+        yield
+    finally:
+        _SWEEP = None
+
+
+def tile_jobs(inner: Window, tile_size: int) -> list[Window]:
+    """Split the inner window into tiles: a partition, in row-major order."""
+    row0, row1, col0, col1 = inner
+    return [
+        (t0, min(t0 + tile_size, row1), u0, min(u0 + tile_size, col1))
+        for t0 in range(row0, row1, tile_size)
+        for u0 in range(col0, col1, tile_size)
+    ]
+
+
+def _sweep_tile(job: Window) -> SweptTile:
+    """Sweep one tile against the inherited rasters; the unit of work.
+
+    The same function on both paths -- called directly in serial, submitted to
+    the pool in parallel -- so the two cannot drift apart. It reads and returns
+    only; every write to an artifact happens in the parent.
+    """
+    state = _SWEEP
+    assert state is not None, "_sweep_tile called outside a _sweep_state block"
+    t0, t1, u0, u1 = job
+    rows, cols = state.dsm.shape
+    p0, p1 = max(0, t0 - state.pad), min(rows, t1 + state.pad)
+    q0, q1 = max(0, u0 - state.pad), min(cols, u1 + state.pad)
+    angles_q, blocker, angles_noveg_q = quantized_horizon_block(
+        state.dsm[p0:p1, q0:q1],
+        state.dtm[p0:p1, q0:q1],
+        state.landcover[p0:p1, q0:q1],
+        state.resolution_m,
+        state.params,
+        (t0 - p0, t1 - p0, u0 - q0, u1 - q0),
+    )
+    return job, angles_q, blocker, angles_noveg_q
+
+
+def _sweep_parallel(jobs: list[Window], workers: int) -> Generator[SweptTile]:
+    """Yield finished tiles as they land, out of order.
+
+    ``fork`` is pinned on purpose: Python 3.14 defaults to ``forkserver``,
+    which starts a fresh interpreter and would inherit no rasters at all. A
+    dead worker (usually the OOM killer) ends the build loudly -- degrading to
+    serial after nine hours would be worse than failing.
+    """
+    executor = ProcessPoolExecutor(
+        max_workers=workers, mp_context=multiprocessing.get_context("fork")
+    )
+    try:
+        futures = [executor.submit(_sweep_tile, job) for job in jobs]
+        try:
+            for future in as_completed(futures):
+                yield future.result()
+        except BrokenProcessPool as exc:
+            raise RuntimeError(
+                f"a horizon sweep worker died (of {workers}); the usual cause is the "
+                "OOM killer -- retry with fewer --workers or a smaller --tile-size"
+            ) from exc
+    finally:
+        # Cancel what is still queued and let the running tiles land, so the
+        # scratch directory is torn down with nobody inside it.
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 def compute_horizon_tiled(
@@ -192,7 +365,7 @@ def compute_horizon_tiled(
     landcover: npt.NDArray[np.uint8],
     resolution_m: float,
     params: HorizonParams,
-    inner: tuple[int, int, int, int] | None = None,
+    inner: Window | None = None,
     *,
     scratch_dir: Path | None = None,
     progress: Callable[[str], None] | None = None,
@@ -210,12 +383,21 @@ def compute_horizon_tiled(
     access pattern is mmap-friendly -- written tile by tile, then read back
     band by band exactly once -- so file-backed pages let the kernel evict
     under pressure instead of OOMing. Results are bit-identical either way.
+
+    ``params.workers`` above 1 spreads the tiles across processes. The write
+    loop below is the same in both modes; only who produced the tile changes,
+    which is why the cubes come out identical.
     """
     rows, cols = dsm.shape
     if inner is None:
         inner = (0, rows, 0, cols)
     row0, row1, col0, col1 = inner
     pad = buffer_pixels(params.max_distance_m, resolution_m)
+    workers = max(1, params.workers)
+    if workers > 1:
+        # Before the pool exists, never after: an OOM at hour 9 of 12 is the
+        # worst possible ending.
+        check_worker_budget(workers, params.sectors, params.tile_size, pad)
 
     shape = (params.sectors, row1 - row0, col1 - col0)
     if scratch_dir is None:
@@ -228,40 +410,42 @@ def compute_horizon_tiled(
         angles_noveg_q = np.memmap(
             scratch_dir / "angles_noveg_q.u8", dtype=np.uint8, mode="w+", shape=shape
         )
-    tile_count = math.ceil((row1 - row0) / params.tile_size) * math.ceil(
-        (col1 - col0) / params.tile_size
-    )
-    tile_index = 0
-    sweep_start = time.monotonic()
-    for t0 in range(row0, row1, params.tile_size):
-        t1 = min(t0 + params.tile_size, row1)
-        for u0 in range(col0, col1, params.tile_size):
-            u1 = min(u0 + params.tile_size, col1)
-            tile_index += 1
-            if progress is not None:
-                if tile_index == 1:
-                    progress(f"sweeping tile [1/{tile_count}]")
-                else:
-                    average = (time.monotonic() - sweep_start) / (tile_index - 1)
-                    eta = average * (tile_count - tile_index + 1)
-                    progress(
-                        f"sweeping tile [{tile_index}/{tile_count}] "
-                        f"(avg {format_duration(average)}/tile, eta {format_duration(eta)})"
-                    )
-            p0, p1 = max(0, t0 - pad), min(rows, t1 + pad)
-            q0, q1 = max(0, u0 - pad), min(cols, u1 + pad)
-            tile_angles, tile_blocker, tile_noveg = compute_horizon_block(
-                dsm[p0:p1, q0:q1],
-                dtm[p0:p1, q0:q1],
-                landcover[p0:p1, q0:q1],
-                resolution_m,
-                params,
-                (t0 - p0, t1 - p0, u0 - q0, u1 - q0),
+    jobs = tile_jobs(inner, params.tile_size)
+    if progress is not None:
+        if workers > 1:
+            progress(f"sweeping {len(jobs)} tiles on {workers} workers")
+        else:
+            progress(
+                f"sweeping {len(jobs)} tiles serially "
+                f"({cpu_budget()} cores available; --workers N to parallelise)"
             )
+    sweep_start = time.monotonic()
+    state = _SweepState(dsm, dtm, landcover, resolution_m, params, pad)
+    # Both producers are closeable generators, so `closing` tears the pool down
+    # at a known point instead of whenever the collector gets round to it.
+    producer: Generator[SweptTile] = (
+        (_sweep_tile(job) for job in jobs) if workers == 1 else _sweep_parallel(jobs, workers)
+    )
+    with _sweep_state(state), closing(producer) as results:
+        for done, (job, tile_angles_q, tile_blocker, tile_noveg_q) in enumerate(results, start=1):
+            t0, t1, u0, u1 = job
             out = (slice(None), slice(t0 - row0, t1 - row0), slice(u0 - col0, u1 - col0))
-            angles_q[out] = quantize_angles(tile_angles)
+            angles_q[out] = tile_angles_q
             blocker[out] = tile_blocker
-            angles_noveg_q[out] = quantize_angles(tile_noveg)
+            angles_noveg_q[out] = tile_noveg_q
+            if progress is not None:
+                # Reported on completion, not on start: with N tiles in flight
+                # there is no meaningful "current" one, and elapsed over
+                # completed is throughput, which is what an ETA wants. Held
+                # back until the first full batch has landed, because until
+                # then the elapsed time covers tiles that have not finished
+                # and the estimate reads about `workers` times too long.
+                average = (time.monotonic() - sweep_start) / done
+                line = f"swept tile [{done}/{len(jobs)}]"
+                if done >= workers:
+                    eta = average * (len(jobs) - done)
+                    line += f" (avg {format_duration(average)}/tile, eta {format_duration(eta)})"
+                progress(line)
     # Push the scratch cubes through msync before anything reads them back:
     # flush() raises OSError on write-back failure, whereas a silently
     # dropped dirty page would resurface as zeroed sectors in the artifacts.
