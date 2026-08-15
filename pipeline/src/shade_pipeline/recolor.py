@@ -101,7 +101,9 @@ class Palette:
     shade: dict[int, RGBA]
     canopy: dict[int, RGBA]
     buildings: dict[int, RGBA]
-    manifest_colors: dict[str, str]
+    # Los colores van como hex y el alfa como fraccion, igual que en el
+    # manifiesto que escribe `tiles.py`.
+    manifest_colors: dict[str, str | float]
 
 
 def _hex(color: RGBA) -> str:
@@ -117,6 +119,11 @@ LIGHT: Final = Palette(
         "shade": _hex(LIGHT_SHADE_COLOR),
         "canopy": _hex(LIGHT_CANOPY_COLOR),
         "buildings": _hex(LIGHT_BUILDINGS_COLOR),
+        # El alfa TAMBIEN cambia con la paleta, y olvidarlo dejaba el manifiesto
+        # claro anunciando el 0.78 del tema oscuro. Hoy no lo lee nadie en el
+        # cliente, pero un manifiesto que miente sobre sus propios tiles es
+        # justo lo que este proyecto no se puede permitir publicar.
+        "alpha": round(LIGHT_SHADE_ALPHA / 255, 3),
         # Legacy aliases kept so an older client reading this manifest still
         # finds the keys it expects.
         "shade_building": _hex(LIGHT_SHADE_COLOR),

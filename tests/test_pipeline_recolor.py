@@ -196,6 +196,12 @@ class TestRecolorCity:
         manifest = json.loads((report.destination / "index.json").read_text(encoding="utf-8"))
         assert manifest["palette"] == "light"
         assert manifest["colors"]["shade"] == "#5e708a"
+        # The alpha belongs to the palette too. Leaving the source value would
+        # publish a manifest claiming 0.78 for tiles baked at 120/255, and a
+        # manifest that lies about its own tiles is not something this project
+        # can ship -- even while no client reads the field.
+        assert manifest["colors"]["alpha"] == pytest.approx(120 / 255, abs=1e-3)
+        assert manifest["colors"]["alpha"] != 0.78  # el valor del arbol oscuro de origen
         # Untouched keys survive.
         assert manifest["schema_version"] == 2
 
