@@ -1,0 +1,21 @@
+id: barcelona
+name: Barcelona
+country: ES
+timezone: Europe/Madrid
+crs:
+  EPSG:25831 # UTM 31N ETRS89. OJO: Barcelona NO esta en el huso 30 como
+  #   Cordoba y Montilla; con 25830 el bbox cae en el mar.
+# Recorte de prueba de 1500 x 1000 m del Eixample, centrado en la Sagrada
+# Familia (2.1744 E, 41.4036 N). Elegido pequeno a proposito: la manzana
+# Cerda es rejilla regular y edificio alto, asi que la sombra se lee bien
+# aunque el area sea minima.
+bbox: [430241, 4583391, 431741, 4584391]
+resolution_m: 1.0
+horizon_sectors: 64
+horizon_max_distance_m: 500 # radio del barrido; tambien buffer del bbox
+sources:
+  lidar: pnoa # driver de descarga (CnigSource)
+  pnoa_series: LIDA3 # sondeo 2026-08-16: 12/12 teselas en catalogo
+  lidar_coverage: PNOA 3a cobertura, vuelo CAT 2021, clasificacion NPC02 # informativo
+attribution:
+  - Obra derivada de PNOA-cob3 2021 CC-BY 4.0 scne.es
