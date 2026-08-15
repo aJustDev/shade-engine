@@ -226,6 +226,14 @@ def tiles(
     max_zoom: Annotated[
         int, typer.Option(help="Web Mercator max zoom (17 ~ 1 m/px at lat 37.9)")
     ] = DEFAULT_MAX_ZOOM,
+    workers: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Processes rendering instants in parallel (1 = serial); "
+            "output is identical whatever the count",
+        ),
+    ] = 1,
     cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
         "cities"
     ),
@@ -258,6 +266,7 @@ def tiles(
             instants,
             min_zoom=min_zoom,
             max_zoom=max_zoom,
+            workers=workers,
             progress=typer.echo,
         )
     except ValueError as exc:

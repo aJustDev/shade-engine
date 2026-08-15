@@ -133,48 +133,65 @@ def cpu_budget() -> int:
     return len(os.sched_getaffinity(0))
 
 
-def estimate_worker_bytes(sectors: int, tile_size: int, pad_px: int) -> int:
-    """Peak private memory of one sweep worker, deliberately over-estimated.
+def estimate_sweep_worker_bytes(sectors: int, tile_size: int, pad_px: int) -> int:
+    """Peak memory of one horizon-sweep worker, deliberately over-estimated.
 
     Three terms, each an allocation in the tile's call tree: the three uint8
     output cubes it returns, the two float64 surfaces it derives from the
     padded window, and the per-sector accumulators plus the ufunc temporaries
-    the inner loop churns through. Measured against a real tile (512 px, 64
-    sectors, 500 px of pad) the model says 107 MiB where the process grew
-    87 MiB -- erring high is the whole point.
+    the inner loop churns through. The parent holds one finished tile per
+    worker while it writes them into the memmap, so the returned cubes are
+    counted once more. Measured against a real tile (512 px, 64 sectors, 500 px
+    of pad) the model says 162 MB where the process grew 87 MiB -- erring high
+    is the whole point.
     """
     window = tile_size + 2 * pad_px
     cubes = 3 * sectors * tile_size * tile_size
     surfaces = 2 * window * window * 8
     working = 12 * tile_size * tile_size * 8
-    return cubes + surfaces + working
+    in_flight = cubes  # the copy the parent holds while filing it away
+    return cubes + surfaces + working + in_flight
 
 
-def estimate_result_bytes(sectors: int, tile_size: int) -> int:
-    """One finished tile in flight back to the parent: three uint8 cubes."""
-    return 3 * sectors * tile_size * tile_size
+TILES_BYTES_PER_PIXEL: Final = 28
+"""Peak bytes per raster pixel while one instant renders.
+
+Measured on Cordoba's artifacts (7000 x 8000 = 56 Mpx): the full path with both
+horizon cubes peaks at 1.481 MiB of process high-water mark, or 27,7 bytes per
+pixel. Most of it is the two float32 horizons and the ufunc temporaries of
+their interpolation; the state raster and the masks are a byte each.
+"""
+TILES_BASE_BYTES: Final = 250 * 1024 * 1024
+"""Interpreter, numpy, rasterio and GDAL before a single pixel is read (~180 MiB)."""
 
 
-def check_worker_budget(workers: int, sectors: int, tile_size: int, pad_px: int) -> None:
-    """Raise unless ``workers`` sweep processes fit in the memory available.
+def estimate_tiles_worker_bytes(rows: int, cols: int) -> int:
+    """Peak memory of one tile-render worker: one instant's rasters plus the base.
 
-    The parent holds up to one finished tile per worker while it writes them
-    into the memmap, so both sides count. Silence means either the run fits or
-    the machine would not say -- an unreadable budget is not a reason to block
-    a build that may well be fine.
+    Unlike the sweep, whose footprint is set by knobs, this one is fixed by the
+    city: an instant holds whole-raster arrays and nothing chunks them. That is
+    why the tile phase is bound by RAM and the sweep by cores.
+    """
+    return TILES_BYTES_PER_PIXEL * rows * cols + TILES_BASE_BYTES
+
+
+def check_worker_budget(workers: int, per_worker_bytes: int, hint: str = "") -> None:
+    """Raise unless ``workers`` processes of that size fit in the memory available.
+
+    Silence means either the run fits or the machine would not say -- an
+    unreadable budget is not a reason to block a build that may well be fine.
+    ``hint`` names whatever else the caller can turn down, appended to the
+    advice to lower ``--workers``.
     """
     available = available_bytes()
     if available is None:
         return
-    per_worker = estimate_worker_bytes(sectors, tile_size, pad_px) + estimate_result_bytes(
-        sectors, tile_size
-    )
     budget = int(available * HEADROOM)
-    if workers * per_worker <= budget:
+    if workers * per_worker_bytes <= budget:
         return
-    fits = max(1, budget // per_worker)
+    fits = max(1, budget // per_worker_bytes)
     raise MemoryBudgetError(
-        f"--workers {workers} needs about {workers * per_worker / 2**30:.1f} GiB "
-        f"({per_worker / 2**30:.1f} GiB each) but only {available / 2**30:.1f} GiB is "
-        f"available; use --workers {fits} or fewer, or a smaller --tile-size"
+        f"--workers {workers} needs about {workers * per_worker_bytes / 2**30:.1f} GiB "
+        f"({per_worker_bytes / 2**30:.1f} GiB each) but only {available / 2**30:.1f} GiB is "
+        f"available; use --workers {fits} or fewer{hint}"
     )

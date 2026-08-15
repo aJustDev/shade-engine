@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import shutil
 from datetime import date, datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ from conftest import CUBE_CITY
 from shade_core import artifacts
 from shade_core.shade import Landcover, ShadeResult, ShadeState, ShadeType, is_shaded
 from shade_core.solar import SunPosition, sun_position
+from shade_pipeline import budget
+from shade_pipeline.budget import MemoryBudgetError
 from shade_pipeline.cli import app
 from shade_pipeline.cog import write_cog
 from shade_pipeline.grid import transform_from_bbox
@@ -452,6 +455,88 @@ def test_declination_ladder_preset() -> None:
     assert [when.hour for when in june] == list(range(8, 22))
     december = [when for when in instants if when.month == 12]
     assert [when.hour for when in december] == list(range(9, 18))
+
+
+def _pyramids(tiles_dir: Path) -> dict[str, bytes]:
+    return {path.name: path.read_bytes() for path in sorted(tiles_dir.glob("*.pmtiles"))}
+
+
+def _stable_manifest(tiles_dir: Path) -> dict[str, object]:
+    """The manifest minus what carries the clock on purpose.
+
+    ``generated_at`` and the ``?v=`` cache-buster differ between any two runs
+    by design; everything else has to match.
+    """
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    del manifest["generated_at"]
+    stable: dict[str, object] = json.loads(re.sub(r"\?v=\d+", "?v=X", json.dumps(manifest)))
+    return stable
+
+
+@pytest.mark.parametrize("workers", [2, 5])
+def test_parallel_render_matches_serial(built_city: Path, tmp_path: Path, workers: int) -> None:
+    """The exit criterion: workers change the schedule, never a byte of output.
+
+    Five workers against three units also puts more processes than work in the
+    pool, which is where an out-of-order manifest would show up.
+    """
+    instants = [WINTER_NOON, WINTER_NOON.replace(hour=12), SUMMER_NOON]
+    serial, parallel = (tmp_path / name for name in ("serial", "parallel"))
+    for target in (serial, parallel):
+        shutil.copytree(built_city, target)
+    serial_dir = build_tiles(CUBE_CITY, serial, instants, min_zoom=14, max_zoom=16)
+    parallel_dir = build_tiles(
+        CUBE_CITY, parallel, instants, min_zoom=14, max_zoom=16, workers=workers
+    )
+
+    assert _pyramids(parallel_dir) == _pyramids(serial_dir)
+    assert _stable_manifest(parallel_dir) == _stable_manifest(serial_dir)
+
+
+def test_manifest_stays_chronological(built_city: Path, tmp_path: Path) -> None:
+    """Units land out of order; the client reads this list as a timeline."""
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    instants = [SUMMER_NOON, WINTER_NOON, WINTER_NOON.replace(hour=12)]
+    tiles_dir = build_tiles(CUBE_CITY, target, instants, min_zoom=14, max_zoom=15, workers=3)
+
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    ids = [entry["id"] for entry in manifest["instants"]]
+    assert ids == sorted(ids)
+    assert ids == [f"{when:%Y%m%dT%H%M}" for when in sorted(instants)]
+
+
+def test_failed_unit_leaves_no_manifest(built_city: Path, tmp_path: Path) -> None:
+    """A unit that blows up ends the render before anything is announced.
+
+    A manifest promising instants whose .pmtiles nobody wrote is worse than no
+    manifest: the client would 404 on every one of them. Here the canopy
+    artifact goes missing after the parent has read the metadata, so the
+    failure happens inside a worker -- which is the case the parent cannot see
+    coming. (The sibling failure, a worker killed outright, arrives as
+    ``BrokenProcessPool`` and is translated the same three lines as in the
+    sweep, where ``fork`` makes it testable.)
+    """
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    (target / artifacts.CANOPY_FILENAME).unlink()
+    # OSError, not a narrower class: whichever unit touches the missing file
+    # first decides whether it arrives from rasterio or from the loader, and
+    # the contract under test is the manifest, not the spelling of the error.
+    with pytest.raises(OSError):
+        build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=15, workers=2)
+    assert not (target / "tiles" / MANIFEST_FILENAME).exists()
+
+
+def test_render_refuses_workers_that_do_not_fit(
+    built_city: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guardrail fires before the pool exists, naming what would fit."""
+    monkeypatch.setattr(budget, "available_bytes", lambda: 2 * budget.TILES_BASE_BYTES)
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    with pytest.raises(MemoryBudgetError, match="--workers 1 or fewer"):
+        build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=15, workers=8)
 
 
 def test_build_tiles_rejects_night_instant(built_city: Path, tmp_path: Path) -> None:

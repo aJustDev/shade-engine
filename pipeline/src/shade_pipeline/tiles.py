@@ -33,7 +33,11 @@ import itertools
 import json
 import math
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Final
@@ -57,8 +61,9 @@ from rasterio.windows import Window
 from shade_core.artifacts import CANOPY_FILENAME, LANDCOVER_FILENAME, load_metadata
 from shade_core.config import Bbox, CityConfig
 from shade_core.shade import Landcover
-from shade_core.solar import sun_position
-from shade_pipeline.grid import transform_from_bbox
+from shade_core.solar import SunPosition, sun_position
+from shade_pipeline.budget import check_worker_budget, cpu_budget, estimate_tiles_worker_bytes
+from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
@@ -332,6 +337,219 @@ def write_instant_pmtiles(
     return written, skipped
 
 
+@dataclass(frozen=True)
+class RenderJob:
+    """One unit of rendering: an instant (two files) or a static set (one).
+
+    Deliberately self-contained and picklable. Unlike the horizon sweep, whose
+    workers inherit city-sized rasters through ``fork``, everything a tile
+    worker needs fits in a message and it opens the artifacts itself -- so any
+    start method works and nothing has to survive a fork after GDAL has run.
+    """
+
+    artifact_dir: Path
+    tiles_dir: Path
+    transform: Affine
+    crs: str
+    bounds: Bbox
+    min_zoom: int
+    max_zoom: int
+    city_name: str
+    attribution: tuple[str, ...]
+    when: datetime | None = None
+    sun: SunPosition | None = None
+    static: str | None = None
+
+    @property
+    def label(self) -> str:
+        return self.static if self.static is not None else f"{self.when:%Y%m%dT%H%M}"
+
+
+@dataclass(frozen=True)
+class FileSummary:
+    """One finished pyramid, for the progress line and the totals."""
+
+    filename: str
+    written: int
+    skipped: int
+    size: int
+
+
+@dataclass(frozen=True)
+class RenderResult:
+    """What a finished unit reports back: its files, its timings, its identity.
+
+    Instants carry ``when``, ``sun`` and the bare filenames they wrote; the
+    manifest entry itself is assembled by the parent, which is the one holding
+    the cache-busting version and the legacy aliases. Static sets carry none of
+    that.
+    """
+
+    label: str
+    files: tuple[FileSummary, ...]
+    elapsed_s: float
+    state_s: float
+    when: datetime | None = None
+    sun: SunPosition | None = None
+    urls: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def written(self) -> int:
+        return sum(summary.written for summary in self.files)
+
+    @property
+    def skipped(self) -> int:
+        return sum(summary.skipped for summary in self.files)
+
+    @property
+    def size(self) -> int:
+        return sum(summary.size for summary in self.files)
+
+
+def render_unit(job: RenderJob) -> RenderResult:
+    """Produce a unit's pyramids and report on them; the unit of work.
+
+    The same function on both paths -- called directly in serial, submitted to
+    the pool in parallel -- so the two cannot drift apart.
+    """
+    return _render_static(job) if job.static is not None else _render_instant(job)
+
+
+def _write(
+    job: RenderJob,
+    filename: str,
+    state: npt.NDArray[np.uint8],
+    label: str,
+    colors: Mapping[int, tuple[int, int, int, int]],
+) -> FileSummary:
+    written, skipped = write_instant_pmtiles(
+        job.tiles_dir / filename,
+        state,
+        job.transform,
+        job.crs,
+        job.bounds,
+        min_zoom=job.min_zoom,
+        max_zoom=job.max_zoom,
+        metadata={
+            "name": f"{job.city_name} {label}",
+            "attribution": " / ".join(job.attribution),
+        },
+        colors=colors,
+    )
+    return FileSummary(filename, written, skipped, (job.tiles_dir / filename).stat().st_size)
+
+
+def _render_static(job: RenderJob) -> RenderResult:
+    """The two hour-independent sets: the crowns and the LiDAR footprint.
+
+    No roof mask on the canopy: a crown overhanging a roof is still a tree.
+    """
+    start = time.monotonic()
+    directory = Path(job.artifact_dir)
+    if job.static == "canopy":
+        with rasterio.open(directory / CANOPY_FILENAME) as src:
+            mask = src.read()[0] != 0
+        state = np.where(mask, STATE_SHADE_VEGETATION, STATE_SUN).astype(np.uint8)
+        summary = _write(job, CANOPY_TILES_FILENAME, state, "tree canopy", CANOPY_COLORS)
+    else:
+        with rasterio.open(directory / LANDCOVER_FILENAME) as src:
+            mask = src.read()[0] == Landcover.BUILDING
+        state = np.where(mask, STATE_SHADE_BUILDING, STATE_SUN).astype(np.uint8)
+        summary = _write(
+            job, BUILDINGS_TILES_FILENAME, state, "buildings (lidar)", BUILDINGS_COLORS
+        )
+    return RenderResult(
+        label=summary.filename,
+        files=(summary,),
+        elapsed_s=time.monotonic() - start,
+        state_s=0.0,
+    )
+
+
+def _render_instant(job: RenderJob) -> RenderResult:
+    """One instant: the state raster, then its two disjoint cast-shade sets."""
+    assert job.when is not None and job.sun is not None  # the parent validated both
+    start = time.monotonic()
+    directory = Path(job.artifact_dir)
+    state = compute_state_raster(directory, job.sun)
+    state_s = time.monotonic() - start
+
+    # Roof and canopy masks, applied AFTER compute_state_raster so that
+    # function stays in pixel parity with is_shaded: both are presentation
+    # only. Roofs become STATE_OUTSIDE (the warp nodata, alpha 0 in the
+    # palette) rather than STATE_SUN, so a decoded tile still distinguishes
+    # "roof" from "sunlit street".
+    with rasterio.open(directory / LANDCOVER_FILENAME) as src:
+        roof = src.read()[0] == Landcover.BUILDING
+    with rasterio.open(directory / CANOPY_FILENAME) as src:
+        canopy = src.read()[0] != 0
+    state[roof] = STATE_OUTSIDE
+    # Under-canopy pixels move to the static canopy layer: the per-instant sets
+    # keep only *cast* shade. Dropped pixels become STATE_SUN (transparent),
+    # keeping STATE_OUTSIDE strictly for roofs and out-of-coverage pixels.
+    # Under a crown that also sits in a building's shadow the state is BOTH,
+    # which stays here: felling that tree would not put the pixel in the sun.
+    state[canopy & (state == STATE_SHADE_VEGETATION)] = STATE_SUN
+    del roof, canopy
+
+    # Two disjoint cast-shade sets of the same color, cut by "would this hold
+    # without the trees" and not by which obstacle won the argmax -- which is
+    # why STATE_SHADE_BOTH goes in the building set. Hiding the trees set is
+    # then literally the street without its trees, and hiding the buildings set
+    # is the shade the trees *add*. Disjoint matters: both files paint at
+    # OVERLAY_ALPHA, so an overlap would double-darken.
+    instant_id = f"{job.when:%Y%m%dT%H%M}"
+    building_state = state.copy()
+    building_state[state == STATE_SHADE_VEGETATION] = STATE_SUN
+    building_state[state == STATE_SHADE_BOTH] = STATE_SHADE_BUILDING
+    trees_state = state.copy()
+    trees_state[(state != STATE_SHADE_VEGETATION) & (state != STATE_OUTSIDE)] = STATE_SUN
+    del state
+
+    files = []
+    urls = []
+    for kind, layer_state in (("building", building_state), ("trees", trees_state)):
+        filename = f"shade-{instant_id}-{kind}.pmtiles"
+        files.append(
+            _write(
+                job, filename, layer_state, f"shade ({kind}) {job.when.isoformat()}", SHADE_COLORS
+            )
+        )
+        urls.append((kind, filename))
+
+    return RenderResult(
+        label=instant_id,
+        files=tuple(files),
+        elapsed_s=time.monotonic() - start,
+        state_s=state_s,
+        when=job.when,
+        sun=job.sun,
+        urls=tuple(urls),
+    )
+
+
+def _render_parallel(jobs: list[RenderJob], workers: int) -> Generator[RenderResult]:
+    """Yield finished units as they land, out of order.
+
+    No start-method pinning, unlike the sweep: a job is a message, so there is
+    nothing to inherit. A dead worker (usually the OOM killer) ends the render
+    loudly rather than leaving a manifest that promises files nobody wrote.
+    """
+    executor = ProcessPoolExecutor(max_workers=workers)
+    try:
+        futures = [executor.submit(render_unit, job) for job in jobs]
+        try:
+            for future in as_completed(futures):
+                yield future.result()
+        except BrokenProcessPool as exc:
+            raise RuntimeError(
+                f"a tile render worker died (of {workers}); the usual cause is the "
+                "OOM killer -- retry with fewer --workers"
+            ) from exc
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def build_tiles(
     config: CityConfig,
     artifact_dir: str | Path,
@@ -339,6 +557,7 @@ def build_tiles(
     *,
     min_zoom: int = DEFAULT_MIN_ZOOM,
     max_zoom: int = DEFAULT_MAX_ZOOM,
+    workers: int = 1,
     progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Render two cast-shade PMTiles per instant, a static canopy set, and the manifest.
@@ -373,68 +592,26 @@ def build_tiles(
     center_lat = (south + north) / 2.0
 
     ordered = sorted(instants)
+    tiles_dir = Path(artifact_dir) / TILES_DIRNAME
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+    common = {
+        "artifact_dir": Path(artifact_dir),
+        "tiles_dir": tiles_dir,
+        "transform": transform,
+        "crs": metadata.crs,
+        "bounds": (west, south, east, north),
+        "min_zoom": min_zoom,
+        "max_zoom": max_zoom,
+        "city_name": config.name,
+        "attribution": tuple(metadata.attribution),
+    }
+
+    # Validate every instant in the parent, before a single worker exists: a
+    # naive datetime or a night sun should cost nothing, not a phase.
+    jobs = [RenderJob(**common, static=name) for name in ("canopy", "buildings")]
     for when in ordered:
         if when.tzinfo is None:
             raise ValueError(f"naive instant {when.isoformat()}; attach the city timezone")
-
-    # Roof and canopy masks, read once (instant-invariant). Applied AFTER
-    # compute_state_raster so that function stays in pixel parity with
-    # is_shaded: both are presentation only. Roofs become STATE_OUTSIDE
-    # (the warp nodata, alpha 0 in the palette) rather than STATE_SUN, so a
-    # decoded tile still distinguishes "roof" from "sunlit street".
-    with rasterio.open(Path(artifact_dir) / LANDCOVER_FILENAME) as src:
-        roof = src.read()[0] == Landcover.BUILDING
-    with rasterio.open(Path(artifact_dir) / CANOPY_FILENAME) as src:
-        canopy = src.read()[0] != 0
-
-    tiles_dir = Path(artifact_dir) / TILES_DIRNAME
-    tiles_dir.mkdir(parents=True, exist_ok=True)
-    build_start = time.monotonic()
-    total_written = 0
-    total_skipped = 0
-    total_bytes = 0
-    version = int(time.time())
-
-    # Static (hour-independent) sets, one file per city each: the crowns'
-    # vertical projection and the LiDAR building footprint (the same mask
-    # the shade sets punch out as roofs -- the layers tile together). No
-    # roof mask on the canopy: a crown overhanging a roof is still a tree.
-    canopy_state = np.where(canopy, STATE_SHADE_VEGETATION, STATE_SUN).astype(np.uint8)
-    buildings_state = np.where(roof, STATE_SHADE_BUILDING, STATE_SUN).astype(np.uint8)
-    static_sets = (
-        (CANOPY_TILES_FILENAME, "tree canopy", canopy_state, CANOPY_COLORS),
-        (BUILDINGS_TILES_FILENAME, "buildings (lidar)", buildings_state, BUILDINGS_COLORS),
-    )
-    for filename, label, static_state, colors in static_sets:
-        phase_start = time.monotonic()
-        written, skipped = write_instant_pmtiles(
-            tiles_dir / filename,
-            static_state,
-            transform,
-            metadata.crs,
-            (west, south, east, north),
-            min_zoom=min_zoom,
-            max_zoom=max_zoom,
-            metadata={
-                "name": f"{config.name} {label}",
-                "attribution": " / ".join(metadata.attribution),
-            },
-            colors=colors,
-        )
-        size = (tiles_dir / filename).stat().st_size
-        total_written += written
-        total_skipped += skipped
-        total_bytes += size
-        echo(
-            f"{filename}: {written} tiles written, {skipped} transparent "
-            f"skipped ({format_bytes(size)}, "
-            f"{format_duration(time.monotonic() - phase_start)})"
-        )
-    canopy_url = f"{CANOPY_TILES_FILENAME}?v={version}"
-    buildings_url = f"{BUILDINGS_TILES_FILENAME}?v={version}"
-
-    entries: list[dict[str, object]] = []
-    for index, when in enumerate(ordered, start=1):
         # One sun for the whole city: across an 8 km bbox the sun's position
         # varies by well under the horizon quantization step.
         sun = sun_position(center_lat, center_lon, when)
@@ -443,77 +620,88 @@ def build_tiles(
                 f"{when.isoformat()}: sun elevation is {sun.elevation_deg:.1f} deg "
                 "(night); pick a daylight instant"
             )
-        instant_id = f"{when:%Y%m%dT%H%M}"
-        phase_start = time.monotonic()
-        state = compute_state_raster(artifact_dir, sun)
-        state[roof] = STATE_OUTSIDE
-        # Under-canopy pixels move to the static canopy layer: the
-        # per-instant sets keep only *cast* shade. Dropped pixels become
-        # STATE_SUN (transparent), keeping STATE_OUTSIDE strictly for roofs
-        # and out-of-coverage pixels. Under a crown that also sits in a
-        # building's shadow the state is BOTH, which stays here: felling that
-        # tree would not put the pixel in the sun.
-        state[canopy & (state == STATE_SHADE_VEGETATION)] = STATE_SUN
+        jobs.append(RenderJob(**common, when=when, sun=sun))
+
+    workers = max(1, workers)
+    if workers > 1:
+        rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
+        # Before the pool exists, never after. Unlike the sweep this footprint
+        # is fixed by the city, so the only lever left is fewer workers.
+        check_worker_budget(workers, estimate_tiles_worker_bytes(rows, cols))
+
+    build_start = time.monotonic()
+    total_written = 0
+    total_skipped = 0
+    total_bytes = 0
+    version = int(time.time())
+    if workers > 1:
+        echo(f"rendering {len(jobs)} units on {workers} workers")
+    else:
         echo(
-            f"[{index}/{len(ordered)}] {instant_id}: state raster in "
-            f"{format_duration(time.monotonic() - phase_start)}"
+            f"rendering {len(jobs)} units serially "
+            f"({cpu_budget()} cores available; --workers N to parallelise)"
         )
 
-        # Two disjoint cast-shade sets of the same color, cut by "would this
-        # hold without the trees" and not by which obstacle won the argmax --
-        # which is why STATE_SHADE_BOTH goes in the building set. Hiding the
-        # trees set is then literally the street without its trees, and hiding
-        # the buildings set is the shade the trees *add*. Disjoint matters:
-        # both files paint at OVERLAY_ALPHA, so an overlap would double-darken.
-        building_state = state.copy()
-        building_state[state == STATE_SHADE_VEGETATION] = STATE_SUN
-        building_state[state == STATE_SHADE_BOTH] = STATE_SHADE_BUILDING
-        trees_state = state.copy()
-        trees_state[(state != STATE_SHADE_VEGETATION) & (state != STATE_OUTSIDE)] = STATE_SUN
+    results: list[RenderResult] = []
+    producer: Generator[RenderResult] = (
+        (render_unit(job) for job in jobs) if workers == 1 else _render_parallel(jobs, workers)
+    )
+    with closing(producer) as finished:
+        for done, result in enumerate(finished, start=1):
+            results.append(result)
+            total_written += result.written
+            total_skipped += result.skipped
+            total_bytes += result.size
+            for summary in result.files:
+                echo(
+                    f"[{done}/{len(jobs)}] {summary.filename}: {summary.written} tiles written, "
+                    f"{summary.skipped} transparent skipped ({format_bytes(summary.size)})"
+                )
+            # Reported on completion, not on start: with N units in flight
+            # there is no meaningful "current" one. The ETA is held back until
+            # the first full batch has landed, because until then the elapsed
+            # time covers units that have not finished.
+            line = (
+                f"[{done}/{len(jobs)}] {result.label} done in "
+                f"{format_duration(result.elapsed_s)} "
+                f"(state raster in {format_duration(result.state_s)})"
+            )
+            if done >= workers:
+                average = (time.monotonic() - build_start) / done
+                line += f", eta {format_duration(average * (len(jobs) - done))}"
+            echo(line)
 
-        urls: dict[str, str] = {"vegetation": canopy_url}
-        for kind, layer_state in (("building", building_state), ("trees", trees_state)):
-            filename = f"shade-{instant_id}-{kind}.pmtiles"
-            phase_start = time.monotonic()
-            written, skipped = write_instant_pmtiles(
-                tiles_dir / filename,
-                layer_state,
-                transform,
-                metadata.crs,
-                (west, south, east, north),
-                min_zoom=min_zoom,
-                max_zoom=max_zoom,
-                metadata={
-                    "name": f"{config.name} shade ({kind}) {when.isoformat()}",
-                    "attribution": " / ".join(metadata.attribution),
-                },
-            )
-            size = (tiles_dir / filename).stat().st_size
-            total_written += written
-            total_skipped += skipped
-            total_bytes += size
-            urls[kind] = f"{filename}?v={version}"
-            echo(
-                f"[{index}/{len(ordered)}] {filename}: {written} tiles written, "
-                f"{skipped} transparent skipped ({format_bytes(size)}, "
-                f"{format_duration(time.monotonic() - phase_start)})"
-            )
-        offset = f"{when:%z}"
+    canopy_url = f"{CANOPY_TILES_FILENAME}?v={version}"
+    buildings_url = f"{BUILDINGS_TILES_FILENAME}?v={version}"
+
+    # Chronological, not order of arrival: workers finish out of order and the
+    # client reads this list as a timeline.
+    rendered = [
+        (item, item.when, item.sun)
+        for item in results
+        if item.when is not None and item.sun is not None
+    ]
+    rendered.sort(key=lambda triple: triple[1])
+    entries: list[dict[str, object]] = []
+    for item, moment, position in rendered:
+        # urls.vegetation points a schema-2 client's toggle at the static
+        # canopy, and url is the legacy alias of the building set. The ?v=
+        # lands here because the parent is the one holding the version.
+        urls = {"vegetation": canopy_url}
+        urls.update({kind: f"{name}?v={version}" for kind, name in item.urls})
+        offset = f"{moment:%z}"
         entries.append(
             {
-                "id": instant_id,
-                "date": f"{when:%Y-%m-%d}",
-                "time": f"{when:%H:%M}",
-                "at": when.replace(tzinfo=None).isoformat(timespec="minutes"),
+                "id": item.label,
+                "date": f"{moment:%Y-%m-%d}",
+                "time": f"{moment:%H:%M}",
+                "at": moment.replace(tzinfo=None).isoformat(timespec="minutes"),
                 "utc_offset": f"{offset[:3]}:{offset[3:]}",
-                # url is the legacy alias of the building set (same semantics
-                # as the original split); urls.vegetation points a schema-2
-                # client's toggle at the static canopy.
                 "url": urls["building"],
-                "urls": dict(urls),
+                "urls": urls,
                 "sun": {
-                    "azimuth_deg": round(sun.azimuth_deg, 2),
-                    "elevation_deg": round(sun.elevation_deg, 2),
+                    "azimuth_deg": round(position.azimuth_deg, 2),
+                    "elevation_deg": round(position.elevation_deg, 2),
                 },
             }
         )

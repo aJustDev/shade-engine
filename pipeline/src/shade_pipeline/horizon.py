@@ -60,7 +60,7 @@ import numpy as np
 import numpy.typing as npt
 
 from shade_core.shade import NO_BLOCKER, Landcover
-from shade_pipeline.budget import check_worker_budget, cpu_budget
+from shade_pipeline.budget import check_worker_budget, cpu_budget, estimate_sweep_worker_bytes
 from shade_pipeline.grid import buffer_pixels
 from shade_pipeline.progress import format_duration
 
@@ -397,7 +397,11 @@ def compute_horizon_tiled(
     if workers > 1:
         # Before the pool exists, never after: an OOM at hour 9 of 12 is the
         # worst possible ending.
-        check_worker_budget(workers, params.sectors, params.tile_size, pad)
+        check_worker_budget(
+            workers,
+            estimate_sweep_worker_bytes(params.sectors, params.tile_size, pad),
+            hint=", or a smaller --tile-size",
+        )
 
     shape = (params.sectors, row1 - row0, col1 - col0)
     if scratch_dir is None:
