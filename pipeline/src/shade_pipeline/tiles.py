@@ -58,12 +58,7 @@ from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window
 
-from shade_core.artifacts import (
-    CANOPY_FILENAME,
-    COVERAGE_FILENAME,
-    LANDCOVER_FILENAME,
-    load_metadata,
-)
+from shade_core.artifacts import CANOPY_FILENAME, LANDCOVER_FILENAME, load_coverage, load_metadata
 from shade_core.config import Bbox, CityConfig
 from shade_core.shade import Landcover
 from shade_core.solar import SunPosition, sun_position
@@ -454,12 +449,8 @@ def _outside_the_area(directory: Path) -> npt.NDArray[np.bool_] | None:
     say here" (it is what roofs get), so an uncovered pixel needs no new state
     and no client change: it simply never paints.
     """
-    path = directory / COVERAGE_FILENAME
-    if not path.exists():
-        return None
-    with rasterio.open(path) as src:
-        outside: npt.NDArray[np.bool_] = src.read(1) == 0
-    return outside
+    covered = load_coverage(directory)
+    return None if covered is None else ~covered
 
 
 def _render_static(job: RenderJob) -> RenderResult:

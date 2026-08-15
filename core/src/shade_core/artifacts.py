@@ -123,6 +123,21 @@ def load_horizon(path: str | Path) -> HorizonGrid:
     return HorizonGrid(angles_deg=angles, resolution_m=resolution_m, origin=origin)
 
 
+def load_coverage(artifact_dir: str | Path) -> npt.NDArray[np.bool_] | None:
+    """The computation-area mask, or None when the city computed its whole bbox.
+
+    True where the build has data. Everything downstream needs this to tell an
+    uncomputed pixel from a computed one, because the horizon cube cannot: it
+    holds zeros for both, and zero reads as an open sky.
+    """
+    path = Path(artifact_dir) / COVERAGE_FILENAME
+    if not path.exists():
+        return None
+    with rasterio.open(path) as src:
+        mask: npt.NDArray[np.bool_] = src.read(1) != 0
+    return mask
+
+
 def load_scene(artifact_dir: str | Path) -> ShadeScene:
     """Everything the engine needs to answer queries about one city version.
 

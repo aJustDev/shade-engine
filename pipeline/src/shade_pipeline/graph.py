@@ -39,7 +39,7 @@ import rasterio.transform
 from affine import Affine
 from pyproj import Transformer
 
-from shade_core.artifacts import load_metadata
+from shade_core.artifacts import load_coverage, load_metadata
 from shade_core.config import Bbox, CityConfig
 from shade_core.routegraph import (
     FRACTIONS_FILENAME,
@@ -230,6 +230,65 @@ def sample_edges(
     return np.concatenate(xs_out), np.concatenate(ys_out), np.concatenate(ids_out)
 
 
+def edges_fully_covered(
+    sample_x: npt.NDArray[np.float64],
+    sample_y: npt.NDArray[np.float64],
+    sample_edge: npt.NDArray[np.int64],
+    n_edges: int,
+    coverage: npt.NDArray[np.bool_],
+    transform: Affine,
+) -> npt.NDArray[np.bool_]:
+    """Which edges have every sample inside the computation area.
+
+    All or nothing per edge, on purpose. Scoring a street on the half of it
+    that happens to have data would publish a sun fraction that describes a
+    different street, and the router would then compare it against fully
+    sampled ones as if they meant the same thing.
+    """
+    rows, cols = rasterio.transform.rowcol(transform, sample_x, sample_y)
+    rows, cols = np.asarray(rows), np.asarray(cols)
+    height, width = coverage.shape
+    inside = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width)
+    covered = np.zeros(len(sample_x), dtype=bool)
+    covered[inside] = coverage[rows[inside], cols[inside]]
+    uncovered = np.bincount(sample_edge[~covered], minlength=n_edges)
+    fully: npt.NDArray[np.bool_] = uncovered == 0
+    return fully
+
+
+def keep_edges(arrays: GraphArrays, keep: npt.NDArray[np.bool_]) -> GraphArrays:
+    """``arrays`` with only the kept edges, their vertices, and reindexed nodes.
+
+    Nodes left with no edge go too: a snap target no route can leave is worse
+    than no snap target, because the router finds it and then fails.
+    """
+    offsets = arrays.geom_offsets
+    kept = np.flatnonzero(keep)
+    vertices = (
+        np.concatenate([np.arange(offsets[edge], offsets[edge + 1]) for edge in kept])
+        if len(kept)
+        else np.empty(0, dtype=np.int64)
+    )
+    counts = (offsets[1:] - offsets[:-1])[keep]
+    new_offsets = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=new_offsets[1:])
+
+    edge_u, edge_v = arrays.edge_u[keep], arrays.edge_v[keep]
+    used = np.unique(np.concatenate([edge_u, edge_v])) if len(kept) else np.empty(0, dtype=np.int32)
+    remap = np.full(len(arrays.node_x), -1, dtype=np.int32)
+    remap[used] = np.arange(len(used), dtype=np.int32)
+    return GraphArrays(
+        node_x=arrays.node_x[used],
+        node_y=arrays.node_y[used],
+        edge_u=remap[edge_u],
+        edge_v=remap[edge_v],
+        edge_len=arrays.edge_len[keep],
+        geom_x=arrays.geom_x[vertices],
+        geom_y=arrays.geom_y[vertices],
+        geom_offsets=new_offsets,
+    )
+
+
 def edge_state_fractions(
     sample_x: npt.NDArray[np.float64],
     sample_y: npt.NDArray[np.float64],
@@ -252,8 +311,10 @@ def edge_state_fractions(
     the router that a shaded, tree-lined street is a wall.
 
     Out-of-grid samples and ``STATE_OUTSIDE`` pixels count as sun (and never
-    as canopy): claiming shade where there is no data would fabricate
-    exactly what a shade seeker is looking for.
+    as canopy): claiming shade where there is no data would fabricate exactly
+    what a shade seeker is looking for. That is a floor, not the answer to
+    missing data -- a city with a computation area drops those edges outright
+    (:func:`edges_fully_covered`), because "sunlit" is a claim too.
     """
     rows, cols = rasterio.transform.rowcol(transform, sample_x, sample_y)
     rows, cols = np.asarray(rows), np.asarray(cols)
@@ -377,8 +438,30 @@ def build_graph(
     sample_x, sample_y, sample_edge = sample_edges(arrays, spacing_m)
     echo(f"sampling: {len(sample_x):,} points every {spacing_m:g} m")
 
-    instants = season_preset_instants(zone)
     transform = transform_from_bbox(metadata.bbox, metadata.resolution_m)
+    coverage = load_coverage(artifact_dir)
+    if coverage is not None:
+        # The graph is cut to what the build computed. The alternative is a
+        # street with no data scored as sunlit, which is exactly what a shade
+        # seeker is trying to avoid, offered to them as a route.
+        keep = edges_fully_covered(sample_x, sample_y, sample_edge, n_edges, coverage, transform)
+        dropped = int((~keep).sum())
+        if dropped:
+            lost_km = float(arrays.edge_len[~keep].sum()) / 1000.0
+            arrays = keep_edges(arrays, keep)
+            n_nodes, n_edges = len(arrays.node_x), len(arrays.edge_len)
+            if n_edges == 0:
+                raise ValueError(
+                    "no walkable edge lies entirely inside the computation area; "
+                    "the area and the OSM network do not overlap"
+                )
+            sample_x, sample_y, sample_edge = sample_edges(arrays, spacing_m)
+            echo(
+                f"computation area: {dropped:,} edges dropped ({lost_km:.1f} km), "
+                f"{n_nodes:,} nodes and {n_edges:,} edges left"
+            )
+
+    instants = season_preset_instants(zone)
     center_lon = (bounds[0] + bounds[2]) / 2.0
     center_lat = (bounds[1] + bounds[3]) / 2.0
     fractions = np.empty((n_edges, len(instants)), dtype=np.uint8)

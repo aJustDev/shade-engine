@@ -28,6 +28,7 @@ from shade_pipeline.cli import app
 from shade_pipeline.graph import (
     GraphArrays,
     OsmnxWalkSource,
+    build_graph,
     edge_state_fractions,
     extract_graph_arrays,
     graph_ladder,
@@ -317,6 +318,32 @@ def _edge_at(artifact: RouteGraphArtifact, a: tuple[float, float], b: tuple[floa
         if last - first == 1 and ends == expected:
             return edge
     raise AssertionError(f"no straight edge between {a} and {b}")
+
+
+def test_graph_is_clipped_to_the_computation_area(masked_city: Path, tmp_path: Path) -> None:
+    """Streets the build never computed do not enter the graph at all.
+
+    An uncovered sample scores as sun, so keeping those edges would hand a
+    shade seeker a route down a street nobody measured, advertised as sunlit.
+    The cube fixture's area covers the western half, so every edge that
+    reaches east of the middle goes, and with it any node left dangling.
+    """
+    artifact_dir = tmp_path / "cube" / "v1"
+    shutil.copytree(masked_city, artifact_dir)
+    lines: list[str] = []
+    build_graph(CUBE_CITY, artifact_dir, graph_fixture.SyntheticWalkSource(), progress=lines.append)
+
+    artifact = load_route_graph(artifact_dir)
+    assert artifact.meta.edges < 5  # the unclipped fixture has 5
+    assert any("edges dropped" in line for line in lines)
+
+    middle = (CUBE_CITY.bbox[0] + CUBE_CITY.bbox[2]) / 2.0
+    assert (artifact.geom_x <= middle).all()
+    assert (artifact.node_x <= middle).all()
+    # The reindex has to leave the edges pointing at nodes that still exist.
+    assert artifact.edge_u.max() < artifact.meta.nodes
+    assert artifact.edge_v.max() < artifact.meta.nodes
+    assert artifact.meta.nodes == len(artifact.node_x)
 
 
 def test_build_graph_fractions_follow_the_cube_shadow(routed_city: Path) -> None:
