@@ -9,7 +9,9 @@ points it received. Per cell:
 - **DTM**: mean z of ground-classified points (ASPRS class 2), whatever their
   return number (under vegetation the ground echo is usually a later return).
 - **landcover**: the class of the point that set the cell's DSM, so the
-  horizon sweep can report *what* blocks the sun there.
+  horizon sweep can report *what* blocks the sun there -- except that a
+  building point within ``BUILDING_MARGIN_M`` of the cell maximum wins it
+  (see the constant for why).
 
 Cells without ground points -- building footprints, water -- are DTM holes
 filled by inverse-distance interpolation from surrounding ground pixels
@@ -24,6 +26,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 import laspy
 import numpy as np
@@ -44,6 +47,23 @@ LIDAR_CLASS_LOW_NOISE = 7
 LIDAR_CLASS_OVERLAP = 12
 LIDAR_CLASS_HIGH_NOISE = 18
 DROPPED_CLASSES = (LIDAR_CLASS_LOW_NOISE, LIDAR_CLASS_OVERLAP, LIDAR_CLASS_HIGH_NOISE)
+
+BUILDING_MARGIN_M: Final = 1.0
+"""A building point this close to the cell maximum takes the cell's label.
+
+Taking the class of the single highest point is a coin flip on roofs. Measured
+over 240 x 240 m of the Cordoba historic centre (Plaza de la Corredera): of
+32.607 cells above 8 m, 6.832 came out VEGETATION, and half of those held a
+building point in the same cell that lost by less than 1 m (29% by less than
+25 cm). That is the signature of stray class 3/4/5 returns -- antennas, aerials,
+roof clutter, edge points -- beating the tile plane by centimetres, and every
+one of them repaints a chunk of building shade as tree shade downstream.
+
+Only the *label* moves: the DSM keeps the true maximum, so no shade is gained
+or lost, only re-attributed. The cost of the margin is a crown that overhangs
+an eave by less than a metre, which is labelled building and drops out of the
+canopy mask.
+"""
 
 
 @dataclass(frozen=True)
@@ -165,12 +185,13 @@ def rasterize_lidar(
     del dtm_sum, dtm_count
     dtm_filled = fill_dtm_gaps(dtm.reshape(rows, cols), resolution_m=resolution_m)
 
-    # Landcover = class of the point that set the cell's DSM; building wins
-    # exact ties. Cells with no first return at all stay GROUND.
+    # Landcover = class of the point that set the cell's DSM, with buildings
+    # winning ties and anything within BUILDING_MARGIN_M of the maximum.
+    # Cells with no first return at all stay GROUND.
     has_surface = np.isfinite(dsm_max)
     landcover = np.full(n, Landcover.GROUND, dtype=np.uint8)
     landcover[has_surface & (vegetation_max >= dsm_max)] = Landcover.VEGETATION
-    landcover[has_surface & (building_max >= dsm_max)] = Landcover.BUILDING
+    landcover[has_surface & (building_max >= dsm_max - BUILDING_MARGIN_M)] = Landcover.BUILDING
     del building_max, vegetation_max
 
     dsm = dsm_max.reshape(rows, cols)

@@ -75,6 +75,19 @@ def test_landcover_tie_prefers_building(tmp_path: Path) -> None:
     assert stack.landcover[0, 0] == Landcover.BUILDING
 
 
+def test_building_wins_a_vegetation_point_just_above_it(tmp_path: Path) -> None:
+    """An aerial 30 cm over the tiles does not turn the roof into a tree."""
+    stack = _rasterize(tmp_path, [0.5, 0.5, 2.5], [3.5, 3.5, 1.5], [5.3, 5.0, 0.0], [5, 6, 2])
+    assert stack.dsm[0, 0] == 5.3  # the height is untouched: only the label moves
+    assert stack.landcover[0, 0] == Landcover.BUILDING
+
+
+def test_a_real_crown_over_a_roof_stays_vegetation(tmp_path: Path) -> None:
+    """Three metres clear of the roof is a tree, not classification noise."""
+    stack = _rasterize(tmp_path, [0.5, 0.5, 2.5], [3.5, 3.5, 1.5], [8.0, 5.0, 0.0], [5, 6, 2])
+    assert stack.landcover[0, 0] == Landcover.VEGETATION
+
+
 def test_points_outside_bbox_are_dropped(tmp_path: Path) -> None:
     stack = _rasterize(tmp_path, [0.5, 10.5], [3.5, 3.5], [0.0, 99.0], [2, 6])
     assert float(stack.dsm.max()) == 0.0
