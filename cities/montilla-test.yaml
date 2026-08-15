@@ -1,0 +1,20 @@
+id: montilla-test
+name: Montilla (recorte de pruebas)
+country: ES
+timezone: Europe/Madrid
+crs: EPSG:25830 # UTM 30N ETRS89, igual que montilla
+# Recorte del casco de Montilla: 1489 x 860 m = 1,28 km2, dentro del bbox de
+# montilla.yaml y con las 12 teselas LAZ que necesita (353..356 x 4159..4161,
+# ya con el buffer de 500 m) en data/lidar/montilla. Es el banco de pruebas del
+# barrido: un build entero en minutos en vez de en horas.
+#   shade-engine build montilla-test --lidar-dir data/lidar/montilla
+bbox: [354046, 4159986, 355535, 4160846]
+resolution_m: 1.0
+horizon_sectors: 64
+horizon_max_distance_m: 500 # el mismo radio que las ciudades de verdad
+sources:
+  lidar: pnoa
+  pnoa_series: LIDA3
+  lidar_coverage: PNOA 3a cobertura 2024, 5 pt/m2, clasificacion NPC01
+attribution:
+  - Obra derivada de PNOA-cob3 2022-2025 CC-BY 4.0 scne.es
