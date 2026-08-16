@@ -1,0 +1,30 @@
+id: cordoba-test
+name: Cordoba (recorte de pruebas)
+country: ES
+timezone: Europe/Madrid
+crs: EPSG:25830 # UTM 30N ETRS89, igual que cordoba
+# Recorte del casco de Cordoba: 2000 x 2000 m = 4,0 km2, dentro del bbox de
+# cordoba.yaml y con las 16 teselas LAZ que necesita (342..345 x 4193..4196,
+# ya con el buffer de 500 m) en data/lidar/cordoba. Es el banco de pruebas de
+# la limpieza de vegetacion: un build entero en minutos en vez de en horas.
+#   shade-engine build cordoba-test --lidar-dir data/lidar/cordoba
+#
+# El recorte se eligio por los casos que contiene, no por comodidad:
+#   - Plaza de la Corredera: dos losas planas a 2,6 m y un tendido de 14 m que
+#     el PNOA etiqueta como vegetacion, en una plaza sin un solo arbol.
+#   - Plaza del Socorro y Patio de los Naranjos: naranjos reales y podados,
+#     casi tan planos como una lona. Son la prueba de que el filtro no se pasa.
+#   - Jardines de Colon y de la Agricultura: arbolado de porte, que no se toca.
+bbox: [342900, 4193700, 344900, 4195700]
+resolution_m: 1.0
+horizon_sectors: 64
+horizon_max_distance_m: 500 # el mismo radio que las ciudades de verdad
+tree_inventory: # el mismo inventario que cordoba.yaml; ver ADR-021
+  wfs: https://ide.cordoba.es/geoserver/idecordoba/wfs
+  layers: [idecordoba:Arbolado, idecordoba:palmeras]
+sources:
+  lidar: pnoa
+  pnoa_series: LIDA3
+  lidar_coverage: PNOA 3a cobertura 2024, 5 pt/m2, clasificacion NPC01
+attribution:
+  - Obra derivada de PNOA-cob3 2022-2025 CC-BY 4.0 scne.es
