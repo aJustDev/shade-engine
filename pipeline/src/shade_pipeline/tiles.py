@@ -106,11 +106,16 @@ Pinned so the phase's memory is a number instead of a fraction of whatever
 machine is running -- which is what lets :mod:`shade_pipeline.budget` price a
 worker at all.
 
-The size is measured, not assumed. 128 MiB looked defensible on the argument
-that a zoom walks its tiles once and never returns, and it made one instant of
-``cordoba-test`` take **more than twice as long**: neighbouring output tiles do
-share source blocks, because a warped window reads a neighbourhood. 512 MiB
-sits at GDAL's own default on this machine and shows no such penalty.
+512 MiB because that is what GDAL's own default came to on the machine this
+was developed on, so pinning it changes nothing that was ever measured while
+making the number independent of the host.
+
+A smaller cap was tried and looked much slower, but those timings were taken
+against a moving background (competing renders, and a laptop that spent part
+of the afternoon throttled on battery), so the honest claim is only this: 128
+MiB was not shown to be safe, and 512 MiB reproduces the behaviour every other
+measurement here was made under. Retiming it on a quiet machine is cheap if
+the phase ever needs the memory back.
 """
 
 TileState = npt.NDArray[np.uint8]
