@@ -154,16 +154,23 @@ def estimate_sweep_worker_bytes(sectors: int, tile_size: int, pad_px: int) -> in
     return cubes + surfaces + working + in_flight
 
 
-TILES_BYTES_PER_PIXEL: Final = 28
+TILES_BYTES_PER_PIXEL: Final = 26
 """Peak bytes per raster pixel while one instant renders.
 
-Measured on Cordoba's artifacts (7000 x 8000 = 56 Mpx): the full path with both
-horizon cubes peaks at 1.481 MiB of process high-water mark, or 27,7 bytes per
-pixel. Most of it is the two float32 horizons and the ufunc temporaries of
-their interpolation; the state raster and the masks are a byte each.
+Four float32 fields (the two horizon margins and the two signed distances)
+plus two uint8 labels is 18 bytes; the rest is the float64 that
+``distance_transform_edt`` insists on, held one at a time. Nothing here scales
+with zoom: the tile grid never exists as an array, only 256 px windows do.
 """
-TILES_BASE_BYTES: Final = 250 * 1024 * 1024
-"""Interpreter, numpy, rasterio and GDAL before a single pixel is read (~180 MiB)."""
+TILES_BASE_BYTES: Final = 360 * 1024 * 1024
+"""What one render worker costs before any city-sized array exists.
+
+Interpreter, numpy, rasterio and GDAL are ~180 MiB of it, and GDAL's block
+cache is the rest -- pinned by ``tiles.GDAL_CACHE_MB`` rather than left at its
+default of 5% of physical RAM, precisely so this stays a constant instead of a
+fraction of whatever machine is running. Neither term grows with the zoom: the
+tile grid never exists as an array, only 256 px windows do.
+"""
 
 
 def estimate_tiles_worker_bytes(rows: int, cols: int) -> int:

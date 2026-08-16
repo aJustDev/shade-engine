@@ -9,9 +9,13 @@ and the reason serving these needs no tile server, only Caddy.
 
 Zoom bounds: Web Mercator inflates distances by 1/cos(lat) (see
 shade-docs: learning/web-mercator.md), so at Cordoba's latitude (37.9 N) zoom 17
-is 156543/2^17 * cos(37.9) = 0.94 m/px -- our native 1 m resolution. Higher
-zooms would only upsample (the map client already overzooms past max_zoom);
-zoom 12 (~30 m/px) fits the whole city on two tiles.
+is 156543/2^17 * cos(37.9) = 0.94 m/px -- our native 1 m resolution -- and zoom
+12 (~30 m/px) fits the whole city on two tiles. The pyramid nevertheless goes
+to zoom 19, because a tile is no longer a resampled verdict: the horizon margin
+travels to the tile grid as a continuous field and the sign is taken there (see
+:func:`write_pyramid`), so the levels past the raster carry sub-pixel boundary
+position rather than magnified texels. That is what stops a shadow edge from
+being a staircase of whole metres, and it is the only reason to render them.
 
 Each instant becomes TWO cast-shade files sharing one color -- buildings
 (plus "other") and tree shadow -- independently toggleable (hiding the
@@ -36,7 +40,7 @@ import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
@@ -78,12 +82,39 @@ from shade_pipeline.shade_raster import (
     STATE_SHADE_OTHER,
     STATE_SHADE_VEGETATION,
     STATE_SUN,
-    compute_state_raster,
+    compose_state,
+    read_shade_fields,
+    signed_distance,
 )
 
 DEFAULT_MIN_ZOOM: Final = 12
-DEFAULT_MAX_ZOOM: Final = 17  # ~1 m/px at lat 37.9; see module docstring
+DEFAULT_MAX_ZOOM: Final = 19
+"""Deepest zoom rendered: ~0.23 m/px at lat 37.9, four times the raster.
+
+It used to be 17, because 17 is the native 1 m and anything past it could only
+repeat pixels. Since the verdict is thresholded on the tile grid rather than at
+1 m (see :func:`write_pyramid`), the deeper levels carry real sub-pixel
+position instead of magnified texels, which is where a shadow edge stops being
+a staircase. Two levels cost about 4x the pyramid on disk -- measured, not
+16x, because the added tiles are mostly flat and compress to nothing.
+"""
 TILE_SIZE: Final = 256
+GDAL_CACHE_MB: Final = 512
+"""Block cache one render worker is allowed, in MiB (GDAL's default is 5% of RAM).
+
+Pinned so the phase's memory is a number instead of a fraction of whatever
+machine is running -- which is what lets :mod:`shade_pipeline.budget` price a
+worker at all.
+
+The size is measured, not assumed. 128 MiB looked defensible on the argument
+that a zoom walks its tiles once and never returns, and it made one instant of
+``cordoba-test`` take **more than twice as long**: neighbouring output tiles do
+share source blocks, because a warped window reads a neighbourhood. 512 MiB
+sits at GDAL's own default on this machine and shows no such penalty.
+"""
+
+TileState = npt.NDArray[np.uint8]
+"""One tile's state codes, ``TILE_SIZE`` square."""
 TILES_DIRNAME: Final = "tiles"
 MANIFEST_FILENAME: Final = "index.json"
 BASEMAP_FILENAME: Final = "basemap.pmtiles"
@@ -245,6 +276,199 @@ def _encode_png(state_tile: npt.NDArray[np.uint8], palette: tuple[bytes, bytes])
     return buffer.getvalue()
 
 
+@contextmanager
+def _as_dataset(
+    bands: npt.NDArray[np.floating] | npt.NDArray[np.uint8],
+    transform: Affine,
+    crs: str,
+    nodata: float | None,
+) -> Generator[rasterio.DatasetReader]:
+    """A (bands, rows, cols) stack as an in-memory GTiff, open for reading.
+
+    In RAM and not on scratch, which was measured rather than assumed: the same
+    instant of ``cordoba-test`` renders in 68 s from a ``MemoryFile`` and in
+    137 s from a temporary GTiff. The warper re-reads blocks as it walks
+    neighbouring tiles, and paying the file system for that doubles the phase.
+    The cost is one extra copy of the stack while the pyramid is written, which
+    :mod:`shade_pipeline.budget` prices.
+    """
+    count, rows, cols = bands.shape
+    with MemoryFile() as memory:
+        with memory.open(
+            driver="GTiff",
+            width=cols,
+            height=rows,
+            count=count,
+            dtype=bands.dtype.name,
+            crs=crs,
+            transform=transform,
+            nodata=nodata,
+        ) as dataset:
+            dataset.write(bands)
+        with memory.open() as source:
+            yield source
+
+
+@dataclass(frozen=True)
+class PyramidOutput:
+    """One file a warp pass produces: where it goes and how a tile is made."""
+
+    path: Path
+    compose: Callable[[npt.NDArray[np.float32] | None, npt.NDArray[np.uint8] | None], TileState]
+    colors: Mapping[int, tuple[int, int, int, int]]
+    metadata: dict[str, object] | None = None
+
+
+def write_pyramids(
+    outputs: Sequence[PyramidOutput],
+    *,
+    continuous: npt.NDArray[np.float32] | None,
+    categorical: npt.NDArray[np.uint8] | None,
+    categorical_nodata: float | None = None,
+    transform: Affine,
+    crs: str,
+    bounds: Bbox,
+    min_zoom: int = DEFAULT_MIN_ZOOM,
+    max_zoom: int = DEFAULT_MAX_ZOOM,
+) -> list[tuple[int, int]]:
+    """Warp the sources once and write every output from it; (written, skipped) each.
+
+    Zooms are walked ascending and tiles within a zoom in Hilbert (tileid)
+    order, so each writer stays clustered. Per zoom one ``WarpedVRT`` per source
+    reprojects onto a Web Mercator grid anchored on the tile lattice, and every
+    tile is a plain 256 px window read.
+
+    **The verdict is composed per tile, not before.** ``continuous`` carries
+    fields whose sign is the answer (the horizon margin, the signed distance of
+    a mask); they are resampled and only then compared against zero by each
+    output's ``compose``, so the boundary lands at a sub-pixel position and its
+    corners come out rounded instead of stepping in whole metres.
+    ``categorical`` carries labels, which have no meaningful average and travel
+    nearest.
+
+    Resampling of the continuous stack follows the direction of the zoom:
+    ``bilinear`` where a zoom is finer than the raster (the case this exists
+    for) and ``average`` where it is coarser, because a 2x2 bilinear probe of a
+    downsample aliases thin shadows that an area mean keeps.
+
+    **Several outputs share one pass on purpose.** An instant's two cast-shade
+    sets differ only in how the same composed state is folded, and warping is
+    what the phase costs -- rendering them separately would resample every tile
+    of the city twice for nothing.
+
+    Fully transparent tiles (all sun or outside) are skipped above
+    ``min_zoom``: an absent tile renders as nothing, and most of a pyramid
+    is sun. At ``min_zoom`` tiles are always written -- the writer cannot
+    finalize an empty archive, and deduplication stores the shared blank
+    PNG only once.
+    """
+    west, south, east, north = bounds
+    palettes = [palette_bytes(output.colors) for output in outputs]
+    counts = [[0, 0] for _ in outputs]
+    source_resolution = abs(transform.a)
+    # GDAL's block cache defaults to 5% of physical RAM *per process*, which on
+    # a render pool is several GiB of budget nobody asked for. Capped here
+    # because the access pattern earns almost nothing from it: each zoom walks
+    # its tiles once, so a block is read and never wanted again.
+    stack_env = rasterio.Env(GDAL_CACHEMAX=GDAL_CACHE_MB)
+    ground_scale = math.cos(math.radians((south + north) / 2.0))
+    with ExitStack() as stack:
+        stack.enter_context(stack_env)
+        sources: list[tuple[rasterio.DatasetReader, bool, float | None]] = []
+        if continuous is not None:
+            sources.append(
+                (
+                    stack.enter_context(_as_dataset(continuous, transform, crs, float("nan"))),
+                    True,
+                    float("nan"),
+                )
+            )
+        if categorical is not None:
+            # Nodata is the caller's call, and the two paths need opposite
+            # answers: a lone state raster wants STATE_OUTSIDE beyond its edge,
+            # while the render path must NOT mask 255, which is a real blocker
+            # class (NO_BLOCKER). There the continuous NaN marks what is off
+            # the raster, so the fill value never gets read.
+            sources.append(
+                (
+                    stack.enter_context(
+                        _as_dataset(categorical, transform, crs, categorical_nodata)
+                    ),
+                    False,
+                    categorical_nodata,
+                )
+            )
+        writers = [Writer(stack.enter_context(open(output.path, "wb"))) for output in outputs]
+        for zoom in range(min_zoom, max_zoom + 1):
+            tiles = sorted(
+                mercantile.tiles(west, south, east, north, [zoom]),
+                key=lambda t: int(zxy_to_tileid(t.z, t.x, t.y)),
+            )
+            x0 = min(t.x for t in tiles)
+            y0 = min(t.y for t in tiles)
+            resolution = _WEB_MERCATOR_CIRCUMFERENCE / (2**zoom * TILE_SIZE)
+            upsampling = resolution * ground_scale <= source_resolution
+            corner = mercantile.xy_bounds(x0, y0, zoom)
+            grid = {
+                "crs": "EPSG:3857",
+                "transform": from_origin(corner.left, corner.top, resolution, resolution),
+                "width": (max(t.x for t in tiles) - x0 + 1) * TILE_SIZE,
+                "height": (max(t.y for t in tiles) - y0 + 1) * TILE_SIZE,
+            }
+            with ExitStack() as warps:
+                vrts = [
+                    warps.enter_context(
+                        WarpedVRT(
+                            source,
+                            resampling=(
+                                (Resampling.bilinear if upsampling else Resampling.average)
+                                if smooth
+                                else Resampling.nearest
+                            ),
+                            nodata=nodata,
+                            **grid,
+                        )
+                    )
+                    for source, smooth, nodata in sources
+                ]
+                fields = vrts[0] if continuous is not None else None
+                labels = vrts[-1] if categorical is not None else None
+                for tile in tiles:
+                    window = Window(
+                        (tile.x - x0) * TILE_SIZE,
+                        (tile.y - y0) * TILE_SIZE,
+                        TILE_SIZE,
+                        TILE_SIZE,
+                    )
+                    read_fields = None if fields is None else fields.read(window=window)
+                    read_labels = None if labels is None else labels.read(window=window)
+                    tileid = int(zxy_to_tileid(tile.z, tile.x, tile.y))
+                    for index, output in enumerate(outputs):
+                        data = output.compose(read_fields, read_labels)
+                        blank = bool(np.all((data == STATE_SUN) | (data == STATE_OUTSIDE)))
+                        if blank and zoom > min_zoom:
+                            counts[index][1] += 1
+                            continue
+                        writers[index].write_tile(tileid, _encode_png(data, palettes[index]))
+                        counts[index][0] += 1
+        header = {
+            "tile_type": TileType.PNG,
+            # PNG is already compressed; a GZIP wrapper here would make
+            # clients "decompress" bytes that are not further encoded.
+            "tile_compression": Compression.NONE,
+            "min_lon_e7": round(west * 1e7),
+            "min_lat_e7": round(south * 1e7),
+            "max_lon_e7": round(east * 1e7),
+            "max_lat_e7": round(north * 1e7),
+            "center_zoom": (min_zoom + max_zoom) // 2,
+            "center_lon_e7": round((west + east) / 2 * 1e7),
+            "center_lat_e7": round((south + north) / 2 * 1e7),
+        }
+        for writer, output in zip(writers, outputs, strict=True):
+            writer.finalize(header, output.metadata or {})
+    return [(written, skipped) for written, skipped in counts]
+
+
 def write_instant_pmtiles(
     path: Path,
     state: npt.NDArray[np.uint8],
@@ -257,90 +481,32 @@ def write_instant_pmtiles(
     metadata: dict[str, object] | None = None,
     colors: Mapping[int, tuple[int, int, int, int]] = SHADE_COLORS,
 ) -> tuple[int, int]:
-    """Warp a state raster into one PMTiles pyramid; returns (written, skipped).
+    """Pyramid from a finished state raster: categorical, nearest, no threshold.
 
-    Zooms are walked ascending and tiles within a zoom in Hilbert (tileid)
-    order, so the writer stays clustered. Per zoom, one ``WarpedVRT``
-    reprojects the native raster to a Web Mercator grid anchored on the
-    tile lattice (nearest resampling: states are categorical), and every
-    tile is a plain 256 px window read.
-
-    Fully transparent tiles (all sun or outside) are skipped above
-    ``min_zoom``: an absent tile renders as nothing, and most of a pyramid
-    is sun. At ``min_zoom`` tiles are always written -- the writer cannot
-    finalize an empty archive, and deduplication stores the shared blank
-    PNG only once.
+    The plain case, for callers that already hold the verdict. The render path
+    does not take it -- it hands :func:`write_pyramid` the continuous fields
+    precisely so the verdict is not fixed at 1 m.
     """
-    west, south, east, north = bounds
-    palette = palette_bytes(colors)
-    written = 0
-    skipped = 0
-    with MemoryFile() as memory:
-        rows, cols = state.shape
-        with memory.open(
-            driver="GTiff",
-            width=cols,
-            height=rows,
-            count=1,
-            dtype="uint8",
-            crs=crs,
-            transform=transform,
-            nodata=int(STATE_OUTSIDE),
-        ) as dataset:
-            dataset.write(state, 1)
-        with memory.open() as source, open(path, "wb") as sink:
-            writer = Writer(sink)
-            for zoom in range(min_zoom, max_zoom + 1):
-                tiles = sorted(
-                    mercantile.tiles(west, south, east, north, [zoom]),
-                    key=lambda t: int(zxy_to_tileid(t.z, t.x, t.y)),
-                )
-                x0 = min(t.x for t in tiles)
-                y0 = min(t.y for t in tiles)
-                resolution = _WEB_MERCATOR_CIRCUMFERENCE / (2**zoom * TILE_SIZE)
-                corner = mercantile.xy_bounds(x0, y0, zoom)
-                with WarpedVRT(
-                    source,
-                    crs="EPSG:3857",
-                    transform=from_origin(corner.left, corner.top, resolution, resolution),
-                    width=(max(t.x for t in tiles) - x0 + 1) * TILE_SIZE,
-                    height=(max(t.y for t in tiles) - y0 + 1) * TILE_SIZE,
-                    resampling=Resampling.nearest,
-                    nodata=float(STATE_OUTSIDE),
-                ) as vrt:
-                    for tile in tiles:
-                        window = Window(
-                            (tile.x - x0) * TILE_SIZE,
-                            (tile.y - y0) * TILE_SIZE,
-                            TILE_SIZE,
-                            TILE_SIZE,
-                        )
-                        # List index: rasterio's int-index path trips a numpy
-                        # 2.5 in-place reshape deprecation.
-                        data = vrt.read([1], window=window)[0]
-                        blank = bool(np.all((data == STATE_SUN) | (data == STATE_OUTSIDE)))
-                        if blank and zoom > min_zoom:
-                            skipped += 1
-                            continue
-                        writer.write_tile(
-                            int(zxy_to_tileid(tile.z, tile.x, tile.y)), _encode_png(data, palette)
-                        )
-                        written += 1
-            header = {
-                "tile_type": TileType.PNG,
-                # PNG is already compressed; a GZIP wrapper here would make
-                # clients "decompress" bytes that are not further encoded.
-                "tile_compression": Compression.NONE,
-                "min_lon_e7": round(west * 1e7),
-                "min_lat_e7": round(south * 1e7),
-                "max_lon_e7": round(east * 1e7),
-                "max_lat_e7": round(north * 1e7),
-                "center_zoom": (min_zoom + max_zoom) // 2,
-                "center_lon_e7": round((west + east) / 2 * 1e7),
-                "center_lat_e7": round((south + north) / 2 * 1e7),
-            }
-            writer.finalize(header, metadata or {})
-    return written, skipped
+
+    def take_state(
+        _fields: npt.NDArray[np.float32] | None, labels: npt.NDArray[np.uint8] | None
+    ) -> TileState:
+        assert labels is not None
+        band: TileState = labels[0]
+        return band
+
+    (result,) = write_pyramids(
+        [PyramidOutput(path=path, compose=take_state, colors=colors, metadata=metadata)],
+        continuous=None,
+        categorical=state[np.newaxis, ...],
+        categorical_nodata=float(STATE_OUTSIDE),
+        transform=transform,
+        crs=crs,
+        bounds=bounds,
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+    )
+    return result
 
 
 @dataclass(frozen=True)
@@ -423,39 +589,86 @@ def render_unit(job: RenderJob) -> RenderResult:
 
 def _write(
     job: RenderJob,
-    filename: str,
-    state: npt.NDArray[np.uint8],
-    label: str,
-    colors: Mapping[int, tuple[int, int, int, int]],
-) -> FileSummary:
-    written, skipped = write_instant_pmtiles(
-        job.tiles_dir / filename,
-        state,
-        job.transform,
-        job.crs,
-        job.bounds,
+    plans: Sequence[
+        tuple[
+            str,
+            Callable[[npt.NDArray[np.float32] | None, npt.NDArray[np.uint8] | None], TileState],
+            str,
+            Mapping[int, tuple[int, int, int, int]],
+        ]
+    ],
+    *,
+    continuous: npt.NDArray[np.float32],
+    categorical: npt.NDArray[np.uint8],
+) -> list[FileSummary]:
+    """Write every plan (filename, compose, label, colors) in a single warp pass."""
+    results = write_pyramids(
+        [
+            PyramidOutput(
+                path=job.tiles_dir / filename,
+                compose=compose,
+                colors=colors,
+                metadata={
+                    "name": f"{job.city_name} {label}",
+                    "attribution": " / ".join(job.attribution),
+                },
+            )
+            for filename, compose, label, colors in plans
+        ],
+        continuous=continuous,
+        categorical=categorical,
+        transform=job.transform,
+        crs=job.crs,
+        bounds=job.bounds,
         min_zoom=job.min_zoom,
         max_zoom=job.max_zoom,
-        metadata={
-            "name": f"{job.city_name} {label}",
-            "attribution": " / ".join(job.attribution),
-        },
-        colors=colors,
     )
-    return FileSummary(filename, written, skipped, (job.tiles_dir / filename).stat().st_size)
+    return [
+        FileSummary(filename, written, skipped, (job.tiles_dir / filename).stat().st_size)
+        for (filename, _compose, _label, _colors), (written, skipped) in zip(
+            plans, results, strict=True
+        )
+    ]
 
 
-def _outside_the_area(directory: Path) -> npt.NDArray[np.bool_] | None:
-    """Pixels the build never computed, or None when the city has no area.
+def _uncovered_band(directory: Path, shape: tuple[int, ...]) -> npt.NDArray[np.uint8]:
+    """1 where the build never computed anything, 0 elsewhere; all zeros if no area.
 
     Every raster of a city covers the whole bbox, area or no area, so the
     layers have to hide what was never computed themselves. STATE_OUTSIDE is
     already transparent in all three palettes and already means "nothing to
     say here" (it is what roofs get), so an uncovered pixel needs no new state
     and no client change: it simply never paints.
+
+    It travels as a categorical band rather than as a mask applied up front
+    because the state is now composed per tile, and this is one of its inputs.
     """
     covered = load_coverage(directory)
-    return None if covered is None else ~covered
+    if covered is None:
+        return np.zeros(shape, dtype=np.uint8)
+    return (~covered).astype(np.uint8)
+
+
+def _mask_compose(
+    present: int,
+) -> Callable[[npt.NDArray[np.float32] | None, npt.NDArray[np.uint8] | None], TileState]:
+    """Tile from one signed-distance band: inside the mask gets ``present``.
+
+    The threshold is the whole point of doing it here: a mask resampled as a
+    label steps in whole source pixels, while the zero crossing of its
+    resampled distance lands between them and rounds the corners.
+    """
+
+    def compose(
+        fields: npt.NDArray[np.float32] | None, labels: npt.NDArray[np.uint8] | None
+    ) -> TileState:
+        assert fields is not None and labels is not None
+        distance = fields[0]
+        state = np.where(distance > 0.0, np.uint8(present), np.uint8(STATE_SUN)).astype(np.uint8)
+        state[np.isnan(distance) | (labels[0] != 0)] = STATE_OUTSIDE
+        return state
+
+    return compose
 
 
 def _render_static(job: RenderJob) -> RenderResult:
@@ -465,23 +678,30 @@ def _render_static(job: RenderJob) -> RenderResult:
     """
     start = time.monotonic()
     directory = Path(job.artifact_dir)
-    outside = _outside_the_area(directory)
     if job.static == "canopy":
         with rasterio.open(directory / CANOPY_FILENAME) as src:
             mask = src.read()[0] != 0
-        state = np.where(mask, STATE_SHADE_VEGETATION, STATE_SUN).astype(np.uint8)
-        if outside is not None:
-            state[outside] = STATE_OUTSIDE
-        summary = _write(job, CANOPY_TILES_FILENAME, state, "tree canopy", CANOPY_COLORS)
+        filename, present, label, colors = (
+            CANOPY_TILES_FILENAME,
+            STATE_SHADE_VEGETATION,
+            "tree canopy",
+            CANOPY_COLORS,
+        )
     else:
         with rasterio.open(directory / LANDCOVER_FILENAME) as src:
             mask = src.read()[0] == Landcover.BUILDING
-        state = np.where(mask, STATE_SHADE_BUILDING, STATE_SUN).astype(np.uint8)
-        if outside is not None:
-            state[outside] = STATE_OUTSIDE
-        summary = _write(
-            job, BUILDINGS_TILES_FILENAME, state, "buildings (lidar)", BUILDINGS_COLORS
+        filename, present, label, colors = (
+            BUILDINGS_TILES_FILENAME,
+            STATE_SHADE_BUILDING,
+            "buildings (lidar)",
+            BUILDINGS_COLORS,
         )
+    (summary,) = _write(
+        job,
+        [(filename, _mask_compose(present), label, colors)],
+        continuous=signed_distance(mask)[np.newaxis, ...],
+        categorical=_uncovered_band(directory, mask.shape)[np.newaxis, ...],
+    )
     return RenderResult(
         label=summary.filename,
         files=(summary,),
@@ -490,62 +710,89 @@ def _render_static(job: RenderJob) -> RenderResult:
     )
 
 
+def _cast_shade_compose(
+    kind: str,
+) -> Callable[[npt.NDArray[np.float32] | None, npt.NDArray[np.uint8] | None], TileState]:
+    """One tile of a cast-shade set, thresholded on the tile's own grid.
+
+    Two disjoint sets of the same color, cut by "would this hold without the
+    trees" and not by which obstacle won the argmax -- which is why
+    ``STATE_SHADE_BOTH`` goes in the building set. Hiding the trees set is then
+    literally the street without its trees, and hiding the buildings set is the
+    shade the trees *add*. Disjoint matters: both files paint at
+    ``OVERLAY_ALPHA``, so an overlap would double-darken.
+    """
+
+    def compose(
+        fields: npt.NDArray[np.float32] | None, labels: npt.NDArray[np.uint8] | None
+    ) -> TileState:
+        assert fields is not None and labels is not None
+        margin, margin_noveg, roof_distance, canopy_distance = fields
+        blocker, uncovered = labels
+        under_canopy = canopy_distance > 0.0
+        # NaN marks what the warp filled beyond the raster: sunlit is precisely
+        # the wrong answer where there is no data, and neither is roof.
+        state = compose_state(
+            shaded=margin > 0.0,
+            holds=margin_noveg > 0.0,
+            blocker=blocker,
+            under_canopy=under_canopy,
+            roof=roof_distance > 0.0,
+            outside=np.isnan(margin) | (uncovered != 0),
+        )
+        # Under-canopy pixels move to the static canopy layer: the per-instant
+        # sets keep only *cast* shade. Dropped pixels become STATE_SUN,
+        # keeping STATE_OUTSIDE strictly for roofs and uncovered pixels. Under
+        # a crown that also sits in a building's shadow the state is BOTH,
+        # which stays: felling that tree would not put the pixel in the sun.
+        state[under_canopy & (state == STATE_SHADE_VEGETATION)] = STATE_SUN
+        if kind == "building":
+            state[state == STATE_SHADE_VEGETATION] = STATE_SUN
+            state[state == STATE_SHADE_BOTH] = STATE_SHADE_BUILDING
+        else:
+            state[(state != STATE_SHADE_VEGETATION) & (state != STATE_OUTSIDE)] = STATE_SUN
+        return state
+
+    return compose
+
+
 def _render_instant(job: RenderJob) -> RenderResult:
-    """One instant: the state raster, then its two disjoint cast-shade sets."""
+    """One instant: its continuous fields, then its two disjoint cast-shade sets.
+
+    Nothing here decides sol/sombra. The fields go to the pyramid as they are
+    and the comparison happens per tile, which is what puts the shadow edge at
+    a sub-pixel position instead of on the 1 m lattice.
+    """
     assert job.when is not None and job.sun is not None  # the parent validated both
     start = time.monotonic()
     directory = Path(job.artifact_dir)
-    state = compute_state_raster(directory, job.sun)
+    fields = read_shade_fields(directory, job.sun)
+    continuous = np.stack(
+        [fields.margin, fields.margin_noveg, fields.roof_distance, fields.canopy_distance]
+    )
+    categorical = np.stack([fields.blocker, _uncovered_band(directory, fields.blocker.shape)])
+    del fields
     state_s = time.monotonic() - start
 
-    # Roof and canopy masks, applied AFTER compute_state_raster so that
-    # function stays in pixel parity with is_shaded: both are presentation
-    # only. Roofs become STATE_OUTSIDE (the warp nodata, alpha 0 in the
-    # palette) rather than STATE_SUN, so a decoded tile still distinguishes
-    # "roof" from "sunlit street".
-    with rasterio.open(directory / LANDCOVER_FILENAME) as src:
-        roof = src.read()[0] == Landcover.BUILDING
-    with rasterio.open(directory / CANOPY_FILENAME) as src:
-        canopy = src.read()[0] != 0
-    state[roof] = STATE_OUTSIDE
-    outside = _outside_the_area(directory)
-    if outside is not None:
-        # Before anything else reads it: outside the computation area the cubes
-        # are zeros, and compute_state_raster has already read those zeros as an
-        # open sky. Sunlit is precisely the wrong answer where there is no data.
-        state[outside] = STATE_OUTSIDE
-    # Under-canopy pixels move to the static canopy layer: the per-instant sets
-    # keep only *cast* shade. Dropped pixels become STATE_SUN (transparent),
-    # keeping STATE_OUTSIDE strictly for roofs and out-of-coverage pixels.
-    # Under a crown that also sits in a building's shadow the state is BOTH,
-    # which stays here: felling that tree would not put the pixel in the sun.
-    state[canopy & (state == STATE_SHADE_VEGETATION)] = STATE_SUN
-    del roof, canopy
-
-    # Two disjoint cast-shade sets of the same color, cut by "would this hold
-    # without the trees" and not by which obstacle won the argmax -- which is
-    # why STATE_SHADE_BOTH goes in the building set. Hiding the trees set is
-    # then literally the street without its trees, and hiding the buildings set
-    # is the shade the trees *add*. Disjoint matters: both files paint at
-    # OVERLAY_ALPHA, so an overlap would double-darken.
     instant_id = f"{job.when:%Y%m%dT%H%M}"
-    building_state = state.copy()
-    building_state[state == STATE_SHADE_VEGETATION] = STATE_SUN
-    building_state[state == STATE_SHADE_BOTH] = STATE_SHADE_BUILDING
-    trees_state = state.copy()
-    trees_state[(state != STATE_SHADE_VEGETATION) & (state != STATE_OUTSIDE)] = STATE_SUN
-    del state
-
-    files = []
-    urls = []
-    for kind, layer_state in (("building", building_state), ("trees", trees_state)):
-        filename = f"shade-{instant_id}-{kind}.pmtiles"
-        files.append(
-            _write(
-                job, filename, layer_state, f"shade ({kind}) {job.when.isoformat()}", SHADE_COLORS
+    kinds = ("building", "trees")
+    # Both sets in one pass: they fold the same composed state differently, and
+    # warping the city twice to do that is the whole cost of the phase.
+    files = _write(
+        job,
+        [
+            (
+                f"shade-{instant_id}-{kind}.pmtiles",
+                _cast_shade_compose(kind),
+                f"shade ({kind}) {job.when.isoformat()}",
+                SHADE_COLORS,
             )
-        )
-        urls.append((kind, filename))
+            for kind in kinds
+        ],
+        continuous=continuous,
+        categorical=categorical,
+    )
+    urls = [(kind, f"shade-{instant_id}-{kind}.pmtiles") for kind in kinds]
 
     return RenderResult(
         label=instant_id,

@@ -17,6 +17,7 @@ from PIL import Image
 from pmtiles.reader import MmapSource, Reader
 from pmtiles.tile import Compression, TileType
 from pyproj import Transformer
+from scipy import ndimage
 from typer.testing import CliRunner
 
 import synthetic
@@ -81,10 +82,20 @@ def _overwrite_band(artifact_dir: Path, filename: str, row: int, col: int, value
 
 
 def _shaded_by_building(artifact_dir: Path, sun: SunPosition) -> tuple[int, int]:
-    """A pixel the artifacts put in a building's shadow; first one in raster order."""
+    """A pixel well inside a building's shadow, not on its rim.
+
+    Raster order alone would return a pixel on the *edge* of the shade, and the
+    edge is exactly what the tiles no longer place on the 1 m lattice: since
+    the verdict is thresholded on the tile grid, a point 0.4 m from the rim can
+    legitimately come out sunlit at z18. Eroding first keeps these tests about
+    what they are about -- which layer a state lands in -- instead of about
+    sub-pixel boundary placement, which has its own tests.
+    """
     state = compute_state_raster(artifact_dir, sun)
-    rows, cols = np.nonzero(state == STATE_SHADE_BUILDING)
-    assert rows.size, "fixture has no building shade at this instant"
+    shade = state == STATE_SHADE_BUILDING
+    assert shade.any(), "fixture has no building shade at this instant"
+    inner = ndimage.binary_erosion(shade, np.ones((5, 5), bool))
+    rows, cols = np.nonzero(inner if inner.any() else shade)
     return int(rows[0]), int(cols[0])
 
 
