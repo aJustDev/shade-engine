@@ -23,6 +23,12 @@ The remaining checks are cheap layout and range sanity (georeference against
 the metadata, dtypes, DTM without NaN, DSM >= DTM, categorical values in
 range). Everything streams in 512 px windows: verifying a 2.4 GB city costs
 about a minute and bounded memory.
+
+One check breaks the pattern on purpose. Every invariant above proves the
+artifacts agree with *themselves*, and a LiDAR classifier that calls an awning
+a tree keeps them perfectly consistent while it does it. ``tree corroboration``
+holds the canopy mask against the city's published tree inventory, the only
+statement in the whole build that does not come from the LiDAR.
 """
 
 from collections.abc import Callable
@@ -44,11 +50,13 @@ from shade_core.artifacts import (
     HORIZON_NOVEG_FILENAME,
     LANDCOVER_FILENAME,
     METADATA_FILENAME,
+    TREE_INVENTORY_FILENAME,
     BuildMetadata,
     load_metadata,
 )
 from shade_core.shade import Landcover
 from shade_pipeline.grid import grid_shape, transform_from_bbox
+from shade_pipeline.trees import ZONE_DENSE, ZONE_NEAR, ZONE_NONE, corroborated_area
 
 WINDOW_SIZE: Final = 512
 QUANTUM_TOLERANCE: Final = 1
@@ -60,6 +68,20 @@ an accumulated tangent (see ``shade_pipeline.horizon``). The two agree to
 floating-point noise, which lands on a different quantum only if the true
 angle sits exactly on a rounding boundary. One step of slack absorbs that; a
 real disagreement is orders of magnitude larger.
+"""
+TREE_CORROBORATION_MIN: Final = 0.60
+"""Least share of judgeable crown area that must reach a catalogued tree.
+
+Measured on ``cordoba-test``, which is the historic centre and therefore the
+hardest ground for this: **0.741** with the raw mask and **0.756** with the
+shape filter (ADR-021). The floor sits well below both, because the number
+moves for honest reasons -- a quarter full of private courtyards drags it
+down, an avenue of catalogued alignments pushes it up, and another city's
+inventory may be thinner than Cordoba's.
+
+What it will not survive is a classification regression that starts painting
+crowns over awnings and rooftops again, which is what it is here to catch.
+See :mod:`shade_pipeline.trees`.
 """
 Q0_BLOCKER_MAX_FRACTION: Final = 0.05
 """Tolerated per-band fraction of (angle == 0, blocker set) pixels.
@@ -123,6 +145,8 @@ def _check_layout(directory: Path, metadata: BuildMetadata) -> CheckResult:
     }
     if (directory / HORIZON_NOVEG_FILENAME).exists():
         expected[HORIZON_NOVEG_FILENAME] = (metadata.horizon.sectors, "uint8")
+    if (directory / TREE_INVENTORY_FILENAME).exists():
+        expected[TREE_INVENTORY_FILENAME] = (1, "uint8")
     problems: list[str] = []
     for name, (bands, dtype) in expected.items():
         with rasterio.open(directory / name) as src:
@@ -283,6 +307,53 @@ def _check_coverage(directory: Path, metadata: BuildMetadata, window_size: int) 
     return CheckResult("coverage", "; ".join(problems) or None)
 
 
+def _check_tree_corroboration(directory: Path, metadata: BuildMetadata) -> CheckResult:
+    """The canopy mask against the city's own tree inventory.
+
+    The only check in this module that consults something outside the build:
+    every other one proves the artifacts agree with themselves, and a
+    classifier that calls an awning a tree keeps them perfectly consistent
+    while it does so. It is also the only one that reads whole rasters rather
+    than 512 px windows, because connected components have no windowed form --
+    see :func:`shade_pipeline.trees.corroborated_area` for what that buys and
+    what it costs.
+    """
+    rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
+    with (
+        rasterio.open(directory / CANOPY_FILENAME) as canopy_src,
+        rasterio.open(directory / TREE_INVENTORY_FILENAME) as zones_src,
+    ):
+        if (int(zones_src.height), int(zones_src.width)) != (rows, cols):
+            return CheckResult(
+                "tree corroboration",
+                f"{TREE_INVENTORY_FILENAME} is {zones_src.height}x{zones_src.width}, "
+                f"expected {rows}x{cols}",
+            )
+        corroborated, judged = corroborated_area(canopy_src.read(1) != 0, zones_src.read(1))
+
+    problems: list[str] = []
+    if judged == 0:
+        problems.append("no crown falls on surveyed ground; is the inventory bbox right?")
+    else:
+        fraction = corroborated / judged
+        if fraction < TREE_CORROBORATION_MIN:
+            problems.append(
+                f"only {fraction:.0%} of the {judged:,} px of crown on surveyed ground "
+                f"reaches a catalogued tree, below {TREE_CORROBORATION_MIN:.0%} -- "
+                "the canopy mask is painting something that is not vegetation"
+            )
+    recorded = metadata.tree_inventory
+    if recorded is not None and (recorded.corroborated_px, recorded.judged_px) != (
+        corroborated,
+        judged,
+    ):
+        problems.append(
+            f"metadata says {recorded.corroborated_px}/{recorded.judged_px} corroborated, "
+            f"the rasters say {corroborated}/{judged}"
+        )
+    return CheckResult("tree corroboration", "; ".join(problems) or None)
+
+
 def _check_elevation(directory: Path, metadata: BuildMetadata, window_size: int) -> CheckResult:
     """DTM has no NaN and DSM never dips below it (both hold by construction)."""
     rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
@@ -313,8 +384,11 @@ def _check_classes(directory: Path, metadata: BuildMetadata, window_size: int) -
     """Categorical rasters only hold their declared values."""
     rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
     landcover_values = [int(member) for member in Landcover]
+    categorical = [(CANOPY_FILENAME, [0, 1]), (LANDCOVER_FILENAME, landcover_values)]
+    if (directory / TREE_INVENTORY_FILENAME).exists():
+        categorical.append((TREE_INVENTORY_FILENAME, [ZONE_NONE, ZONE_DENSE, ZONE_NEAR]))
     problems: list[str] = []
-    for name, allowed in ((CANOPY_FILENAME, [0, 1]), (LANDCOVER_FILENAME, landcover_values)):
+    for name, allowed in categorical:
         bad = 0
         with rasterio.open(directory / name) as src:
             for window in _windows(rows, cols, window_size):
@@ -367,6 +441,9 @@ def verify_artifacts(
     if (directory / COVERAGE_FILENAME).exists():
         echo("verifying computation area")
         results.append(_check_coverage(directory, metadata, window_size))
+    if (directory / TREE_INVENTORY_FILENAME).exists():
+        echo("verifying canopy against the tree inventory")
+        results.append(_check_tree_corroboration(directory, metadata))
     echo("verifying elevation rasters")
     results.append(_check_elevation(directory, metadata, window_size))
     echo("verifying class rasters")

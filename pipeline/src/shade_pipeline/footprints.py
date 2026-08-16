@@ -18,8 +18,10 @@ A crown below the eaves survives; a "tree" resting on the tile plane does not.
 Footprints with no building cell of their own are skipped: with no roof
 reference there is nothing to compare against.
 
-Only the *label* moves. The DSM keeps every height it had, so this changes who
-gets blamed for a shadow, never whether the shadow exists.
+Only the *label* moves. This module changes who gets blamed for a shadow,
+never whether the shadow exists. That used to be true of the whole build; it
+is now true only of this module, since :mod:`shade_pipeline.declutter` edits
+the surface itself (ADR-022).
 """
 
 from collections.abc import Iterable, Sequence

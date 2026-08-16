@@ -43,6 +43,7 @@ HORIZON_FILENAME: Final = "horizon.tif"
 HORIZON_NOVEG_FILENAME: Final = "horizon_noveg.tif"
 BLOCKER_CLASS_FILENAME: Final = "blocker_class.tif"
 COVERAGE_FILENAME: Final = "coverage.tif"
+TREE_INVENTORY_FILENAME: Final = "tree_inventory.tif"
 METADATA_FILENAME: Final = "metadata.json"
 
 
@@ -71,6 +72,22 @@ class LandcoverBuildParams(BaseModel):
     roof_tolerance_m: float | None = None
 
 
+class DeclutterBuildParams(BaseModel):
+    """How much of the DSM the build rewrote before sweeping it.
+
+    Optional in :class:`BuildMetadata`, and its absence is meaningful: an
+    artifact without it holds the raw surface the LiDAR recorded, which is
+    what every build before ADR-022 shipped.
+    """
+
+    linear_px: int
+    slab_px: int
+    protrusion_m: float
+    opening_px: int
+    max_base_m: float
+    slab_roughness_max_m: float
+
+
 class CoverageBuildParams(BaseModel):
     """Which pixels of the bbox the build actually computed.
 
@@ -81,6 +98,22 @@ class CoverageBuildParams(BaseModel):
     source: str
     covered_px: int
     covered_fraction: float
+
+
+class TreeInventoryBuildParams(BaseModel):
+    """The municipal tree inventory the build audited its canopy against.
+
+    Optional in :class:`BuildMetadata`: a city that publishes no inventory, or
+    an artifact built before the audit existed, simply does not carry it.
+    """
+
+    source: str
+    layers: list[str]
+    specimens: int
+    dense_radius_m: float
+    near_radius_m: float
+    corroborated_px: int
+    judged_px: int
 
 
 class ArtifactInput(BaseModel):
@@ -103,7 +136,9 @@ class BuildMetadata(BaseModel):
     horizon: HorizonBuildParams
     landcover_classes: dict[str, int]
     landcover: LandcoverBuildParams | None = None
+    declutter: DeclutterBuildParams | None = None
     coverage: CoverageBuildParams | None = None
+    tree_inventory: TreeInventoryBuildParams | None = None
     no_blocker_value: int
     software: dict[str, str]
     inputs: list[ArtifactInput]

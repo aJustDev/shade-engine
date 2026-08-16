@@ -39,6 +39,7 @@ from shade_pipeline.tiles import (
     build_tiles,
     season_preset_instants,
 )
+from shade_pipeline.trees import WfsTreeSource
 from shade_pipeline.verify import VerificationError, format_report, verify_artifacts
 
 app = typer.Typer(help="Offline pipeline that turns LiDAR into per-city shade artifacts.")
@@ -181,10 +182,29 @@ def build(
             help="Correct roof-height vegetation with OSM building outlines (needs Overpass)",
         ),
     ] = True,
+    tree_inventory: Annotated[
+        bool,
+        typer.Option(
+            "--tree-inventory/--no-tree-inventory",
+            help="Audit the canopy mask against the city's tree inventory, if it declares one",
+        ),
+    ] = True,
+    declutter: Annotated[
+        bool,
+        typer.Option(
+            "--declutter/--no-declutter",
+            help="Remove cables and awnings from the DSM before sweeping (ADR-022)",
+        ),
+    ] = True,
 ) -> None:
     """Build the raster artifacts for CITY, downloading LiDAR tiles if configured."""
     config = load_city(cities_dir / f"{city}.yaml")
     source = _make_source(config, lidar_dir, cache_dir)
+    trees = (
+        WfsTreeSource(url=config.tree_inventory.wfs, layers=tuple(config.tree_inventory.layers))
+        if tree_inventory and config.tree_inventory is not None
+        else None
+    )
     params = HorizonParams(
         sectors=config.horizon_sectors,
         max_distance_m=config.horizon_max_distance_m,
@@ -201,6 +221,8 @@ def build(
             params,
             progress=typer.echo,
             footprints=OsmnxFootprintSource() if footprints else None,
+            trees=trees,
+            declutter=declutter,
         )
     except (CoverageError, CnigError, VerificationError, MemoryBudgetError) as exc:
         typer.echo(f"error: {exc}", err=True)

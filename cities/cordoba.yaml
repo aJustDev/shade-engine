@@ -8,6 +8,11 @@ area: cities/cordoba/area.geojson
 resolution_m: 1.0
 horizon_sectors: 64
 horizon_max_distance_m: 500 # radio del barrido; tambien buffer del bbox
+# Arbolado municipal, para auditar la mascara de copa contra el catastro de
+# arboles del ayuntamiento. No pinta nada: solo mide. Ver ADR-021.
+tree_inventory:
+  wfs: https://ide.cordoba.es/geoserver/idecordoba/wfs
+  layers: [idecordoba:Arbolado, idecordoba:palmeras]
 sources:
   lidar: pnoa # driver de descarga (CnigSource)
   pnoa_series: LIDA3 # codSerie del centro de descargas: 3a cobertura

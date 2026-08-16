@@ -27,6 +27,18 @@ from pydantic import BaseModel, Field, field_validator
 Bbox = tuple[float, float, float, float]
 
 
+class TreeInventoryConfig(BaseModel):
+    """Where the city publishes its tree inventory, if it publishes one.
+
+    Optional like ``area``: a city without it builds exactly as before, minus
+    the corroboration check. See :mod:`shade_pipeline.trees` for what the
+    inventory is used for (auditing the canopy mask, never painting it).
+    """
+
+    wfs: str = Field(description="OGC WFS 2.0 endpoint URL")
+    layers: list[str] = Field(min_length=1, description="Point layers to fetch, e.g. city:Trees")
+
+
 class CityConfig(BaseModel):
     """Validated contents of a ``cities/<id>.yaml`` file."""
 
@@ -48,6 +60,7 @@ class CityConfig(BaseModel):
         default=500.0, gt=0, description="Horizon sweep radius; also pads the bbox"
     )
     observer_height_m: float = Field(default=1.6, gt=0)
+    tree_inventory: TreeInventoryConfig | None = None
     sources: dict[str, str] = Field(default_factory=dict)
     layers: dict[str, str] = Field(default_factory=dict)
     attribution: list[str] = Field(default_factory=list)

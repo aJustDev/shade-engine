@@ -27,17 +27,27 @@ from shade_core.artifacts import (
     HORIZON_NOVEG_FILENAME,
     LANDCOVER_FILENAME,
     METADATA_FILENAME,
+    TREE_INVENTORY_FILENAME,
     ArtifactInput,
     BuildMetadata,
     CoverageBuildParams,
+    DeclutterBuildParams,
     HorizonBuildParams,
     LandcoverBuildParams,
+    TreeInventoryBuildParams,
 )
 from shade_core.config import CityConfig
 from shade_core.shade import NO_BLOCKER, Landcover
 from shade_pipeline.area import coverage_mask, read_area
-from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, canopy_mask
+from shade_pipeline.canopy import CANOPY_TAGS, canopy_mask
 from shade_pipeline.cog import write_cog
+from shade_pipeline.declutter import (
+    LINEAR_MAX_BASE_M,
+    LINEAR_OPENING_PX,
+    LINEAR_PROTRUSION_M,
+    SLAB_ROUGHNESS_MAX_M,
+    declutter_dsm,
+)
 from shade_pipeline.footprints import (
     ROOF_TOLERANCE_M,
     FootprintSource,
@@ -50,6 +60,13 @@ from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.rasterize import BUILDING_MARGIN_M, rasterize_lidar
 from shade_pipeline.sources import LidarSource
 from shade_pipeline.tiles import bounds_wgs84
+from shade_pipeline.trees import (
+    DENSE_RADIUS_M,
+    NEAR_RADIUS_M,
+    TreeInventorySource,
+    corroborated_area,
+    inventory_zones,
+)
 from shade_pipeline.verify import ensure_verified
 
 ARTIFACT_VERSION = "v1"
@@ -63,6 +80,8 @@ def build_city(
     params: HorizonParams | None = None,
     progress: Callable[[str], None] | None = None,
     footprints: FootprintSource | None = None,
+    trees: TreeInventorySource | None = None,
+    declutter: bool = True,
 ) -> Path:
     """Produce ``<output_root>/<city>/v1/`` artifacts; returns that directory.
 
@@ -74,6 +93,14 @@ def build_city(
     ``footprints`` corrects the LiDAR landcover with OSM building outlines
     (see :mod:`shade_pipeline.footprints`). None skips it, which is the only
     way to build with no network.
+
+    ``trees`` audits the finished canopy mask against the city's own tree
+    inventory (see :mod:`shade_pipeline.trees`). None skips it; so does a city
+    whose config declares no inventory.
+
+    ``declutter`` takes cables and awnings out of the DSM before the sweep
+    reads it (see :mod:`shade_pipeline.declutter`). False reproduces the raw
+    LiDAR surface every build shipped before ADR-022.
     """
     if params is None:
         params = HorizonParams(
@@ -126,6 +153,27 @@ def build_city(
             f"{format_duration(time.monotonic() - phase_start)}"
         )
 
+    # Same reasoning: a dead WFS has to fail here and not after the sweep. Only
+    # the trees over the city grid are asked for, plus the margin the dense
+    # zone reaches inward from just outside it.
+    tree_positions = np.zeros((0, 2), dtype=np.float64)
+    if trees is not None:
+        phase_start = time.monotonic()
+        min_x, min_y, max_x, max_y = config.bbox
+        tree_positions = trees.fetch(
+            (
+                min_x - DENSE_RADIUS_M,
+                min_y - DENSE_RADIUS_M,
+                max_x + DENSE_RADIUS_M,
+                max_y + DENSE_RADIUS_M,
+            ),
+            config.crs,
+        )
+        say(
+            f"{len(tree_positions):,} tree inventory specimens in "
+            f"{format_duration(time.monotonic() - phase_start)}"
+        )
+
     phase_start = time.monotonic()
     stack = rasterize_lidar(files, padded, resolution, progress=progress)
     total_points = sum(stack.point_counts.values())
@@ -135,16 +183,33 @@ def build_city(
     )
 
     relabelled = 0
+    built: npt.NDArray[np.bool_] | None = None
     if footprints is not None:
         phase_start = time.monotonic()
         ids = footprint_ids(outlines, stack.transform, stack.landcover.shape)
         chm = stack.dsm - stack.dtm
         relabelled = apply_footprint_override(stack.landcover, chm, ids)
+        # One byte per pixel instead of four, and it outlives the ids: the
+        # declutter below refuses to touch anything somebody has drawn.
+        built = ids > 0
         del ids, chm  # both are city-sized; the sweep wants the room
         say(
             f"footprints relabelled {relabelled:,} cells as building in "
             f"{format_duration(time.monotonic() - phase_start)}"
         )
+
+    # Last thing before the sweep, so every obstacle the horizon sees has
+    # already been through it. Deliberately after the footprint override: that
+    # one reads roof heights, and a cable strung over a roof is not part of it.
+    cleaned = None
+    if declutter:
+        phase_start = time.monotonic()
+        cleaned = declutter_dsm(stack.dsm, stack.dtm, stack.landcover, built)
+        say(
+            f"declutter removed {cleaned.linear_px:,} linear px and {cleaned.slab_px:,} "
+            f"slab px from the dsm in {format_duration(time.monotonic() - phase_start)}"
+        )
+    del built  # city-sized; nothing downstream of the declutter wants it
 
     rows, cols = grid_shape(config.bbox, resolution)
     inner = (pad, pad + rows, pad, pad + cols)
@@ -217,15 +282,40 @@ def build_city(
     timed_cog(out_dir / DSM_FILENAME, stack.dsm[crop], tags=common)
     timed_cog(out_dir / DTM_FILENAME, stack.dtm[crop], tags=common)
     timed_cog(out_dir / LANDCOVER_FILENAME, stack.landcover[crop], tags=common)
+    canopy = canopy_mask(stack.dsm[crop], stack.dtm[crop], stack.landcover[crop])
     timed_cog(
         out_dir / CANOPY_FILENAME,
-        canopy_mask(stack.dsm[crop], stack.dtm[crop], stack.landcover[crop]),
-        tags={
-            **common,
-            "min_height_m": str(CANOPY_MIN_HEIGHT_M),
-            "sieve_px": str(CANOPY_SIEVE_PX),
-        },
+        canopy,
+        tags={**common, **CANOPY_TAGS},
     )
+    tree_params: TreeInventoryBuildParams | None = None
+    if trees is not None and config.tree_inventory is not None:
+        zones = inventory_zones(tree_positions, transform, (rows, cols))
+        corroborated, judged = corroborated_area(canopy, zones)
+        say(
+            f"tree inventory: {corroborated:,} of {judged:,} px of crown on surveyed ground "
+            f"reaches a catalogued tree ({(100.0 * corroborated / judged) if judged else 0.0:.0f}%)"
+        )
+        timed_cog(
+            out_dir / TREE_INVENTORY_FILENAME,
+            zones,
+            tags={
+                **common,
+                "dense_radius_m": str(DENSE_RADIUS_M),
+                "near_radius_m": str(NEAR_RADIUS_M),
+                "specimens": str(len(tree_positions)),
+            },
+        )
+        tree_params = TreeInventoryBuildParams(
+            source=config.tree_inventory.wfs,
+            layers=list(config.tree_inventory.layers),
+            specimens=len(tree_positions),
+            dense_radius_m=DENSE_RADIUS_M,
+            near_radius_m=NEAR_RADIUS_M,
+            corroborated_px=corroborated,
+            judged_px=judged,
+        )
+    del canopy
     if coverage is not None:
         # Written even though the cubes already encode it by construction:
         # zeros in the horizon are indistinguishable from a genuinely open sky,
@@ -261,6 +351,16 @@ def build_city(
             footprint_relabelled=relabelled,
             roof_tolerance_m=ROOF_TOLERANCE_M if footprints is not None else None,
         ),
+        declutter=None
+        if cleaned is None
+        else DeclutterBuildParams(
+            linear_px=cleaned.linear_px,
+            slab_px=cleaned.slab_px,
+            protrusion_m=LINEAR_PROTRUSION_M,
+            opening_px=LINEAR_OPENING_PX,
+            max_base_m=LINEAR_MAX_BASE_M,
+            slab_roughness_max_m=SLAB_ROUGHNESS_MAX_M,
+        ),
         coverage=None
         if coverage is None or config.area is None
         else CoverageBuildParams(
@@ -268,6 +368,7 @@ def build_city(
             covered_px=int(coverage.sum()),
             covered_fraction=float(coverage.sum()) / coverage.size,
         ),
+        tree_inventory=tree_params,
         no_blocker_value=NO_BLOCKER,
         software={name: importlib_metadata.version(name) for name in _VERSIONED_PACKAGES},
         inputs=[

@@ -3,6 +3,7 @@
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pytest
 import rasterio
 import yaml
@@ -11,6 +12,7 @@ from typer.testing import CliRunner
 from conftest import CUBE_CITY
 from shade_core import artifacts
 from shade_core.shade import NO_BLOCKER
+from shade_pipeline import trees
 from shade_pipeline.cli import app
 from shade_pipeline.cog import write_cog
 from shade_pipeline.verify import (
@@ -118,6 +120,57 @@ def test_verify_catches_a_coverage_mask_that_lies_about_its_count(
 
     failing = {result.name for result in verify_artifacts(artifact_dir) if not result.passed}
     assert failing == {"coverage"}
+
+
+def _with_inventory(source: Path, target: Path, *, with_tree: int, orphan: int) -> Path:
+    """Copy artifacts and give them crowns and a tree inventory to compare.
+
+    Crowns are 3x3 and spaced two apart so 8-connectivity keeps them separate,
+    which is what the check counts. ``with_tree`` of them have a catalogued
+    specimen under them and ``orphan`` do not; one more sits off surveyed
+    ground entirely and must never enter the ratio either way.
+    """
+    shutil.copytree(source, target)
+    with rasterio.open(target / artifacts.CANOPY_FILENAME) as src:
+        canopy, transform, crs = src.read(1), src.transform, str(src.crs)
+    canopy[:] = 0
+    zones = np.zeros_like(canopy)
+    total = with_tree + orphan + 1
+    assert total * 5 < canopy.shape[1], "fixture too narrow for this many crowns"
+    zones[:5, : total * 5] = trees.ZONE_DENSE
+    zones[:5, (total - 1) * 5 :] = trees.ZONE_NONE  # the last crown is off-survey
+    for index in range(total):
+        col = index * 5
+        canopy[1:4, col + 1 : col + 4] = 1
+        if index < with_tree:
+            zones[2, col + 2] = trees.ZONE_NEAR
+    write_cog(target / artifacts.CANOPY_FILENAME, canopy, transform, crs)
+    write_cog(target / artifacts.TREE_INVENTORY_FILENAME, zones, transform, crs)
+    return target
+
+
+def test_verify_passes_when_the_canopy_matches_the_inventory(
+    built_city: Path, tmp_path: Path
+) -> None:
+    artifact_dir = _with_inventory(built_city, tmp_path / "cube", with_tree=9, orphan=1)
+
+    results = verify_artifacts(artifact_dir)
+    assert "tree corroboration" in [result.name for result in results]
+    assert [result.failure for result in results if not result.passed] == []
+
+
+def test_verify_catches_canopy_the_city_has_no_tree_for(built_city: Path, tmp_path: Path) -> None:
+    """The one failure mode no internal invariant can see.
+
+    Every cube stays perfectly consistent while the mask paints awnings and
+    cables as crowns; only the city's own inventory disagrees.
+    """
+    artifact_dir = _with_inventory(built_city, tmp_path / "cube", with_tree=5, orphan=5)
+
+    failing = {result.name for result in verify_artifacts(artifact_dir) if not result.passed}
+    assert failing == {"tree corroboration"}
+    with pytest.raises(VerificationError, match="not vegetation"):
+        ensure_verified(artifact_dir)
 
 
 def test_verify_catches_zeroed_horizon_tail(built_city: Path, tmp_path: Path) -> None:
