@@ -29,7 +29,10 @@ jobs:
       - uses: astral-sh/setup-uv@v8.3.2
         with:
           enable-cache: true
-      - run: uv sync --all-packages
+      # --all-extras pulls in `shade-pipeline[tui]`. Without it mypy cannot see
+      # textual and reports 45 import-not-found errors, and the console tests
+      # skip themselves rather than run.
+      - run: uv sync --all-packages --all-extras
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
