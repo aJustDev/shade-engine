@@ -14,6 +14,7 @@ terminal. The Log tab shows the chain.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import ClassVar
 
@@ -87,6 +88,10 @@ class UtilitiesScreen(Screen[tuple[str, str] | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Back"),
+        # `q` is the app's quit key, and from here it used to quit outright as
+        # soon as focus was not in the Input. There is nothing to lose on this
+        # screen, so it means the same as escape rather than goodbye.
+        Binding("q", "cancel", "Back"),
         Binding("enter", "choose", "Run"),
     ]
     DEFAULT_CSS = """
@@ -162,21 +167,30 @@ def to_argv(
     *,
     cities_dir: Path,
     output_root: Path,
+    day: date | None = None,
 ) -> list[str]:
-    """The command line for one utility, as the CLI would take it."""
+    """The command line for one utility, as the CLI would take it.
+
+    ``day`` is a parameter and not a call to ``date.today()`` inside so that
+    this stays a pure function with a test that does not move.
+    """
     if utility == "assets":
         # Takes no city and no --cities-dir: it is the one utility about the
         # machine rather than about a city.
         return ["assets", "--output-root", str(output_root)]
+    if utility == "recolor":
+        # No --cities-dir at all, because recolor reads the tile tree and not
+        # the config. It used to be appended and then filtered out again by
+        # value, which removed the palette too whenever the two strings
+        # matched -- a filter on an argv cannot tell a flag from its argument.
+        return [utility, city, "--palette", argument or "light", "--output-root", str(output_root)]
     argv = [utility, city]
     if utility == "predict":
-        argv += [argument, "--day", "2026-08-16"]
-    elif utility == "recolor":
-        argv += ["--palette", argument or "light"]
+        # The day it runs on, not the day it was written on. This is the tool
+        # for checking the model against somebody standing in the street, and
+        # that person is standing there today.
+        argv += [argument, "--day", (day or date.today()).isoformat()]
     elif utility == "import-layer":
         argv.insert(2, argument)
     argv += ["--cities-dir", str(cities_dir), "--output-root", str(output_root)]
-    if utility == "recolor":
-        # recolor takes no --cities-dir: it reads the tile tree, not the config.
-        argv = [part for part in argv if part not in {"--cities-dir", str(cities_dir)}]
     return argv
