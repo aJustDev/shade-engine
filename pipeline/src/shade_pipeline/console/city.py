@@ -34,7 +34,7 @@ from textual.widgets import (
 
 from shade_core.config import CityConfig
 from shade_pipeline.cityfile import PROTECTED, CityFileError, edit_city
-from shade_pipeline.console.confirm import ConfirmScreen, EditScreen
+from shade_pipeline.console.confirm import ConfirmScreen, DetailScreen, EditScreen
 from shade_pipeline.console.cost import CostPanel
 from shade_pipeline.console.jobs import engine_argv, latest_phase, launch, progress_of
 from shade_pipeline.console.launch import LaunchScreen, to_argv
@@ -113,15 +113,25 @@ class CityScreen(Screen[None]):
         Binding("p", "publish", "Publish"),
         # Shifted, and not next to `p` by accident: this one deletes from a
         # production server, and a mistyped neighbour should not reach it.
-        Binding("U", "unpublish", "Unpublish"),
+        # Off the footer as well -- eight shortcuts do not fit in 80 columns,
+        # and the two that leave are the rare one and the destructive one.
+        # Both are still listed by `?`.
+        Binding("U", "unpublish", "Unpublish", show=False),
         Binding("u", "utilities", "Utilities"),
-        Binding("y", "copy_log", "Copy log"),
+        Binding("y", "copy_log", "Copy log", show=False),
     ]
     DEFAULT_CSS = """
     CityScreen #progress-row { height: auto; padding: 0 1; }
     CityScreen #progress-label { height: 1; color: $text-muted; }
-    CityScreen #explain { height: auto; min-height: 5; padding: 1; background: $panel; }
-    CityScreen #config-cost { height: 1fr; }
+    /* Every one of these three heights is a share of the tab and not the size
+       of what it holds. `#config` was `height: auto`, so it grew with the
+       number of settings -- sixteen of them plus a header -- and pushed the
+       price off the bottom of an 80x24 terminal entirely. The panel that shows
+       what a city costs while you change what decides it is the point of this
+       screen, so it gets a floor and the table gets a ceiling. */
+    CityScreen #config { height: 1fr; max-height: 50%; }
+    CityScreen #explain { height: 5; padding: 1; background: $panel; }
+    CityScreen #config-cost { height: 1fr; min-height: 8; }
     """
 
     def __init__(self, city: str) -> None:
@@ -154,7 +164,7 @@ class CityScreen(Screen[None]):
                 )
             with TabPane("Log", id="log-pane"):
                 yield RichLog(id="log", wrap=True, markup=False)
-        yield Footer()
+        yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         self.sub_title = self.city
@@ -162,6 +172,10 @@ class CityScreen(Screen[None]):
         self.query_one("#config", DataTable).add_columns("setting", "value", "")
         self.fill_config()
         self.refresh_steps()
+        # Focus on the steps, which is what the screen opens on: without it the
+        # arrows and enter go to the tab bar, and reading why a step failed
+        # started with a tab keypress nothing announced.
+        self.query_one("#steps", DataTable).focus()
         self.set_interval(REFRESH_SECONDS, self.refresh_steps)
         self.set_interval(1.0, self.tail_log)
 
@@ -216,6 +230,41 @@ class CityScreen(Screen[None]):
             table.move_cursor(row=cursor)
         self.refresh_progress(state)
         self.follow_newest_log(state)
+
+    def show_step_detail(self, row: int) -> None:
+        """The whole of what a step has to say, since the cell holds 70 characters.
+
+        The half of a failure that gets truncated is routinely the useful half:
+        a coverage error names the tiles it is missing at the end of the
+        sentence, not at the start.
+        """
+        if not 0 <= row < len(LOG_STEPS):
+            return
+        step = LOG_STEPS[row]
+        try:
+            state = self.state()
+        except (OSError, ValueError) as error:
+            self.app.push_screen(DetailScreen(f"{self.city}: {step}", str(error)))
+            return
+        record = state.record(step)
+        lines = [f"status: {state.status(step).value}"]
+        for label, value in (
+            ("error", record.error),
+            ("stale because", state.stale_reason(step)),
+            ("log", record.log),
+            ("events", record.events),
+        ):
+            if value:
+                lines.append(f"{label}: {value}")
+        if record.started_at is not None:
+            when = record.started_at.strftime("%d %b %H:%M")
+            took = "" if record.duration_s is None else f", took {record.duration_s:.0f}s"
+            lines.append(f"started: {when}{took}")
+        if len(lines) == 1:
+            # Only the status, which is already the cell next to the cursor.
+            self.notify(f"nothing more to show for {step}")
+            return
+        self.app.push_screen(DetailScreen(f"{self.city}: {step}", "\n".join(lines)))
 
     def refresh_progress(self, state: RunState) -> None:
         """Turn "running" into a position and an estimate, from the event stream."""
@@ -290,6 +339,9 @@ class CityScreen(Screen[None]):
         self.query_one("#explain", Static).update("\n".join(lines))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id == "steps":
+            self.show_step_detail(event.cursor_row)
+            return
         if event.data_table.id != "config" or event.row_key.value is None:
             return
         name = str(event.row_key.value)

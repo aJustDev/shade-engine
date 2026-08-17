@@ -23,18 +23,28 @@ import yaml
 
 from conftest import CUBE_CITY
 from shade_pipeline.events import JsonlSink, emit
-from shade_pipeline.runstate import RunState, StepStatus
+from shade_pipeline.runstate import LOG_STEPS, RunState, StepStatus
 
 # Everything below this line needs the optional extra, imports included.
 pytest.importorskip("textual", reason="the console needs the 'tui' extra")
 
-from textual.widgets import Button, DataTable, Input, Static, Switch, TextArea
+from textual.widgets import (
+    Button,
+    DataTable,
+    Footer,
+    Input,
+    Static,
+    Switch,
+    TabbedContent,
+    TextArea,
+)
+from textual.widgets._footer import FooterKey
 
 from shade_pipeline.area import utm_crs
 from shade_pipeline.console.app import ConsoleApp
 from shade_pipeline.console.cities import CitiesScreen
 from shade_pipeline.console.city import CityScreen
-from shade_pipeline.console.confirm import ConfirmScreen
+from shade_pipeline.console.confirm import ConfirmScreen, EditScreen
 from shade_pipeline.console.cost import CostPanel
 from shade_pipeline.console.jobs import progress_of
 from shade_pipeline.console.launch import (
@@ -73,11 +83,20 @@ def _app(workspace: Path) -> ConsoleApp:
     )
 
 
-def drive(app: ConsoleApp, scenario: Callable[[Any], Awaitable[None]]) -> None:
-    """Run one scenario against a live app and shut it down again."""
+def drive(
+    app: ConsoleApp,
+    scenario: Callable[[Any], Awaitable[None]],
+    size: tuple[int, int] = (80, 24),
+) -> None:
+    """Run one scenario against a live app and shut it down again.
+
+    ``size`` is what ``run_test`` uses anyway; naming it here is what lets a
+    test say which terminal it is talking about, because layout that only
+    works in a wide window is layout that does not work.
+    """
 
     async def main() -> None:
-        async with app.run_test() as pilot:
+        async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await scenario(pilot)
 
@@ -1252,3 +1271,171 @@ def test_an_error_with_brackets_is_shown_and_not_parsed(workspace: Path) -> None
 
     assert "type=value_error" in seen["cost"]
     assert "type=value_error" in seen["body"]
+
+
+# -------------------------------------------------------------- fits on screen
+
+
+async def open_config_tab(pilot: Any, app: ConsoleApp) -> CityScreen:
+    """The Config tab of the first city, which is where the price lives."""
+    await pilot.press("o")
+    await pilot.pause()
+    screen = app.screen
+    assert isinstance(screen, CityScreen)
+    screen.query_one(TabbedContent).active = "config-pane"
+    await pilot.pause()
+    return screen
+
+
+def test_the_price_of_a_city_is_on_screen_in_an_80x24_terminal(workspace: Path) -> None:
+    """The panel that makes the point of the whole console was off the screen.
+
+    Measured before the fix: region y=25, height=1, on a screen 24 rows tall.
+    The settings table is `height: auto`, so it grew with the number of fields
+    and pushed the price out of the bottom.
+    """
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        screen = await open_config_tab(pilot, app)
+        seen["cost"] = screen.query_one("#config-cost", CostPanel).region
+        seen["config"] = screen.query_one("#config", DataTable).region
+        seen["screen"] = screen.region
+
+    drive(app, scenario, size=(80, 24))
+
+    assert seen["cost"].bottom <= seen["screen"].bottom, "the price is inside the terminal"
+    assert seen["cost"].height >= 6, f"and readable, not a sliver: {seen['cost']}"
+    assert seen["config"].height >= 5, f"the settings stay navigable: {seen['config']}"
+
+
+def test_a_wider_terminal_gives_the_price_more_room(workspace: Path) -> None:
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        screen = await open_config_tab(pilot, app)
+        seen["cost"] = screen.query_one("#config-cost", CostPanel).region
+
+    drive(app, scenario, size=(120, 30))
+
+    assert seen["cost"].height >= 10, seen["cost"]
+
+
+def test_no_shortcut_falls_off_the_footer_at_80_columns(workspace: Path) -> None:
+    """Eight shortcuts summed 85 columns, so the last one hung off the edge.
+
+    The command palette's own key made it worse: it is painted on the right of
+    the footer and landed on top of the shortcut before it.
+    """
+    app = _app(workspace)
+    seen: dict[str, list[tuple[str, int]]] = {}
+
+    def overflowing(screen: Any) -> list[tuple[str, int]]:
+        return [
+            (key.key, key.region.right)
+            for key in screen.query(FooterKey)
+            if key.region.right > screen.region.width
+        ]
+
+    async def scenario(pilot: Any) -> None:
+        seen["cities"] = overflowing(app.screen)
+        await pilot.press("o")
+        await pilot.pause()
+        seen["city"] = overflowing(app.screen)
+
+    drive(app, scenario, size=(80, 24))
+
+    assert seen["cities"] == []
+    assert seen["city"] == []
+
+
+def test_every_modal_announces_its_keys(workspace: Path) -> None:
+    """`ctrl+r` launches a build from the modal that offers it, and was invisible."""
+    app = _app(workspace)
+    seen: dict[str, bool] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("o")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, CityScreen)
+        app.push_screen(ConfirmScreen("Publish cube", "a plan", "Publish"))
+        await pilot.pause()
+        seen["confirm"] = bool(app.screen.query(Footer))
+        app.pop_screen()
+        await pilot.pause()
+        app.push_screen(EditScreen("horizon_sectors", "64", "doubles the sweep"))
+        await pilot.pause()
+        seen["edit"] = bool(app.screen.query(Footer))
+        app.pop_screen()
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        assert isinstance(app.screen, LaunchScreen)
+        seen["launch"] = bool(app.screen.query(Footer))
+
+    drive(app, scenario)
+
+    assert seen == {"confirm": True, "edit": True, "launch": True}
+
+
+def test_the_whole_reason_a_step_failed_can_be_read(workspace: Path) -> None:
+    """The detail column truncates at 70 characters, silently.
+
+    A traceback tail or a coverage error naming every missing tile is longer
+    than that, and the rest of it had nowhere to go.
+    """
+    reason = (
+        "CoverageError: 7 lidar tiles missing for the requested bbox: "
+        "PNOA-2019-AND-338-4200, PNOA-2019-AND-340-4200, PNOA-2019-AND-342-4200, "
+        "PNOA-2019-AND-344-4200 and 3 more; download them or narrow the area"
+    )
+    state = _state(workspace)
+    log, events = state.paths_for("build")
+    state.begin("build", log=log, events=events)
+    state.fail("build", reason)
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("o")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, CityScreen)
+        table = screen.query_one("#steps", DataTable)
+        row = [str(cell) for cell in table.get_row_at(LOG_STEPS.index("build"))]
+        seen["cell"] = row[-1]
+        table.move_cursor(row=LOG_STEPS.index("build"))
+        await pilot.press("enter")
+        await pilot.pause()
+        seen["modal"] = type(app.screen).__name__
+        seen["shown"] = str(app.screen.query_one("#detail-body", Static).render())
+
+    drive(app, scenario)
+
+    assert len(seen["cell"]) < len(reason), "the cell still truncates; a table cell must"
+    assert seen["modal"] == "DetailScreen"
+    assert "and 3 more" in seen["shown"], "the end of the message is the part that was lost"
+
+
+def test_with_no_cities_the_screen_says_how_to_make_one(tmp_path: Path) -> None:
+    """An empty table and "nothing running" is true and useless."""
+    cities = tmp_path / "cities"
+    cities.mkdir()
+    app = ConsoleApp(
+        cities_dir=cities,
+        output_root=tmp_path / "out",
+        data_root=tmp_path / "data",
+        watch_dir=tmp_path / "downloads",
+    )
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        seen["hint"] = str(app.screen.query_one("#hint", Static).render())
+
+    drive(app, scenario)
+
+    assert "n" in seen["hint"]
+    assert "no cities" in seen["hint"].lower()

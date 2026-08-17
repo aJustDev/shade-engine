@@ -43,7 +43,13 @@ class ConsoleApp(App[None]):
     Screen { layout: vertical; }
     """
     TITLE = "shade-engine"
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("q", "quit", "Quit")]
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("q", "quit", "Quit"),
+        # The footer only has room for the shortcuts of the day, so the full
+        # list of them lives here: Textual's own help panel, which knows the
+        # bindings of whatever screen is in front and scrolls.
+        Binding("question_mark", "show_help_panel", "Help"),
+    ]
 
     def __init__(
         self,

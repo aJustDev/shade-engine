@@ -40,7 +40,7 @@ class CitiesScreen(Screen[None]):
         yield Header()
         yield DataTable(id="cities", cursor_type="row")
         yield Static(id="hint")
-        yield Footer()
+        yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         table = self.query_one("#cities", DataTable)
@@ -84,6 +84,13 @@ class CitiesScreen(Screen[None]):
                 running.append(city)
         if 0 <= cursor < table.row_count:
             table.move_cursor(row=cursor)
+        if not table.row_count:
+            # The first screen of a fresh checkout, and it used to say "nothing
+            # running" over an empty table: true, and no help at all.
+            self.query_one("#hint", Static).update(
+                f"no cities in {app.cities_dir}: press [b]n[/b] to register one"
+            )
+            return
         lines = [f"running: {', '.join(running)}" if running else "nothing running", *broken]
         self.query_one("#hint", Static).update("\n".join(lines))
 

@@ -118,7 +118,7 @@ class UtilitiesScreen(Screen[tuple[str, str] | None]):
             with Horizontal():
                 yield Button("Back", id="cancel")
                 yield Button("Run", id="run", variant="primary")
-        yield Footer()
+        yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         self.sub_title = f"{self.city}: utilities"

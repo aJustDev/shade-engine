@@ -140,7 +140,7 @@ class PasteScreen(ModalScreen[str | None]):
             with Horizontal():
                 yield Button("Cancel", id="cancel")
                 yield Button("Use it", id="accept", variant="primary")
-        yield Footer()
+        yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         self.query_one("#pasted", TextArea).focus()
@@ -220,7 +220,7 @@ class NewCityScreen(Screen[str | None]):
             with Horizontal():
                 yield Button("Back", id="cancel")
                 yield Button("Write it", id="save", variant="primary")
-        yield Footer()
+        yield Footer(show_command_palette=False)
 
     def polygon_placeholder(self) -> str:
         if self.watch_dir is None:

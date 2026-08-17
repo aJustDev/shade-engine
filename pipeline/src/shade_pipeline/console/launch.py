@@ -15,7 +15,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Grid, Horizontal, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static, Switch
+from textual.widgets import Button, Footer, Input, Label, Static, Switch
 
 from shade_core.config import CityConfig
 from shade_pipeline.budget import cpu_budget, estimate_tiles_worker_bytes, workers_that_fit
@@ -120,6 +120,9 @@ class LaunchScreen(ModalScreen[dict[str, Any] | None]):
             with Horizontal():
                 yield Button("Cancel", id="cancel")
                 yield Button("Launch", id="launch", variant="primary")
+        # Without it, ctrl+r -- the key that actually starts a six-hour build
+        # from this dialog -- is announced nowhere at all.
+        yield Footer(show_command_palette=False)
 
     def action_dismiss_none(self) -> None:
         self.dismiss(None)

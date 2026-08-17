@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Footer, Input, Static
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -44,12 +44,50 @@ class ConfirmScreen(ModalScreen[bool]):
             with Horizontal():
                 yield Button("Cancel", id="cancel")
                 yield Button(self.confirm_label, id="confirm", variant="warning")
+        yield Footer(show_command_palette=False)
 
     def action_refuse(self) -> None:
         self.dismiss(False)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "confirm")
+
+
+class DetailScreen(ModalScreen[None]):
+    """Everything a step has to say, when the table cell only had room for 70 characters.
+
+    A failure names what it needs -- which tiles are missing, which file could
+    not be read -- and the useful half of that sentence was routinely the half
+    that got cut off.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "close", "Close"),
+        Binding("q", "close", "Close"),
+    ]
+    DEFAULT_CSS = """
+    DetailScreen { align: center middle; }
+    DetailScreen > VerticalScroll {
+        width: 84%; height: auto; max-height: 80%;
+        border: thick $accent; background: $surface; padding: 1 2;
+    }
+    DetailScreen #detail-body { height: auto; padding: 1 0; }
+    """
+
+    def __init__(self, title: str, body: str) -> None:
+        super().__init__()
+        self.title_text = title
+        self.body = body
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Static(f"[b]{self.title_text}[/b]")
+            # markup=False: this is a parser's or a driver's own words.
+            yield Static(self.body, id="detail-body", markup=False)
+        yield Footer(show_command_palette=False)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class EditScreen(ModalScreen[str | None]):
@@ -80,6 +118,7 @@ class EditScreen(ModalScreen[str | None]):
             with Horizontal():
                 yield Button("Cancel", id="cancel")
                 yield Button("Save", id="save", variant="primary")
+        yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         self.query_one("#value", Input).focus()
