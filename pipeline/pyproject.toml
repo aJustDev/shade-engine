@@ -20,6 +20,12 @@ dependencies = [
     "typer>=0.15",
 ]
 
+[project.optional-dependencies]
+# The console is the only thing that needs a terminal UI framework. Kept out of
+# the base install so the CLI stays lean and the production image, which runs
+# only `recolor` and the API, never carries it.
+tui = ["textual>=8.2"]
+
 [project.scripts]
 shade-engine = "shade_pipeline.cli:app"
 

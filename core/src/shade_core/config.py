@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
+from pydantic_core import PydanticUndefined
 
 Bbox = tuple[float, float, float, float]
 
@@ -40,30 +41,134 @@ class TreeInventoryConfig(BaseModel):
 
 
 class CityConfig(BaseModel):
-    """Validated contents of a ``cities/<id>.yaml`` file."""
+    """Validated contents of a ``cities/<id>.yaml`` file.
 
-    id: str
-    name: str
-    country: str
-    timezone: str
-    crs: str
-    bbox: Bbox = Field(description="(min_x, min_y, max_x, max_y) in the local CRS, meters")
+    Every field carries what it costs and where it was decided, in
+    ``json_schema_extra``. That is not decoration: it is the single source the
+    console reads to explain a knob, so the explanation cannot drift away from
+    the field the way a separate document would.
+    """
+
+    id: str = Field(description="Identifier: the filename, the URL segment and the artifact folder")
+    name: str = Field(description="Display name, shown in the client")
+    country: str = Field(description="ISO country code, informational")
+    timezone: str = Field(
+        description="IANA zone; naive instants in the API and the CLI mean this clock",
+        json_schema_extra={"doc": "learning/solar-geometry.md"},
+    )
+    crs: str = Field(
+        description="Local PROJECTED CRS (a UTM zone): every distance is computed in it, in meters",
+        json_schema_extra={
+            "cost": "none, but the wrong zone distorts every distance",
+            "doc": "learning/crs.md",
+        },
+    )
+    bbox: Bbox = Field(
+        description="(min_x, min_y, max_x, max_y) in the local CRS, meters -- never lat/lon",
+        json_schema_extra={
+            "cost": (
+                "sets the shape of every raster. The tile phase holds ~26 bytes per pixel of it "
+                "for one instant, which puts the practical ceiling near 200 Mpx"
+            )
+        },
+    )
     area: str | None = Field(
         default=None,
         description=(
             "GeoJSON (EPSG:4326) of the computation area inside the bbox; None means the whole bbox"
         ),
+        json_schema_extra={
+            "cost": (
+                "saves sweep time, but quantised by sweep tile: a tile the polygon merely "
+                "grazes is swept whole. Does not change the georeference"
+            ),
+            "doc": "decisions/ADR-020-area-de-computo.md",
+        },
     )
-    resolution_m: float = Field(default=1.0, gt=0)
-    horizon_sectors: int = Field(default=64, gt=0)
+    resolution_m: float = Field(
+        default=1.0,
+        gt=0,
+        description="Pixel size of every artifact, in meters",
+        json_schema_extra={
+            "cost": "quadratic: halving it multiplies pixels, memory and sweep time by four"
+        },
+    )
+    horizon_sectors: int = Field(
+        default=64,
+        gt=0,
+        description="Azimuth sectors the horizon is sampled in",
+        json_schema_extra={
+            "cost": (
+                "doubling it doubles both the sweep and the artifacts on disk. Measured verdict "
+                "error against a ray-cast reference: 32 -> 0.94%, 64 -> 0.51%, 128 -> 0.35%, "
+                "256 -> 0.22%, and 99.8% of the disagreements sit within one pixel of a boundary"
+            ),
+            "doc": "decisions/ADR-001-horizonte-precomputado.md",
+        },
+    )
     horizon_max_distance_m: float = Field(
-        default=500.0, gt=0, description="Horizon sweep radius; also pads the bbox"
+        default=500.0,
+        gt=0,
+        description="Horizon sweep radius; also how far the bbox is padded before binning",
+        json_schema_extra={
+            "cost": (
+                "raising it costs sweep time and a wider padded bbox to bin. Measured: going "
+                "from 500 m to 2000 m changed no verdict across 14 instants, and even at the "
+                "lowest sun the ladder renders only 0.011% of pixels moved"
+            ),
+            "doc": "learning/horizon-algorithm.md",
+        },
     )
-    observer_height_m: float = Field(default=1.6, gt=0)
-    tree_inventory: TreeInventoryConfig | None = None
-    sources: dict[str, str] = Field(default_factory=dict)
-    layers: dict[str, str] = Field(default_factory=dict)
-    attribution: list[str] = Field(default_factory=list)
+    observer_height_m: float = Field(
+        default=1.6,
+        gt=0,
+        description="Eye height above the terrain (DTM), where the horizon is measured from",
+        json_schema_extra={
+            "cost": "none",
+            "doc": "decisions/ADR-002-observador-dtm.md",
+        },
+    )
+    tree_inventory: TreeInventoryConfig | None = Field(
+        default=None,
+        description="Municipal tree inventory WFS, used to audit the canopy mask",
+        json_schema_extra={
+            "cost": "one WFS call per build; it audits the mask and never paints it",
+            "doc": "decisions/ADR-021-inventario-de-arbolado.md",
+        },
+    )
+    sources: dict[str, str] = Field(
+        default_factory=dict,
+        description="LiDAR driver and its options, e.g. lidar: pnoa and pnoa_series: LIDA3",
+    )
+    layers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Vector layers to import into PostGIS, as name -> GeoJSON path",
+    )
+    attribution: list[str] = Field(
+        default_factory=list,
+        description="Credit lines the API returns with every answer",
+        json_schema_extra={
+            "cost": "none, and required: PNOA-derived artifacts are CC-BY and must say so"
+        },
+    )
+
+    @classmethod
+    def explain(cls, field_name: str) -> dict[str, str]:
+        """What a field is, what it costs and where it was decided.
+
+        Read off the model rather than written out again anywhere, so the
+        console and the schema can never disagree.
+        """
+        info = cls.model_fields[field_name]
+        extra = info.json_schema_extra if isinstance(info.json_schema_extra, dict) else {}
+        explanation = {"description": info.description or ""}
+        for key in ("cost", "doc"):
+            value = extra.get(key)
+            if isinstance(value, str):
+                explanation[key] = value
+        if info.default is not PydanticUndefined:
+            explanation["default"] = str(info.default)
+        return explanation
 
     @field_validator("timezone")
     @classmethod

@@ -1,6 +1,14 @@
-"""CLI: ``shade-engine area|build|predict|canopy|verify|import-layer|tiles|recolor|graph``."""
+"""CLI: ``shade-engine run|area|build|graph|tiles|publish`` plus the utilities.
 
+``run`` walks the whole chain for a city and is what an unattended build uses;
+the individual commands remain, both because they are what ``run`` calls and
+because a single phase is often all you want.
+"""
+
+import subprocess
+import sys
 import time
+from collections.abc import Callable
 from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -30,8 +38,33 @@ from shade_pipeline.graph import DEFAULT_OSM_CACHE, DEFAULT_SPACING_M, OsmnxWalk
 from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.layers import import_parking_layer
 from shade_pipeline.predict import prediction_table, read_points
+from shade_pipeline.preview import (
+    DEFAULT_API_PORT,
+    DEFAULT_WEB_DIR,
+    DEFAULT_WEB_PORT,
+    PreviewError,
+    preview,
+)
 from shade_pipeline.progress import format_bytes, format_duration
+from shade_pipeline.publish import (
+    DEFAULT_BASE_URL,
+    DEFAULT_HOST,
+    DEFAULT_REMOTE_ROOT,
+    PublishError,
+    check_ready,
+    execute,
+    plan_publish,
+)
 from shade_pipeline.recolor import PALETTES, recolor_city
+from shade_pipeline.runner import (
+    CHAIN,
+    ChainError,
+    ChainOptions,
+    run_chain,
+    step_scope,
+    steps_between,
+)
+from shade_pipeline.runstate import RunState, StepStatus
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 from shade_pipeline.tiles import (
     DEFAULT_MAX_ZOOM,
@@ -45,8 +78,20 @@ from shade_pipeline.verify import VerificationError, format_report, verify_artif
 app = typer.Typer(help="Offline pipeline that turns LiDAR into per-city shade artifacts.")
 
 
-def _make_source(config: CityConfig, lidar_dir: Path | None, cache_dir: Path | None) -> LidarSource:
-    """Pick the LiDAR driver: an explicit --lidar-dir always wins over downloads."""
+def _make_source(
+    config: CityConfig,
+    lidar_dir: Path | None,
+    cache_dir: Path | None,
+    progress: Callable[[str], None] = typer.echo,
+) -> LidarSource:
+    """Pick the LiDAR driver: an explicit --lidar-dir always wins over downloads.
+
+    ``progress`` is a parameter and not simply ``typer.echo`` because the
+    download is the first thing a fresh city does and it takes about a minute
+    per PNOA tile. Sent to stdout it vanishes in a detached run -- which made a
+    perfectly healthy twelve-minute download look like a hang, with the log
+    stopped on the computation-area line and nothing else to see.
+    """
     if lidar_dir is not None:
         return LocalDirectory(lidar_dir)
     if config.sources.get("lidar") == "pnoa":
@@ -54,7 +99,7 @@ def _make_source(config: CityConfig, lidar_dir: Path | None, cache_dir: Path | N
             cache_dir if cache_dir is not None else Path("data/lidar") / config.id,
             config.crs,
             cod_serie=config.sources.get("pnoa_series", "LIDA3"),
-            progress=typer.echo,
+            progress=progress,
         )
     typer.echo("error: no lidar driver configured for this city; pass --lidar-dir", err=True)
     raise typer.Exit(1)
@@ -70,6 +115,294 @@ class StepMode(StrEnum):
 @app.callback()
 def main() -> None:
     """Group callback so commands stay subcommands (build, predict)."""
+
+
+@app.command()
+def run(
+    city: str,
+    from_step: Annotated[
+        str | None, typer.Option("--from", help=f"First step to run ({', '.join(CHAIN)})")
+    ] = None,
+    to_step: Annotated[str | None, typer.Option("--to", help="Last step to run")] = None,
+    only: Annotated[str | None, typer.Option(help="Run exactly this step and nothing else")] = None,
+    workers: Annotated[
+        int, typer.Option(min=1, help="Processes for the sweep and the tile render")
+    ] = 1,
+    tile_size: Annotated[int, typer.Option(help="Horizon sweep tile size, pixels")] = 512,
+    min_zoom: Annotated[int, typer.Option(help="Web Mercator min zoom")] = DEFAULT_MIN_ZOOM,
+    max_zoom: Annotated[int, typer.Option(help="Web Mercator max zoom")] = DEFAULT_MAX_ZOOM,
+    lidar_dir: Annotated[
+        Path | None, typer.Option(help="Directory with LAZ/LAS tiles; overrides the config driver")
+    ] = None,
+    cache_dir: Annotated[Path | None, typer.Option(help="LiDAR download cache")] = None,
+    resume: Annotated[
+        bool, typer.Option("--resume/--no-resume", help="Keep tile units already rendered")
+    ] = True,
+    force: Annotated[
+        bool, typer.Option("--force", help="Redo steps whose state already says done")
+    ] = False,
+    detach: Annotated[
+        bool, typer.Option("--detach", help="Run in the background and return immediately")
+    ] = False,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+) -> None:
+    """Walk CITY through the build chain, recording each step so it can be resumed.
+
+    Stops before ``publish``: what is worth doing unattended is building a city,
+    not deciding it is fit to serve. Run ``shade-engine publish`` for that.
+
+    With ``--detach`` the chain runs in its own session and survives the
+    terminal that started it, which is what a six-hour render needs; follow it
+    with ``shade-engine status CITY``.
+    """
+    if detach:
+        # start_new_session is setsid: the child leaves this process group, so
+        # closing the terminal (or losing the ssh session) cannot signal it.
+        child = subprocess.Popen(
+            [argument for argument in sys.argv if argument != "--detach"],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        typer.echo(f"{city}: running in the background as pid {child.pid}")
+        typer.echo(f"follow it with: shade-engine status {city}")
+        return
+
+    if only is not None:
+        steps: tuple[str, ...] = (only,)
+        if only not in CHAIN:
+            typer.echo(f"error: unknown step {only!r}; the chain is {', '.join(CHAIN)}", err=True)
+            raise typer.Exit(1)
+    else:
+        try:
+            steps = steps_between(from_step, to_step)
+        except ChainError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
+    options = ChainOptions(
+        cities_dir=cities_dir,
+        output_root=output_root,
+        data_root=data_root,
+        workers=workers,
+        tile_size=tile_size,
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        resume=resume,
+        force=force,
+    )
+    typer.echo(f"{city}: {' -> '.join(steps)}")
+    try:
+        outcomes = run_chain(
+            city,
+            steps=steps,
+            options=options,
+            source=lambda config, say: _make_source(config, lidar_dir, cache_dir, say),
+            graph_source=lambda: OsmnxWalkSource(
+                cache_dir if cache_dir is not None else DEFAULT_OSM_CACHE
+            ),
+            progress=typer.echo,
+        )
+    except (ChainError, CoverageError, CnigError, MemoryBudgetError, VerificationError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    except (ValueError, FileNotFoundError, OSError, RuntimeError) as exc:
+        # The step already recorded its own failure; this is the exit code.
+        typer.echo(f"error: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    done = [outcome for outcome in outcomes if outcome.status is StepStatus.DONE]
+    typer.echo(f"{city}: {len(done)} of {len(steps)} steps done")
+
+
+@app.command()
+def console(
+    watch_dir: Annotated[
+        Path | None,
+        typer.Option(help="Where a drawn .geojson gets exported to (default: ~/Descargas)"),
+    ] = None,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+) -> None:
+    """Open the operations console: every city, every step, and what each knob costs.
+
+    Needs the optional extra: ``uv sync --all-extras`` (or install
+    ``shade-pipeline[tui]``). The console owns nothing -- it reads the run state
+    and launches work detached -- so closing it never touches a running build.
+    """
+    try:
+        from shade_pipeline.console import run_console
+    except ModuleNotFoundError as exc:
+        typer.echo(
+            "error: the console needs the 'tui' extra; install it with "
+            "`uv sync --all-extras` or `pip install 'shade-pipeline[tui]'`",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+    run_console(
+        cities_dir=cities_dir,
+        output_root=output_root,
+        data_root=data_root,
+        watch_dir=watch_dir,
+    )
+
+
+@app.command("preview")
+def preview_command(
+    city: Annotated[str | None, typer.Argument(help="Only to check it is servable")] = None,
+    api_port: Annotated[int, typer.Option(help="Port for the local API")] = DEFAULT_API_PORT,
+    web_port: Annotated[int, typer.Option(help="Port for the viewer")] = DEFAULT_WEB_PORT,
+    web_dir: Annotated[
+        Path, typer.Option(help="Checkout of shade-web; skipped if absent")
+    ] = DEFAULT_WEB_DIR,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+) -> None:
+    """Serve the built artifacts locally and open the viewer on them, until Ctrl-C.
+
+    The step that actually looks at the result instead of at numbers, and the
+    one that used to be skipped because it meant starting two servers by hand in
+    two repositories. A city with no basemap extract previews fine: the client
+    falls back to OSM online, so the overlay is what production will show.
+    """
+    if city is not None:
+        artifact_dir = output_root / city / ARTIFACT_VERSION
+        if not (artifact_dir / METADATA_FILENAME).exists():
+            typer.echo(f"error: no artifacts under {artifact_dir}", err=True)
+            raise typer.Exit(1)
+    try:
+        with preview(
+            cities_dir=cities_dir,
+            output_root=output_root,
+            web_dir=web_dir,
+            api_port=api_port,
+            web_port=web_port,
+            progress=typer.echo,
+        ) as running:
+            typer.echo(f"\nopen {running.url}" + (f"  (city: {city})" if city else ""))
+            typer.echo("Ctrl-C to stop\n")
+            try:
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                typer.echo("stopping")
+    except PreviewError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def publish(
+    city: str,
+    host: Annotated[str, typer.Option(help="ssh host holding the deployment")] = DEFAULT_HOST,
+    remote_root: Annotated[
+        str, typer.Option(help="Deployment directory on that host")
+    ] = DEFAULT_REMOTE_ROOT,
+    base_url: Annotated[str, typer.Option(help="Public API, for the checks")] = DEFAULT_BASE_URL,
+    recolor_theme: Annotated[
+        bool, typer.Option("--recolor/--no-recolor", help="Generate tiles-light on the server")
+    ] = True,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the commands in order and run none of them")
+    ] = False,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+) -> None:
+    """Put CITY's built artifacts into production: send everything, then restart.
+
+    Rasters, graph, metadata, the tile pyramid and the city's own YAML all
+    travel by rsync; the restart at the end is what makes the API read the new
+    configs and drop the raster blocks it had cached. New city or tenth rebuild,
+    it is the same order.
+
+    ``--dry-run`` prints every command and runs none, which is also the fastest
+    way to review what this would do to the server.
+    """
+    config = load_city(cities_dir / f"{city}.yaml")
+    artifact_dir = output_root / config.id / ARTIFACT_VERSION
+    try:
+        notes = check_ready(config, artifact_dir, cities_dir)
+        plan = plan_publish(
+            config,
+            artifact_dir,
+            host=host,
+            remote_root=remote_root,
+            base_url=base_url,
+            cities_dir=cities_dir,
+            recolor=recolor_theme,
+        )
+    except PublishError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if dry_run:
+        for note in notes:
+            typer.echo(f"  {note}")
+        typer.echo(plan.render())
+        typer.echo("\nnothing run; drop --dry-run to do it")
+        return
+
+    state = RunState.open(city, cities_dir=cities_dir, data_root=data_root)
+    try:
+        # step_scope is what opens the log: recording the step and opening its
+        # file are one act, and doing them separately is how publish spent its
+        # first life naming a log that never existed.
+        with step_scope(state, "publish", {"host": host, "commands": len(plan.commands)}) as say:
+
+            def report(message: str) -> None:
+                say(message)
+                typer.echo(message)
+
+            for note in notes:
+                report(f"  {note}")
+            execute(plan, progress=report)
+    except PublishError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    state.complete("publish")
+    typer.echo(f"{city} is live at {base_url}")
+
+
+@app.command()
+def status(
+    city: Annotated[str | None, typer.Argument(help="One city, or all of them")] = None,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+) -> None:
+    """Where each city stands in the chain: one row per city, one column per step."""
+    names = [city] if city else sorted(path.stem for path in cities_dir.glob("*.yaml"))
+    if not names:
+        typer.echo(f"no city configs under {cities_dir}")
+        return
+    width = max(len(name) for name in names)
+    typer.echo(" " * width + "  " + "  ".join(f"{step:>8}" for step in CHAIN))
+    for name in names:
+        if not (cities_dir / f"{name}.yaml").exists():
+            typer.echo(f"error: no config at {cities_dir / f'{name}.yaml'}", err=True)
+            raise typer.Exit(1)
+        state = RunState.open(name, cities_dir=cities_dir, data_root=data_root)
+        cells = [f"{state.status(step).value:>8}" for step in CHAIN]
+        typer.echo(f"{name:<{width}}  " + "  ".join(cells))
+        for step in CHAIN:
+            record = state.record(step)
+            if state.status(step) is StepStatus.FAILED and record.error:
+                typer.echo(f"{' ' * width}  {step}: {record.error}")
+            if state.status(step) is StepStatus.RUNNING:
+                typer.echo(f"{' ' * width}  {step}: pid {record.pid}, log {record.log}")
 
 
 @app.command()
@@ -341,6 +674,13 @@ def tiles(
             "output is identical whatever the count",
         ),
     ] = 1,
+    resume: Annotated[
+        bool,
+        typer.Option(
+            "--resume/--no-resume",
+            help="Keep units already rendered from these artifacts and this zoom range",
+        ),
+    ] = False,
     cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
         "cities"
     ),
@@ -374,6 +714,7 @@ def tiles(
             min_zoom=min_zoom,
             max_zoom=max_zoom,
             workers=workers,
+            resume=resume,
             progress=typer.echo,
         )
     except ValueError as exc:
