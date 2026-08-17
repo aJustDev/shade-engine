@@ -138,18 +138,25 @@ def estimate_sweep_worker_bytes(sectors: int, tile_size: int, pad_px: int) -> in
     """Peak memory of one horizon-sweep worker, deliberately over-estimated.
 
     Three terms, each an allocation in the tile's call tree: the three uint8
-    output cubes it returns, the two float64 surfaces it derives from the
-    padded window, and the per-sector accumulators plus the ufunc temporaries
-    the inner loop churns through. The parent holds one finished tile per
-    worker while it writes them into the memmap, so the returned cubes are
-    counted once more. Measured against a real tile (512 px, 64 sectors, 500 px
-    of pad) the model says 162 MB where the process grew 87 MiB -- erring high
-    is the whole point.
+    output cubes it returns, the float32 surfaces it derives from the padded
+    window, and the per-sector accumulators plus the ufunc temporaries the
+    inner loop churns through. The parent holds one finished tile per worker
+    while it writes them into the memmap, so the returned cubes are counted
+    once more.
+
+    Erring high is the whole point, and the margin got wider when the sweep
+    dropped to float32 (fase 13 S2). Measured on a real tile of montilla-test
+    (512 px, 64 sectors, 500 px of pad) by sampling ``/proc/self/statm``:
+    float64 grew the process 113.0 MiB against 154.5 modelled (+37% of margin),
+    float32 grows it 71.1 MiB against 125.9 (+77%). Note those 113 MiB are not
+    the 87 MiB [[ADR-018]] recorded: the kernel has gained an accumulator and a
+    whole cube since (ADR-017), so the two numbers do not measure the same
+    sweep.
     """
     window = tile_size + 2 * pad_px
     cubes = 3 * sectors * tile_size * tile_size
-    surfaces = 2 * window * window * 8
-    working = 12 * tile_size * tile_size * 8
+    surfaces = 2 * window * window * 4
+    working = 12 * tile_size * tile_size * 4
     in_flight = cubes  # the copy the parent holds while filing it away
     return cubes + surfaces + working + in_flight
 

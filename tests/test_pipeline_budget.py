@@ -22,13 +22,16 @@ CORDOBA_SHAPE = (7000, 8000)
 
 
 def test_sweep_estimate_covers_the_measured_worker() -> None:
-    """The model must sit above the 87 MiB a real sweep tile grew by.
+    """The model must sit above the 71.1 MiB a real sweep tile grows by.
 
     Erring high is the point of a guardrail, but not by so much that it
-    refuses sound runs, so the band is pinned on both sides.
+    refuses sound runs, so the band is pinned on both sides. The 71.1 MiB is
+    the float32 kernel measured on a montilla-test tile (fase 13 S2); the
+    87 MiB of ADR-018 predate the second cube and no longer describe this
+    sweep.
     """
     estimate = estimate_sweep_worker_bytes(*REAL_TILE)
-    assert 87 * 2**20 < estimate < 3 * 87 * 2**20
+    assert 71 * 2**20 < estimate < 3 * 71 * 2**20
 
 
 def test_sweep_estimate_scales_with_the_knobs() -> None:

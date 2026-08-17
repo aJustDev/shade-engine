@@ -56,6 +56,10 @@ def test_build_writes_all_artifacts(built_city: Path) -> None:
     assert metadata.city_id == "cube"
     assert metadata.inputs[0].points == synthetic.SIZE * synthetic.SIZE
     assert all(metadata.software.values())
+    # Written, not left at None: without its datum a cube cannot be reproduced.
+    # This fixture's terrain is at z=0, so the datum is 0 -- the point is that
+    # the field travelled from the sweep into the manifest at all.
+    assert metadata.horizon.height_datum_m == 0.0
 
 
 def test_loaded_horizon_matches_reference_crop(built_city: Path) -> None:

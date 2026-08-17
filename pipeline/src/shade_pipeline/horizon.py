@@ -3,7 +3,8 @@
 This reimplements ``shade_core.horizon.compute_horizon_reference`` for real
 city rasters. In ``exact`` step mode it visits exactly the oracle's samples
 -- same half-pixel distances, same ``round()`` offsets -- restructured in
-three ways that do not change the result:
+four ways, three of which cannot change the result and one that changes it
+by less than the artifact can represent:
 
 - **Offset dedup**: consecutive half-pixel distances often snap to the same
   (d_row, d_col) cell; only the smallest distance per cell is kept. Safe
@@ -28,6 +29,18 @@ three ways that do not change the result:
   ns/px/sample) and 4.8x on a whole montilla-test sweep, 16m 57s -> 3m 32s,
   with all three cubes coming out byte-identical to the published artifacts
   (shade-docs: learning/horizon-algorithm.md).
+- **The precision of the data, relative to a datum**: float32 in, float32
+  through, heights measured from ``height_datum`` rather than from the
+  ellipsoid. Another 2.09x (3m 32s -> 1m 42s on montilla-test, 10.0x since the
+  start of the phase) and 37% off the peak RSS of a tile. This one *does*
+  change the output, and here is by how much on real data: of the 83 instants
+  the product renders, **2 pixel-instants out of 106,284,820 flip verdict**;
+  1,133 of 81,954,560 cube cells move, all by one quantization step and 567
+  up against 566 down; 6 cells change blocker class, every one of them a tie
+  whose two candidates sit within 0.0002 of a step. The datum is what makes
+  those numbers small -- without it the same float32 loses shade city-wide
+  (see :func:`height_datum`). Not unbiased, small: shade-docs:
+  learning/precision-de-alturas.md.
 
 The sweep also records *what* blocks each sector: whenever a sample raises a
 pixel's max angle, its landcover class is kept. Strict ``>`` with ascending
@@ -90,6 +103,7 @@ __all__ = [
     "HorizonResult",
     "compute_horizon_block",
     "compute_horizon_tiled",
+    "height_datum",
     "iter_horizon_sectors",
     "quantize_angles",
     "quantized_horizon_block",
@@ -128,11 +142,45 @@ class HorizonResult:
 
     ``angles_noveg_q`` is the same horizon over a surface with vegetation
     lowered to the terrain: the sky as it would be with no trees.
+
+    ``height_datum_m`` is the elevation the sweep subtracted before computing
+    (see :func:`height_datum`). It travels out so the build can record it: a
+    cube is only reproducible if you know which datum produced it.
     """
 
     angles_q: npt.NDArray[np.uint8]
     blocker_class: npt.NDArray[np.uint8]
     angles_noveg_q: npt.NDArray[np.uint8]
+    height_datum_m: float = 0.0
+
+
+def height_datum(dtm: npt.NDArray[np.floating]) -> float:
+    """Elevation to subtract before sweeping: the DTM's median, to the hundred.
+
+    The sweep only ever uses *differences* of height, so the absolute elevation
+    above the ellipsoid enters no operation -- and in float32 it is expensive
+    ballast. At 367 m the ulp is 256 * 2^-23 = 3.05e-05 m, and since a city's
+    DTM shares one binade, a constant like the observer's 1.6 m always rounds
+    the same way: 1.6 / ulp = 52428.8, so +0.2 ulp = +6.1e-06 m on *every*
+    pixel of the city. A higher observer sees a lower skyline, so the whole
+    city quietly loses shade (measured on montilla-test: 6,219 cells down, 0
+    up). Working relative to a datum spends those bits on the heights that
+    matter instead.
+
+    **Rounded, not truncated.** Truncating Montilla's minimum to its hundred
+    gives 200 m, which leaves heights at 90-212 m -- still a high binade, and
+    1.6 m lands on another unlucky fraction: measured, that recovers 4% of the
+    error, against 100% for the nearest hundred. The nearest hundred to the
+    median also keeps the datum stable: a new LAZ tile does not move a city's
+    median 50 m, and a datum that moves changes every cube bit for bit.
+
+    A hundred is deliberate for a second reason: within a factor of two of the
+    heights it subtracts, so the subtraction is exact in float32 (Sterbenz) and
+    needs no float64 detour.
+
+    See shade-docs: learning/precision-de-alturas.md.
+    """
+    return float(round(float(np.median(dtm)) / 100.0) * 100.0)
 
 
 def sector_offsets(
@@ -174,13 +222,18 @@ def iter_horizon_sectors(
     resolution_m: float,
     params: HorizonParams,
     inner: Window,
+    height_datum_m: float = 0.0,
 ) -> Iterator[tuple[npt.NDArray[np.float32], npt.NDArray[np.uint8], npt.NDArray[np.float32]]]:
     """Sweep the ``inner`` window one sector at a time, in sector order.
 
     Yields (angles, blocker classes, vegetation-free angles) for sector k as
     single planes rather than accumulating cubes, so a consumer that only
-    wants the quantized result never holds a float32 cube at all -- the
-    difference between 326 MiB and 87 MiB of peak per sweep process.
+    wants the quantized result never holds a float32 cube at all.
+
+    ``height_datum_m`` is subtracted from every height first; it defaults to 0
+    and a block never picks its own, because a per-tile datum would make the
+    output depend on ``tile_size``, which is the one thing this sweep
+    guarantees it does not. The tiled driver derives one per city.
 
     Samples come from anywhere in the given arrays; the caller is responsible
     for passing enough surrounding context (see the tiled driver).
@@ -188,16 +241,27 @@ def iter_horizon_sectors(
     row0, row1, col0, col1 = inner
     rows, cols = dsm.shape
     height, width = row1 - row0, col1 - col0
-    observer_z = dtm[row0:row1, col0:col1].astype(np.float64) + params.observer_height_m
-    surface_z = dsm.astype(np.float64)
+    # The precision of the data, not more: the LiDAR is float32 and its vertical
+    # accuracy is ~10-15 cm. Relative to the datum, so the mantissa is spent on
+    # the heights and not on the elevation above the ellipsoid, which cancels in
+    # every subtraction below. The subtraction is exact in float32 for a datum
+    # within a factor of two of the heights (Sterbenz), so there is no float64
+    # detour and no float64 temporary of the padded window either.
+    datum = np.float32(height_datum_m)
+    observer_z = (dtm[row0:row1, col0:col1].astype(np.float32, copy=False) - datum) + np.float32(
+        params.observer_height_m
+    )
+    surface_z = dsm.astype(np.float32, copy=False) - datum
     # Felling the trees means exposing the ground under them, not deleting the
     # cell: on a wooded slope the terrain itself still blocks.
-    surface_noveg_z = np.where(landcover == Landcover.VEGETATION, dtm, dsm).astype(np.float64)
+    surface_noveg_z = (
+        np.where(landcover == Landcover.VEGETATION, dtm, dsm).astype(np.float32, copy=False) - datum
+    )
 
     for k in range(params.sectors):
-        best_slope = np.full((height, width), -np.inf)
+        best_slope = np.full((height, width), -np.inf, dtype=np.float32)
         best_class = np.full((height, width), NO_BLOCKER, dtype=np.uint8)
-        best_slope_noveg = np.full((height, width), -np.inf)
+        best_slope_noveg = np.full((height, width), -np.inf, dtype=np.float32)
         for d_row, d_col, distance in sector_offsets(k, params, resolution_m):
             # Target pixel (i, j) samples array cell (row0 + i + d_row, ...);
             # clamp to the sub-rectangle of targets whose sample is in range.
@@ -239,10 +303,11 @@ def compute_horizon_block(
     resolution_m: float,
     params: HorizonParams,
     inner: Window,
+    height_datum_m: float = 0.0,
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint8], npt.NDArray[np.float32]]:
     """Pre-quantization cubes for the ``inner`` window: this is the oracle's peer.
 
-    Full float32 precision, which is what the reference comparisons need;
+    Unquantized angles, which is what the reference comparisons need;
     production goes through :func:`quantized_horizon_block` instead.
     """
     row0, row1, col0, col1 = inner
@@ -250,7 +315,7 @@ def compute_horizon_block(
     angles = np.empty(shape, dtype=np.float32)
     blocker = np.empty(shape, dtype=np.uint8)
     angles_noveg = np.empty(shape, dtype=np.float32)
-    sectors = iter_horizon_sectors(dsm, dtm, landcover, resolution_m, params, inner)
+    sectors = iter_horizon_sectors(dsm, dtm, landcover, resolution_m, params, inner, height_datum_m)
     for k, (sector_angles, sector_blocker, sector_noveg) in enumerate(sectors):
         angles[k] = sector_angles
         blocker[k] = sector_blocker
@@ -265,6 +330,7 @@ def quantized_horizon_block(
     resolution_m: float,
     params: HorizonParams,
     inner: Window,
+    height_datum_m: float = 0.0,
 ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]]:
     """The same block, quantized sector by sector: three uint8 cubes.
 
@@ -277,7 +343,7 @@ def quantized_horizon_block(
     angles_q = np.empty(shape, dtype=np.uint8)
     blocker = np.empty(shape, dtype=np.uint8)
     angles_noveg_q = np.empty(shape, dtype=np.uint8)
-    sectors = iter_horizon_sectors(dsm, dtm, landcover, resolution_m, params, inner)
+    sectors = iter_horizon_sectors(dsm, dtm, landcover, resolution_m, params, inner, height_datum_m)
     for k, (sector_angles, sector_blocker, sector_noveg) in enumerate(sectors):
         angles_q[k] = quantize_angles(sector_angles)
         blocker[k] = sector_blocker
@@ -303,6 +369,7 @@ class _SweepState:
     pad: int
     inner: Window
     coverage: npt.NDArray[np.bool_] | None
+    height_datum_m: float
 
 
 _SWEEP: _SweepState | None = None
@@ -363,6 +430,7 @@ def _sweep_tile(job: Window) -> SweptTile:
         state.resolution_m,
         state.params,
         (t0 - p0, t1 - p0, u0 - q0, u1 - q0),
+        state.height_datum_m,
     )
     covered = _tile_coverage(state, job)
     if covered is not None and not covered.all():
@@ -410,6 +478,7 @@ def compute_horizon_tiled(
     *,
     coverage: npt.NDArray[np.bool_] | None = None,
     scratch_dir: Path | None = None,
+    height_datum_m: float | None = None,
     progress: Callable[[str], None] | None = None,
     events: EventSink | None = None,
 ) -> HorizonResult:
@@ -440,11 +509,18 @@ def compute_horizon_tiled(
     They are *not* a claim that the sky is open there; ``coverage.tif`` is what
     tells readers there is no data, and readers that ignore it would report
     sunshine over a hole.
+
+    ``height_datum_m`` defaults to :func:`height_datum` of the whole ``dtm``.
+    Deriving it here and not per tile is what keeps the output independent of
+    ``tile_size``; it comes back in the result so the build can record it,
+    because a cube is only reproducible alongside its datum.
     """
     rows, cols = dsm.shape
     if inner is None:
         inner = (0, rows, 0, cols)
     row0, row1, col0, col1 = inner
+    if height_datum_m is None:
+        height_datum_m = height_datum(dtm)
     pad = buffer_pixels(params.max_distance_m, resolution_m)
     workers = max(1, params.workers)
     per_worker = estimate_sweep_worker_bytes(params.sectors, params.tile_size, pad)
@@ -499,7 +575,9 @@ def compute_horizon_tiled(
                 f"({cpu_budget()} cores available; --workers N to parallelise)"
             )
     sweep_start = time.monotonic()
-    state = _SweepState(dsm, dtm, landcover, resolution_m, params, pad, inner, coverage)
+    state = _SweepState(
+        dsm, dtm, landcover, resolution_m, params, pad, inner, coverage, height_datum_m
+    )
     # Both producers are closeable generators, so `closing` tears the pool down
     # at a known point instead of whenever the collector gets round to it.
     producer: Generator[SweptTile] = (
@@ -542,7 +620,12 @@ def compute_horizon_tiled(
     for cube in (angles_q, blocker, angles_noveg_q):
         if isinstance(cube, np.memmap):
             cube.flush()
-    return HorizonResult(angles_q=angles_q, blocker_class=blocker, angles_noveg_q=angles_noveg_q)
+    return HorizonResult(
+        angles_q=angles_q,
+        blocker_class=blocker,
+        angles_noveg_q=angles_noveg_q,
+        height_datum_m=height_datum_m,
+    )
 
 
 def quantize_angles(angles_deg: npt.NDArray[np.float32]) -> npt.NDArray[np.uint8]:

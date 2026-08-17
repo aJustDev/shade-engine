@@ -275,6 +275,9 @@ def build_city(
         )
         say(f"horizon sweep done in {format_duration(time.monotonic() - phase_start)}")
         phase("sweep", phase_start)
+        # Read before `del result` below: the manifest is written much later,
+        # and a cube without its datum cannot be reproduced.
+        height_datum_m = result.height_datum_m
         timed_cog(
             out_dir / HORIZON_FILENAME,
             result.angles_q,
@@ -367,6 +370,7 @@ def build_city(
             angle_max_deg=ANGLE_MAX_DEG,
             step_mode=params.step_mode,
             tile_size=params.tile_size,
+            height_datum_m=height_datum_m,
         ),
         landcover_classes={member.name.lower(): int(member) for member in Landcover},
         landcover=LandcoverBuildParams(

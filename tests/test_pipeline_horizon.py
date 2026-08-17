@@ -104,6 +104,56 @@ def test_noveg_horizon_equals_the_full_one_without_vegetation(cube_grid: Horizon
     assert np.abs(difference).max() <= 1
 
 
+def test_lifting_the_whole_city_changes_nothing() -> None:
+    """Raise every height by 400 m and the cubes come out bit for bit the same.
+
+    The sweep only ever uses *differences* of height, so the elevation above the
+    ellipsoid must not enter the result -- and in float32 it does unless the
+    heights are made relative first: at 367 m the ulp is 3.05e-05 m, so a
+    constant like the observer's 1.6 m rounds the same way on every pixel of a
+    city and quietly shifts the whole skyline (see shade-docs:
+    learning/precision-de-alturas.md). 400 m is a whole number of datum steps,
+    which is what makes the equality exact rather than approximate.
+
+    The equality is demanded on the *angles*, not on their quantization: this
+    fixture's angles sit far from a quantization boundary, so the cubes survive
+    an error the floats do not. Measured with ``height_datum_m=0.0`` forced,
+    which is the deliberate error this pins: the angles differ by up to
+    1.14e-05 deg while the quantized cubes stay identical. On real data at
+    367 m that same defect moves 6,219 cells and 26 verdicts.
+    """
+    dsm, dtm = synthetic.cube_scene()
+    landcover = synthetic.cube_landcover()
+    inner = _full_window(dsm)
+    ground = compute_horizon_block(
+        dsm, dtm, landcover, 1.0, CUBE_PARAMS, inner, horizon_module.height_datum(dtm)
+    )
+    lifted = compute_horizon_block(
+        dsm + 400.0,
+        dtm + 400.0,
+        landcover,
+        1.0,
+        CUBE_PARAMS,
+        inner,
+        horizon_module.height_datum(dtm + 400.0),
+    )
+    for mine, theirs in zip(lifted, ground, strict=True):
+        assert_array_equal(mine, theirs)
+
+    # And the driver derives that datum by itself, which is the only way a
+    # production sweep gets one.
+    result = compute_horizon_tiled(dsm + 400.0, dtm + 400.0, landcover, 1.0, CUBE_PARAMS)
+    assert result.height_datum_m == 400.0
+    assert_array_equal(result.angles_q, quantize_angles(lifted[0]))
+
+
+def test_height_datum_is_the_median_to_the_nearest_hundred() -> None:
+    """Nearest, not truncated: truncating leaves the heights in a high binade."""
+    assert horizon_module.height_datum(np.full((4, 4), 361.1)) == 400.0
+    assert horizon_module.height_datum(np.full((4, 4), 289.8)) == 300.0
+    assert horizon_module.height_datum(np.zeros((4, 4))) == 0.0
+
+
 def test_quantized_block_equals_quantizing_the_float_block() -> None:
     """The memory-lean path and the oracle's peer are the same numbers.
 

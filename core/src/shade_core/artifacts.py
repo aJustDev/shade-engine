@@ -48,7 +48,13 @@ METADATA_FILENAME: Final = "metadata.json"
 
 
 class HorizonBuildParams(BaseModel):
-    """Sweep parameters recorded at build time."""
+    """Sweep parameters recorded at build time.
+
+    ``height_datum_m`` is the elevation the sweep subtracted before computing
+    in float32. Nothing reads it at runtime -- the cubes are angles -- but
+    without it a cube cannot be reproduced, so it travels with the artifact.
+    Optional because artifacts built before the datum existed do not carry it.
+    """
 
     sectors: int
     max_distance_m: float
@@ -56,6 +62,7 @@ class HorizonBuildParams(BaseModel):
     angle_max_deg: float
     step_mode: str
     tile_size: int
+    height_datum_m: float | None = None
 
 
 class LandcoverBuildParams(BaseModel):
