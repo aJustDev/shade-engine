@@ -23,6 +23,7 @@ from shade_pipeline.runstate import (
     StepRecord,
     StepStatus,
     config_digest,
+    process_started_at,
 )
 
 CONFIG = {
@@ -293,6 +294,40 @@ def test_pruning_one_step_leaves_the_others_alone(cities_dir: Path, tmp_path: Pa
     state.paths_for("tiles")
 
     assert (state.directory / "build" / "20260801T000000.log").exists()
+
+
+def test_a_recycled_pid_is_not_the_process_that_was_launched() -> None:
+    """A pid is not an identity, and what the console does with the answer is SIGTERM.
+
+    The kernel hands the number out again once its process is gone, so
+    ``os.kill(pid, 0)`` says only that *something* is there. The pair (pid,
+    start time) is what says it is still ours.
+    """
+    mine = StepRecord(
+        status=StepStatus.RUNNING,
+        pid=os.getpid(),
+        pid_started_at=process_started_at(),
+    )
+    recycled = mine.model_copy(update={"pid_started_at": (mine.pid_started_at or 0) + 1})
+    without_the_field = StepRecord(status=StepStatus.RUNNING, pid=os.getpid())
+
+    assert mine.is_alive
+    assert not recycled.is_alive, "same pid, another process: not ours"
+    assert without_the_field.is_alive, "state files written before this fall back to the pid"
+
+
+def test_the_start_time_of_a_pid_that_is_not_there_is_unknown() -> None:
+    assert process_started_at(2**22) is None
+
+
+def test_a_step_records_which_process_started_it(cities_dir: Path, tmp_path: Path) -> None:
+    state = _state(cities_dir, tmp_path)
+    log, events = state.paths_for("build")
+    state.begin("build", log=log, events=events)
+
+    record = _state(cities_dir, tmp_path).record("build")
+    assert record.pid == os.getpid()
+    assert record.pid_started_at == process_started_at()
 
 
 def test_status_reports_a_broken_city_instead_of_dying_on_it(

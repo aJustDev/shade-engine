@@ -120,6 +120,26 @@ class StepStatus(StrEnum):
     """Never stored: only ever returned by :meth:`CityState.status`."""
 
 
+def process_started_at(pid: int | str = "self") -> int | None:
+    """When a process began, in the kernel's own clock ticks since boot.
+
+    A pid is not an identity: the kernel hands the same number out again once
+    the process that had it is gone, so "is pid 4242 alive" and "is *my* pid
+    4242 alive" are different questions. The pair (pid, this number) answers the
+    second one, and field 22 of ``/proc/<pid>/stat`` is where Linux keeps it.
+
+    The comm field is a filename in brackets and can contain spaces, so the
+    parse starts after the last ``") "`` rather than splitting from the left.
+    Returns None where there is no procfs, which is the honest answer on a
+    system that cannot tell.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        return int(raw.rsplit(") ", 1)[1].split()[19])
+    except OSError, IndexError, ValueError:
+        return None
+
+
 class StepRecord(BaseModel):
     """One step's last run."""
 
@@ -129,6 +149,12 @@ class StepRecord(BaseModel):
     duration_s: float | None = None
     config_digest: str | None = None
     pid: int | None = None
+    pid_started_at: int | None = None
+    """The process's start time, so a recycled pid is not mistaken for it.
+
+    Absent in state files written before this existed, and on any system
+    without procfs; both fall back to asking about the pid alone.
+    """
     params: dict[str, Any] = Field(default_factory=dict)
     log: str | None = None
     events: str | None = None
@@ -136,14 +162,19 @@ class StepRecord(BaseModel):
 
     @property
     def is_alive(self) -> bool:
-        """True when this step claims to be running and its process still exists.
+        """True when this step claims to be running and *its* process still exists.
 
         A crashed or killed supervisor leaves ``RUNNING`` behind for ever, and a
         console that believed it would wait on a job nobody is doing. Signal 0
-        asks the kernel whether the pid is there without touching it.
+        asks the kernel whether the pid is there without touching it -- but only
+        whether *something* is there, and what the console does with the answer
+        is send SIGTERM. So when the start time was recorded, it decides: a pid
+        that came back round belongs to somebody else's process now.
         """
         if self.status is not StepStatus.RUNNING or self.pid is None:
             return False
+        if self.pid_started_at is not None:
+            return process_started_at(self.pid) == self.pid_started_at
         try:
             os.kill(self.pid, 0)
         except ProcessLookupError, PermissionError:
@@ -462,6 +493,9 @@ class RunState:
             started_at=datetime.now(UTC),
             config_digest=self.state.config_digest,
             pid=os.getpid(),
+            # Read from /proc/self while this process is the one asking, which
+            # is the only moment the answer is free of doubt.
+            pid_started_at=process_started_at(),
             params=params or {},
             log=str(log),
             events=str(events),

@@ -1511,6 +1511,83 @@ def test_the_last_price_asked_for_is_the_one_shown(workspace: Path) -> None:
     assert "stale-answer" not in seen["text"]
 
 
+def test_copying_the_log_goes_through_the_clipboard_the_terminal_cannot_refuse(
+    workspace: Path,
+) -> None:
+    """OSC 52 is a request the terminal may decline in silence, and used to say `copied`.
+
+    Under WSL there is a route that does not go through the terminal at all.
+    Where there is none, the message names the file instead of pretending.
+    """
+    state = _state(workspace)
+    log, events = state.paths_for("build")
+    log.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    state.begin("build", log=log, events=events)
+    copied: list[bytes] = []
+
+    class FakeClip:
+        @staticmethod
+        def run(argv: list[str], **kwargs: Any) -> None:
+            assert argv == ["/mnt/c/WINDOWS/system32/clip.exe"]
+            copied.append(kwargs["input"])
+
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("o")
+        await pilot.pause()
+        with (
+            patch("shade_pipeline.console.jobs.shutil.which", return_value=None),
+            patch.object(app, "notify", lambda message, **kwargs: seen.update(without=message)),
+        ):
+            await pilot.press("y")
+            await pilot.pause()
+        with (
+            patch(
+                "shade_pipeline.console.jobs.shutil.which",
+                return_value="/mnt/c/WINDOWS/system32/clip.exe",
+            ),
+            patch("shade_pipeline.console.jobs.subprocess", FakeClip),
+            patch.object(app, "notify", lambda message, **kwargs: seen.update(with_clip=message)),
+        ):
+            await pilot.press("y")
+            await pilot.pause()
+
+    drive(app, scenario)
+
+    assert copied == [b"one\ntwo\nthree\n"], "the log went out through clip.exe"
+    assert "3 lines" in seen["with_clip"]
+    assert str(log) in seen["without"], "with no helper, say where the file is"
+
+
+def test_a_step_that_finishes_says_so_once(workspace: Path) -> None:
+    """The list is the screen left open for hours, and it announced nothing.
+
+    A build that failed at four in the morning was visible only to whoever
+    happened to be looking at the table.
+    """
+    app = _app(workspace)
+    said: list[str] = []
+
+    async def scenario(pilot: Any) -> None:
+        screen = app.screen
+        assert isinstance(screen, CitiesScreen)
+        state = _state(workspace)
+        log, events = state.paths_for("build")
+        state.begin("build", log=log, events=events)
+        screen.refresh_rows()
+        with patch.object(app, "notify", lambda message, **kwargs: said.append(message)):
+            state.fail("build", "CoverageError: 3 lidar tiles missing")
+            screen.refresh_rows()
+            screen.refresh_rows()  # the same state again: nothing new to say
+        await pilot.pause()
+
+    drive(app, scenario)
+
+    assert said == ["cube: build failed"]
+
+
 def test_with_no_cities_the_screen_says_how_to_make_one(tmp_path: Path) -> None:
     """An empty table and "nothing running" is true and useless."""
     cities = tmp_path / "cities"

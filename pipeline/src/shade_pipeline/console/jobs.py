@@ -11,6 +11,7 @@ writes hundreds of records and the console asks every couple of seconds, so
 re-reading the whole file each time would be work for nothing.
 """
 
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -73,6 +74,34 @@ def launch(argv: Sequence[str]) -> int:
         stderr=subprocess.DEVNULL,
     )
     return child.pid
+
+
+def copy_to_system_clipboard(text: str) -> bool:
+    """Put ``text`` on the clipboard through a helper the terminal cannot veto.
+
+    Textual copies with OSC 52, which is a request to the terminal emulator and
+    can be declined -- by ssh without a multiplexer, by tmux with
+    ``set-clipboard off``, by a terminal that simply does not do it -- and the
+    refusal is silent. Under WSL there is a second route that does not go
+    through the terminal at all, and taking it is the difference between a
+    traceback landing in the other window and a message that says it did.
+
+    Returns whether that route was there and worked; the caller still tries
+    OSC 52, since outside WSL it is all there is.
+    """
+    helper = shutil.which("clip.exe")
+    if helper is None:
+        return False
+    try:
+        subprocess.run(
+            [helper],
+            input=text.encode("utf-8", errors="replace"),
+            check=True,
+            timeout=5,
+        )
+    except OSError, subprocess.SubprocessError:
+        return False
+    return True
 
 
 def _tail_events(path: Path) -> list[Event]:

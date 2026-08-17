@@ -36,15 +36,24 @@ from shade_core.config import CityConfig
 from shade_pipeline.cityfile import PROTECTED, CityFileError, edit_city
 from shade_pipeline.console.confirm import ConfirmScreen, DetailScreen, EditScreen
 from shade_pipeline.console.cost import CostPanel
-from shade_pipeline.console.jobs import engine_argv, latest_phase, launch, progress_of
+from shade_pipeline.console.jobs import (
+    copy_to_system_clipboard,
+    engine_argv,
+    latest_phase,
+    launch,
+    progress_of,
+)
 from shade_pipeline.console.utilities import UtilitiesScreen
 from shade_pipeline.console.utilities import to_argv as utility_argv
+from shade_pipeline.preview import DEFAULT_WEB_PORT
 from shade_pipeline.runstate import LOG_STEPS, RunState, StepStatus
 
 if TYPE_CHECKING:
     from shade_pipeline.console.app import ConsoleApp
 
 REFRESH_SECONDS = 2.0
+
+LOG_MAX_LINES = 5000
 
 STATUS_STYLE: dict[StepStatus, str] = {
     StepStatus.PENDING: "dim",
@@ -162,7 +171,10 @@ class CityScreen(Screen[None]):
                     CostPanel(id="config-cost"),
                 )
             with TabPane("Log", id="log-pane"):
-                yield RichLog(id="log", wrap=True, markup=False)
+                # max_lines: the largest log under data/runs is 22 KB today and this
+                # costs nothing, but a step that turns verbose would otherwise
+                # grow this pane as far as the file goes.
+                yield RichLog(id="log", wrap=True, markup=False, max_lines=LOG_MAX_LINES)
         yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
@@ -215,9 +227,8 @@ class CityScreen(Screen[None]):
             status = state.status(step)
             detail = record.error or (state.stale_reason(step) or "")
             if step == "preview" and status is StepStatus.RUNNING:
-                detail = (
-                    f"http://127.0.0.1:{record.params.get('web_port', 5173)} (pid {record.pid})"
-                )
+                port = record.params.get("web_port", DEFAULT_WEB_PORT)
+                detail = f"http://127.0.0.1:{port} (pid {record.pid})"
             table.add_row(
                 step,
                 status_cell(status),
@@ -279,7 +290,7 @@ class CityScreen(Screen[None]):
         step = next((name for name in running if name != "preview"), running[0])
         if step == "preview":
             record = state.record("preview")
-            where = f"http://127.0.0.1:{record.params.get('web_port', 5173)}"
+            where = f"http://127.0.0.1:{record.params.get('web_port', DEFAULT_WEB_PORT)}"
             stopping = " (stopping)" if record.pid == self._stopping else ""
             label.update(f"preview: serving {where}{stopping}")
             bar.update(total=100, progress=0)
@@ -461,7 +472,9 @@ class CityScreen(Screen[None]):
         app = self.console_app
         state = self.state()
         running = state.record("preview")
-        if state.status("preview") is StepStatus.RUNNING and running.pid:
+        # `is_alive` and not "the record says running": what happens next is a
+        # SIGTERM, and a recycled pid belongs to somebody else's process.
+        if running.is_alive and running.pid:
             # Shutting the servers down takes a few seconds, and the record does
             # not change until it is over. Signalling again in the meantime does
             # not help and used to stack up a toast per press.
@@ -489,7 +502,9 @@ class CityScreen(Screen[None]):
                 str(app.data_root),
             )
         )
-        self.notify(f"preview on http://127.0.0.1:5173 (pid {pid}); press v again to stop it")
+        self.notify(
+            f"preview on http://127.0.0.1:{DEFAULT_WEB_PORT} (pid {pid}); press v again to stop it"
+        )
 
     def action_publish(self) -> None:
         """Show the plan in full, then ask. Publishing is never automatic."""
@@ -550,20 +565,30 @@ class CityScreen(Screen[None]):
         self.notify(f"{self.city}: removing from the server as pid {pid}")
 
     def action_copy_log(self) -> None:
-        """Put the whole current log on the clipboard.
+        """Put the whole current log on the clipboard, by whichever route works.
 
         Dragging with the mouse selects too, and Textual copies that -- but over
         ssh, in a multiplexer, or in a terminal that grabs the mouse itself,
-        which of those works varies. A key that copies the file outright does
-        not, and a traceback is exactly the thing you want to paste somewhere
-        else.
+        which of those works varies. A traceback is exactly the thing you want
+        to paste somewhere else, so this tries both routes it has: `clip.exe`
+        under WSL, which the terminal cannot decline, and OSC 52, which it can.
+
+        Neither is a promise. The message names the file for the case where
+        nothing arrives, because a copy that silently did not happen is worse
+        than one that says where the text is.
         """
         if self._log_path is None or not self._log_path.exists():
             self.notify("no log to copy yet", severity="warning")
             return
         text = self._log_path.read_text(encoding="utf-8", errors="replace")
         self.app.copy_to_clipboard(text)
-        self.notify(f"copied {len(text.splitlines())} lines from {self._log_path.name}")
+        lines = len(text.splitlines())
+        if copy_to_system_clipboard(text):
+            self.notify(f"copied {lines} lines from {self._log_path.name}")
+            return
+        self.notify(
+            f"copied {lines} lines by OSC 52; if nothing pasted, the log is {self._log_path}"
+        )
 
     def action_utilities(self) -> None:
         self.app.push_screen(UtilitiesScreen(self.city), self.run_utility)

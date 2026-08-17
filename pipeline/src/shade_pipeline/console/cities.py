@@ -34,6 +34,16 @@ class CitiesScreen(Screen[None]):
     CitiesScreen #hint { height: auto; padding: 0 1; color: $text-muted; }
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: dict[tuple[str, str], StepStatus] = {}
+        """Last status seen per city and step, to notice what changes.
+
+        This screen is the one left open for hours while something builds, and
+        it announced nothing: a step that failed at four in the morning was
+        visible only to whoever happened to look at the table.
+        """
+
     def compose(self) -> ComposeResult:
         yield Header()
         yield DataTable(id="cities", cursor_type="row")
@@ -47,13 +57,6 @@ class CitiesScreen(Screen[None]):
             table.add_column(step, key=step)
         self.refresh_rows()
         self.set_interval(REFRESH_SECONDS, self.refresh_rows)
-
-    @property
-    def console_app(self) -> object:
-        from shade_pipeline.console.app import ConsoleApp
-
-        assert isinstance(self.app, ConsoleApp)
-        return self.app
 
     def refresh_rows(self) -> None:
         from shade_pipeline.console.app import ConsoleApp
@@ -80,6 +83,7 @@ class CitiesScreen(Screen[None]):
             table.add_row(city, *(status_cell(status) for status in statuses), key=city)
             if StepStatus.RUNNING in statuses:
                 running.append(city)
+            self.announce(city, dict(zip(CHAIN, statuses, strict=True)))
         if 0 <= cursor < table.row_count:
             table.move_cursor(row=cursor)
         if not table.row_count:
@@ -91,6 +95,25 @@ class CitiesScreen(Screen[None]):
             return
         lines = [f"running: {', '.join(running)}" if running else "nothing running", *broken]
         self.query_one("#hint", Static).update("\n".join(lines))
+
+    def announce(self, city: str, statuses: dict[str, StepStatus]) -> None:
+        """Say out loud what a step just became, once, when it becomes it.
+
+        Only the transition, and only into an outcome: a step that is still
+        running has the bar for that, and repeating "done" every two seconds
+        would train anybody to ignore the toasts. Nothing is announced on the
+        first pass either -- what was already finished before the console
+        opened is not news.
+        """
+        for step, status in statuses.items():
+            before = self._seen.get((city, step))
+            self._seen[city, step] = status
+            if before is None or before == status:
+                continue
+            if status is StepStatus.FAILED:
+                self.notify(f"{city}: {step} failed", severity="error", timeout=30)
+            elif status is StepStatus.DONE and before is StepStatus.RUNNING:
+                self.notify(f"{city}: {step} done")
 
     def action_refresh_now(self) -> None:
         self.refresh_rows()
