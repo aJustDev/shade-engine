@@ -33,6 +33,23 @@ from shade_core.config import load_city
 
 RUNS_DIRNAME = "runs"
 STATE_FILENAME = "state.json"
+LATEST_DIRNAME = "latest"
+"""Stable names for the newest run of each step, alongside the stamped files.
+
+A run's own log is stamped so a failed attempt survives the retry that replaced
+it, which is right and makes every path unguessable: five ``publish-*.log`` in a
+directory and nothing says which one is today's. ``latest/publish.log`` is a
+symlink that always does, and a stable path is what you can hand to somebody --
+or to an agent -- without pasting a screenful of terminal.
+"""
+
+KEEP_RUNS = 10
+"""How many stamped runs of a step to keep before pruning the oldest.
+
+Logs are small (a four-hour sweep writes a few dozen KB) so this is generous on
+purpose; it exists so a directory that is written to every rebuild does not grow
+without end, not to save space.
+"""
 
 DEPENDS_ON: dict[str, tuple[str, ...]] = {
     "area": (),
@@ -218,11 +235,66 @@ class RunState:
         """Where this step's next run should write its human log and its events.
 
         Stamped with the start time rather than overwritten, so a failed attempt
-        is still readable after the retry that replaced it.
+        is still readable after the retry that replaced it. ``latest/`` gets a
+        symlink under a stable name, and the oldest runs beyond
+        :data:`KEEP_RUNS` are pruned.
         """
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         self.directory.mkdir(parents=True, exist_ok=True)
-        return (self.directory / f"{step}-{stamp}.log", self.directory / f"{step}-{stamp}.jsonl")
+        paths = (self.directory / f"{step}-{stamp}.log", self.directory / f"{step}-{stamp}.jsonl")
+        for path in paths:
+            self._point_latest_at(step, path)
+        self._prune(step)
+        return paths
+
+    def newest_run(self, step: str, suffix: str = ".log") -> Path | None:
+        """This step's most recent stamped file, by name.
+
+        Globbed rather than read from the state file: a step recorded before
+        ``latest/`` existed still has its logs on disk, and the stamp sorts
+        chronologically, so the newest is simply the last.
+        """
+        runs = sorted(self.directory.glob(f"{step}-*{suffix}"))
+        return runs[-1] if runs else None
+
+    def refresh_latest(self) -> None:
+        """Rebuild every ``latest/`` link from what is actually on disk.
+
+        Links are made when a step starts, which leaves nothing for the cities
+        built before this existed, and nothing correct if somebody deletes a run
+        by hand. Cheap enough to do on every read.
+        """
+        for step in DEPENDS_ON:
+            for suffix in (".log", ".jsonl"):
+                newest = self.newest_run(step, suffix)
+                if newest is not None:
+                    self._point_latest_at(step, newest)
+
+    def _point_latest_at(self, step: str, path: Path) -> None:
+        """Repoint ``latest/<step>.<ext>`` at ``path``, best effort.
+
+        Relative targets, so the whole ``data/`` tree stays movable. Failure is
+        swallowed: a filesystem without symlinks is a reason to lose a
+        convenience, never a reason to lose a build.
+        """
+        link = self.directory / LATEST_DIRNAME / f"{step}{path.suffix}"
+        try:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.unlink(missing_ok=True)
+            link.symlink_to(Path("..") / path.name)
+        except OSError:
+            pass
+
+    def _prune(self, step: str) -> None:
+        """Delete this step's oldest runs, keeping the newest :data:`KEEP_RUNS`.
+
+        By name, not by mtime: the stamp sorts chronologically and is the same
+        for a log and its events, so both halves of a run go together.
+        """
+        for suffix in (".log", ".jsonl"):
+            runs = sorted(self.directory.glob(f"{step}-*{suffix}"))
+            for stale in runs[:-KEEP_RUNS]:
+                stale.unlink(missing_ok=True)
 
     def begin(
         self, step: str, *, params: dict[str, Any] | None = None, log: Path, events: Path

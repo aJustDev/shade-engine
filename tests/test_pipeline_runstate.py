@@ -11,8 +11,12 @@ from pathlib import Path
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
+from shade_pipeline.cli import app
 from shade_pipeline.runstate import (
+    KEEP_RUNS,
+    LATEST_DIRNAME,
     STATE_FILENAME,
     CityState,
     RunState,
@@ -232,3 +236,101 @@ def test_undoing_a_step_survives_a_reread(cities_dir: Path, tmp_path: Path) -> N
     state.undo("publish")
 
     assert _state(cities_dir, tmp_path).status("publish") is StepStatus.PENDING
+
+
+def test_the_newest_run_of_a_step_has_a_stable_name(cities_dir: Path, tmp_path: Path) -> None:
+    """Five publish-*.log in a directory and none of them says which is today's.
+
+    The stamp is right -- a failed attempt has to survive the retry -- and it is
+    exactly what makes the path unguessable, so a symlink carries the answer.
+    """
+    state = _state(cities_dir, tmp_path)
+    log, _ = state.paths_for("publish")
+    log.write_text("first", encoding="utf-8")
+    link = state.directory / LATEST_DIRNAME / "publish.log"
+
+    assert link.read_text(encoding="utf-8") == "first"
+
+    later, _ = state.paths_for("publish")
+    later.write_text("second", encoding="utf-8")
+
+    assert link.resolve() == later.resolve()
+    assert link.read_text(encoding="utf-8") == "second"
+
+
+def test_the_latest_link_is_relative_so_the_tree_can_move(cities_dir: Path, tmp_path: Path) -> None:
+    state = _state(cities_dir, tmp_path)
+    state.paths_for("build")
+
+    link = state.directory / LATEST_DIRNAME / "build.log"
+    assert not Path(os.readlink(link)).is_absolute()
+
+
+def test_old_runs_are_pruned_and_the_newest_are_kept(cities_dir: Path, tmp_path: Path) -> None:
+    """A directory written to on every rebuild should not grow without end."""
+    state = _state(cities_dir, tmp_path)
+    for index in range(KEEP_RUNS + 4):
+        # paths_for stamps to the second, so write the files by hand to get
+        # distinct names without sleeping through fourteen seconds.
+        (state.directory).mkdir(parents=True, exist_ok=True)
+        (state.directory / f"tiles-202608{index + 1:02d}T000000.log").write_text("x")
+    state.paths_for("tiles")
+
+    kept = sorted(path.name for path in state.directory.glob("tiles-*.log"))
+    assert len(kept) == KEEP_RUNS
+    # The stamp sorts chronologically, so the survivors are the tail.
+    assert kept[0] == "tiles-20260805T000000.log"
+
+
+def test_pruning_one_step_leaves_the_others_alone(cities_dir: Path, tmp_path: Path) -> None:
+    state = _state(cities_dir, tmp_path)
+    state.directory.mkdir(parents=True, exist_ok=True)
+    for index in range(KEEP_RUNS + 4):
+        (state.directory / f"tiles-202608{index + 1:02d}T000000.log").write_text("x")
+    (state.directory / "build-20260801T000000.log").write_text("keep me")
+
+    state.paths_for("tiles")
+
+    assert (state.directory / "build-20260801T000000.log").exists()
+
+
+def test_the_logs_command_finds_a_run_without_being_told_its_timestamp(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    """The point of the whole latest/ arrangement: a path you can hand to someone."""
+    state = _state(cities_dir, tmp_path)
+    log, _ = state.paths_for("publish")
+    log.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "logs",
+            "cube",
+            "publish",
+            "--cities-dir",
+            str(cities_dir),
+            "--data-root",
+            str(tmp_path / "data"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "three" in result.output
+
+
+def test_the_logs_command_lists_the_steps_when_asked_for_none(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    state = _state(cities_dir, tmp_path)
+    log, _ = state.paths_for("build")
+    log.write_text("swept\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        ["logs", "cube", "--cities-dir", str(cities_dir), "--data-root", str(tmp_path / "data")],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "latest/build.log" in result.output
+    assert "publish" in result.output

@@ -66,7 +66,7 @@ from shade_pipeline.runner import (
     step_scope,
     steps_between,
 )
-from shade_pipeline.runstate import RunState, StepStatus
+from shade_pipeline.runstate import LATEST_DIRNAME, RunState, StepStatus
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 from shade_pipeline.tiles import (
     DEFAULT_MAX_ZOOM,
@@ -439,6 +439,67 @@ def unpublish(
         raise typer.Exit(1) from exc
     state.undo("publish")
     typer.echo(f"{city} is off {base_url}; publish it again when you want it back")
+
+
+@app.command()
+def logs(
+    city: Annotated[str, typer.Argument(help="City whose runs to look at")],
+    step: Annotated[
+        str | None, typer.Argument(help=f"One of {', '.join(CHAIN)}; omit to list them")
+    ] = None,
+    path_only: Annotated[
+        bool, typer.Option("--path", help="Print the path instead of the contents")
+    ] = False,
+    lines: Annotated[int, typer.Option("--lines", "-n", help="Show only the last N lines")] = 0,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+) -> None:
+    """Find or print the log of a step, without guessing its timestamp.
+
+    Every run writes a stamped file so a failed attempt survives the retry that
+    replaced it, which makes the newest one unguessable: five ``publish-*.log``
+    in a directory and none of them says which is today's. ``latest/<step>.log``
+    is a symlink that always does, and this is how you find it.
+
+    With no STEP it lists what there is. With one it prints the log, so
+    ``shade-engine logs CITY publish -n 40`` is the quick look and ``--path``
+    gives you something to hand to an editor or another pair of eyes.
+    """
+    state = RunState.open(city, cities_dir=cities_dir, data_root=data_root)
+    # Self-healing: a city built before latest/ existed has its logs on disk and
+    # no links to them, and so does one whose runs were tidied up by hand.
+    state.refresh_latest()
+    latest = state.directory / LATEST_DIRNAME
+
+    if step is None:
+        typer.echo(f"{city}: {state.directory}")
+        for name in CHAIN:
+            link = latest / f"{name}.log"
+            if not link.exists():
+                typer.echo(f"  {name:>8}  -")
+                continue
+            target = link.resolve()
+            when = datetime.fromtimestamp(target.stat().st_mtime).strftime("%d %b %H:%M")
+            size = format_bytes(target.stat().st_size)
+            typer.echo(f"  {name:>8}  {when}  {size:>9}  {link}")
+        return
+
+    if step not in CHAIN:
+        typer.echo(f"error: unknown step {step!r}; the chain is {', '.join(CHAIN)}", err=True)
+        raise typer.Exit(1)
+    link = latest / f"{step}.log"
+    if not link.exists():
+        typer.echo(f"error: {city} has no {step} log under {state.directory}", err=True)
+        raise typer.Exit(1)
+    if path_only:
+        typer.echo(str(link))
+        return
+    text = link.read_text(encoding="utf-8", errors="replace")
+    if lines > 0:
+        text = "\n".join(text.splitlines()[-lines:])
+    typer.echo(text)
 
 
 @app.command()
