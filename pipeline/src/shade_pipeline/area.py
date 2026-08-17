@@ -29,7 +29,11 @@ import numpy as np
 import numpy.typing as npt
 import rasterio.features
 import shapely
-from pyproj import Transformer
+import shapely.ops
+from pyproj import CRS, Transformer
+from pyproj.aoi import AreaOfInterest
+from pyproj.database import query_utm_crs_info
+from pyproj.exceptions import CRSError
 from shapely.geometry import mapping, shape
 from shapely.geometry.base import BaseGeometry
 
@@ -557,6 +561,128 @@ _BBOX_LINE = re.compile(r"^bbox:\s*\[[^\]]*\](.*)$")
 _AREA_LINE = re.compile(r"^area:\s*(\S*)(.*)$")
 
 
+def _easting_first(code: str) -> bool:
+    """Whether a projected CRS orders its axes (x, y) and not (y, x).
+
+    The EPSG database offers both, and returns the transposed one first: asking
+    for UTM zone 30N over Spain gives ``EPSG:3042`` -- ``ETRS89 / UTM zone 30N
+    (N-E)``, northing first -- before ``EPSG:25830``. They are the same
+    projection with the axes swapped, so writing the first into a city file
+    would put a bbox of ``[x, y, x, y]`` into a CRS that reads it as
+    ``[y, x, y, x]``. Detected by asking the axis, not by matching the ``(N-E)``
+    suffix, which is not guaranteed to be there.
+    """
+    try:
+        axes = CRS.from_epsg(int(code)).axis_info
+    except CRSError, ValueError:
+        return False
+    return bool(axes) and axes[0].direction.lower() == "east"
+
+
+def utm_crs(lat: float, lon: float, datum: str = "ETRS89") -> tuple[str, str]:
+    """The projected CRS a point belongs in, as ``("EPSG:25830", "UTM zone 30N")``.
+
+    The most consequential field of a city file and the easiest to get wrong by
+    hand: ``bbox`` is expressed in it, in meters. Pick the neighbouring zone and
+    every distance is quietly stretched; pick the transposed variant and every
+    coordinate is swapped. See ``shade-docs: learning/crs.md``.
+    """
+    margin = 0.01
+    interest = AreaOfInterest(lon - margin, lat - margin, lon + margin, lat + margin)
+    found = query_utm_crs_info(datum_name=datum, area_of_interest=interest)
+    if not found:
+        # Outside the datum's area of use (ETRS89 is Europe): fall back to the
+        # global one rather than refusing, and report which was used.
+        found = query_utm_crs_info(datum_name="WGS 84", area_of_interest=interest)
+    usable = [candidate for candidate in found if _easting_first(candidate.code)]
+    if not usable:
+        raise AreaError(f"no easting-first UTM zone covers {lat}, {lon}")
+    best = usable[0]
+    return f"EPSG:{best.code}", best.name
+
+
+def check_area_of_use(drawn: DrawnArea, crs: str) -> None:
+    """Refuse a polygon that falls outside the CRS it is about to be measured in.
+
+    Every projected CRS declares the region it is valid over, and projecting
+    outside it does not fail -- it returns numbers. A polygon over Cordoba
+    projected into UTM zone 31N comes back with an easting of -185,284, which is
+    not merely wrong but impossible: UTM eastings carry a 500 km false origin
+    precisely so they never go negative.
+
+    Nothing downstream can catch this. The bbox is self-consistent, the rasters
+    are the right shape, and the first complaint arrives hours later from the
+    LiDAR download, about tiles that do not exist. So it is caught at the door,
+    on both paths that can set a CRS: the console's new-city screen and the
+    preflight of every chain run.
+    """
+    try:
+        area = CRS.from_user_input(crs).area_of_use
+    except CRSError as error:
+        raise AreaError(f"{crs} is not a CRS this system knows: {error}") from error
+    if area is None:
+        return
+    west, south, east, north = area.bounds
+    min_lon, min_lat, max_lon, max_lat = drawn.wgs84.bounds
+    if west <= min_lon and max_lon <= east and south <= min_lat and max_lat <= north:
+        return
+    centre_lon = (min_lon + max_lon) / 2.0
+    centre_lat = (min_lat + max_lat) / 2.0
+    try:
+        suggestion, name = utm_crs(centre_lat, centre_lon)
+        advice = f"; that area belongs in {suggestion} ({name})"
+    except AreaError:
+        advice = ""
+    raise AreaError(
+        f"the area sits at lon {min_lon:.3f}..{max_lon:.3f}, lat {min_lat:.3f}..{max_lat:.3f}, "
+        f"outside what {crs} is defined for (lon {west}..{east}, lat {south}..{north}){advice}"
+    )
+
+
+def plan_city(
+    config: CityConfig,
+    *,
+    tile_size: int = 512,
+    workers: int = 1,
+    cache_dir: Path | None = None,
+    config_path: Path | None = None,
+) -> AreaPlan:
+    """Price a city exactly as it is configured, polygon or no polygon.
+
+    ``plan_area`` needs a drawn area because that is what the ``area`` command
+    is for. A city that declares none computes its whole bbox, so the honest
+    equivalent is the box itself: same arithmetic, coverage of 100%, one code
+    path. This is the single cost model -- the console's live panel and the
+    chain's preflight both read it, so they cannot disagree.
+    """
+    if config.area is not None:
+        drawn = read_area(Path(config.area), config.crs)
+        # Here rather than only at registration: a city file can also be
+        # hand-edited, and this is the last cheap moment to notice.
+        check_area_of_use(drawn, config.crs)
+        source = Path(config.area)
+    else:
+        box = shapely.box(*config.bbox)
+        to_wgs84 = Transformer.from_crs(config.crs, WGS84, always_xy=True)
+        drawn = DrawnArea(
+            projected=box,
+            wgs84=shapely.ops.transform(to_wgs84.transform, box),
+            features=1,
+            repaired=False,
+        )
+        source = config_path or Path(f"{config.id}.yaml")
+    return plan_area(
+        config,
+        drawn,
+        source,
+        tile_size=tile_size,
+        workers=workers,
+        cache_dir=cache_dir if cache_dir is not None else Path("data/lidar") / config.id,
+        area_path=Path(config.area) if config.area else Path(f"cities/{config.id}/area.geojson"),
+        config_path=config_path or Path(f"cities/{config.id}.yaml"),
+    )
+
+
 def rewrite_config(text: str, bbox: Bbox, area_path: Path) -> str:
     """Set ``bbox`` and ``area`` in a city YAML, touching nothing else.
 
@@ -596,14 +722,17 @@ __all__ = [
     "TileSaving",
     "area_geojson",
     "bbox_literal",
+    "check_area_of_use",
     "coverage_mask",
     "format_plan",
     "lidar_needs",
     "plan_area",
+    "plan_city",
     "read_area",
     "rewrite_config",
     "snap_bbox",
     "sweep_seconds",
     "tile_saving",
+    "utm_crs",
     "wgs84_geometry",
 ]
