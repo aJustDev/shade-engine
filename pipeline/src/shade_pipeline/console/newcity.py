@@ -99,6 +99,16 @@ class NewCityScreen(Screen[str | None]):
         self.watch_dir = watch_dir
         self.polygon: Path | None = None
         self._seen: float = 0.0
+        self._why: str | None = None
+        """Why the polygon in hand cannot be used, when there is one and it cannot.
+
+        ``read_area`` composes an exact message -- which file, and what is wrong
+        with it -- and this screen used to throw it away in three places and
+        report "needs an id and a polygon" instead. With an id typed and a path
+        typed that is the one sentence which cannot be true, and it sent
+        somebody looking for the wrong problem: the path had a typo in it and
+        nothing on screen said so.
+        """
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -144,12 +154,18 @@ class NewCityScreen(Screen[str | None]):
 
     def refresh_derived(self) -> None:
         """Show what is known so far: the CRS, and where to go and draw."""
+        # Cleared here because this is where every recompute starts; each panel
+        # below reads it straight after the call that could have set it.
+        self._why = None
         panel = self.query_one("#derived", Static)
         chosen = self.city_crs()
         if chosen is None:
             panel.update(
-                f"drop a .geojson in {self.watch_dir}, or type its path above.\n"
-                "A map centre below is optional: it only opens geojson.io in the right place."
+                self._why
+                or (
+                    f"drop a .geojson in {self.watch_dir}, or type its path above.\n"
+                    "A map centre below is optional: it only opens geojson.io in the right place."
+                )
             )
             return
         code, description = chosen
@@ -193,7 +209,10 @@ class NewCityScreen(Screen[str | None]):
         if self.polygon is not None:
             try:
                 drawn = read_area(self.polygon, WGS84)
-            except AreaError, OSError, ValueError:
+            except (AreaError, OSError, ValueError) as error:
+                # read_area's message names the file and what is wrong with it,
+                # which is the whole of what is worth saying.
+                self._why = str(error)
                 return None
             min_lon, min_lat, max_lon, max_lat = drawn.wgs84.bounds
             point: tuple[float, float] | None = (
@@ -206,7 +225,8 @@ class NewCityScreen(Screen[str | None]):
             return None
         try:
             return utm_crs(*point)
-        except AreaError:
+        except AreaError as error:
+            self._why = str(error)
             return None
 
     def _draft(self) -> CityConfig | None:
@@ -219,7 +239,10 @@ class NewCityScreen(Screen[str | None]):
         try:
             drawn = read_area(self.polygon, code)
             check_area_of_use(drawn, code)
-        except AreaError, OSError, ValueError:
+        except (AreaError, OSError, ValueError) as error:
+            # Reachable where city_crs was not: the polygon reads in WGS84 and
+            # still does not belong in the projected CRS it implies.
+            self._why = str(error)
             return None
         return CityConfig(
             id=city_id,
@@ -235,7 +258,7 @@ class NewCityScreen(Screen[str | None]):
         draft = self._draft()
         panel = self.query_one("#cost", CostPanel)
         if draft is None:
-            panel.clear("an id and a polygon, and the price appears here")
+            panel.clear(self._why or "an id and a polygon, and the price appears here")
             return
         panel.show(draft, config_path=self.cities_dir / f"{draft.id}.yaml")
 
@@ -249,13 +272,17 @@ class NewCityScreen(Screen[str | None]):
             self.action_cancel()
 
     def action_save(self) -> None:
+        self._why = None
         draft = self._draft()
         if draft is None:
-            self.notify("needs an id and a polygon", severity="error")
+            # "needs an id and a polygon" only when that is what is missing. A
+            # path was typed and the file is not there is a different sentence,
+            # and it is the one that gets you to the typo.
+            self.notify(self._why or "needs an id and a polygon", severity="error")
             return
         chosen = self.city_crs()
         if chosen is None:
-            self.notify("cannot work out the CRS for this area", severity="error")
+            self.notify(self._why or "cannot work out the CRS for this area", severity="error")
             return
         code, description = chosen
         try:

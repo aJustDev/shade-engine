@@ -497,6 +497,91 @@ def test_the_polygon_decides_the_crs_not_what_you_typed(workspace: Path) -> None
     assert seen["bbox"][0] > 0, "a UTM easting can never be negative"
 
 
+def test_a_polygon_path_that_is_not_there_says_so(workspace: Path) -> None:
+    """The screen knew exactly what was wrong and reported something else.
+
+    ``cuesta-banca.geojson`` was typed for a file called ``cuesta-blanca``, and
+    all three panels said the polygon was missing: the derived one went back to
+    "drop a .geojson in Descargas", the cost one to "an id and a polygon", and
+    saving answered "needs an id and a polygon" -- with an id typed and a path
+    typed, the one sentence that could not be true. ``read_area`` had composed
+    the real message and the screen threw it away.
+    """
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        screen.query_one("#city_id", Input).value = "cuesta-blanca"
+        screen.query_one("#polygon", Input).value = str(workspace / "cuesta-banca.geojson")
+        await pilot.pause()
+        seen["derived"] = str(screen.query_one("#derived", Static).render())
+        screen.action_save()
+        await pilot.pause()
+
+    drive(app, scenario)
+
+    assert "cuesta-banca.geojson" in seen["derived"], "name the file that is not there"
+    assert "cannot be read" in seen["derived"]
+    assert "drop a .geojson" not in seen["derived"], "a path was typed; do not pretend otherwise"
+    assert not (workspace / "cities" / "cuesta-blanca.yaml").exists()
+
+
+def test_a_polygon_that_is_not_json_says_which_file_and_why(workspace: Path) -> None:
+    """Same swallow, second cause: an export that is not what it claims to be."""
+    broken = workspace / "half-an-export.geojson"
+    broken.write_text('{"type": "FeatureColl', encoding="utf-8")
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        screen.query_one("#city_id", Input).value = "roto"
+        screen.query_one("#polygon", Input).value = str(broken)
+        await pilot.pause()
+        seen["derived"] = str(screen.query_one("#derived", Static).render())
+
+    drive(app, scenario)
+
+    assert "half-an-export.geojson" in seen["derived"]
+    assert "not valid JSON" in seen["derived"]
+
+
+def test_the_reason_clears_once_the_polygon_is_good(workspace: Path) -> None:
+    """Otherwise the first typo would sit on the screen for the rest of the session."""
+    import json
+
+    polygon = workspace / "montalban.geojson"
+    polygon.write_text(json.dumps(MONTALBAN), encoding="utf-8")
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        screen.query_one("#city_id", Input).value = "montalban"
+        screen.query_one("#polygon", Input).value = str(workspace / "typo.geojson")
+        await pilot.pause()
+        seen["first"] = str(screen.query_one("#derived", Static).render())
+        screen.query_one("#polygon", Input).value = str(polygon)
+        await pilot.pause()
+        seen["second"] = str(screen.query_one("#derived", Static).render())
+
+    drive(app, scenario)
+
+    assert "typo.geojson" in seen["first"]
+    assert "EPSG:25830" in seen["second"]
+    assert "typo.geojson" not in seen["second"]
+
+
 def test_without_a_polygon_the_point_is_only_a_map_centre(workspace: Path) -> None:
     """It proposes a CRS to look at, but there is nothing to write yet."""
     app = _app(workspace)
