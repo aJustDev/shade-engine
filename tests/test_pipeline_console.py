@@ -689,3 +689,56 @@ def test_the_log_tab_follows_a_preview_too(workspace: Path) -> None:
     drive(app, scenario)
 
     assert shown and "vite ready" in shown[0]
+
+
+def test_a_running_preview_has_a_row_of_its_own(workspace: Path) -> None:
+    """Five presses of v looked exactly like one, because nothing showed it."""
+    state = _state(workspace)
+    log, events = state.paths_for("preview")
+    state.begin("preview", params={"web_port": 5173}, log=log, events=events)
+    app = _app(workspace)
+    rows: list[str] = []
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        table = app.screen.query_one("#steps", DataTable)
+        for key in table.rows:
+            rows.append(" ".join(str(cell) for cell in table.get_row(key)))
+
+    drive(app, scenario)
+
+    preview_row = next(row for row in rows if row.startswith("preview"))
+    assert "running" in preview_row
+    assert "127.0.0.1:5173" in preview_row
+
+
+def test_the_log_tab_ignores_a_record_whose_file_was_never_written(workspace: Path) -> None:
+    """A step that died before opening its log is still the newest record there is.
+
+    Following it leaves the tab blank with nothing to explain why -- which is
+    what a preview refused for a busy port did to every later one.
+    """
+    state = _state(workspace)
+    real, events = state.paths_for("build")
+    state.begin("build", log=real, events=events)
+    real.write_text("swept tile [12/40]\n", encoding="utf-8")
+    state.complete("build")
+    missing, events = state.paths_for("preview")
+    state.begin("preview", log=missing, events=events)
+    state.fail("preview", "already listening on 127.0.0.1:5173")
+    assert not missing.exists()
+
+    app = _app(workspace)
+    copied: list[str] = []
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        app.copy_to_clipboard = copied.append  # type: ignore[assignment]
+        await pilot.press("y")
+        await pilot.pause()
+
+    drive(app, scenario)
+
+    assert copied and "swept tile" in copied[0]

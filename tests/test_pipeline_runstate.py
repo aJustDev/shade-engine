@@ -453,3 +453,24 @@ def test_seeding_never_touches_a_history_that_already_exists(
     state.paths_for("build")
 
     assert state.history_path.read_text(encoding="utf-8") == before
+
+
+def test_a_second_preview_does_not_overwrite_the_record_of_the_first(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    """The bookkeeping bug, not the port clash, is what broke the toggle.
+
+    begin() marked the second attempt running, the port check then failed it,
+    and by then the record of the preview that was actually alive had already
+    been replaced. The console could no longer see it to stop it, so every
+    press started another one.
+    """
+    state = _state(cities_dir, tmp_path)
+    log, events = state.paths_for("preview")
+    state.begin("preview", log=log, events=events)
+    live = state.record("preview")
+
+    second = _state(cities_dir, tmp_path)
+    assert second.status("preview") is StepStatus.RUNNING
+    assert second.record("preview").is_alive
+    assert second.record("preview").pid == live.pid

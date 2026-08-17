@@ -40,7 +40,6 @@ from shade_pipeline.console.jobs import engine_argv, latest_phase, launch, progr
 from shade_pipeline.console.launch import LaunchScreen, to_argv
 from shade_pipeline.console.utilities import UtilitiesScreen
 from shade_pipeline.console.utilities import to_argv as utility_argv
-from shade_pipeline.runner import CHAIN
 from shade_pipeline.runstate import LOG_STEPS, RunState, StepStatus
 
 if TYPE_CHECKING:
@@ -165,10 +164,18 @@ class CityScreen(Screen[None]):
         table = self.query_one("#steps", DataTable)
         cursor = table.cursor_row
         table.clear()
-        for step in CHAIN:
+        # LOG_STEPS, so `preview` gets a row. It is not part of the chain and
+        # nothing goes stale because of it, but it is a process this screen can
+        # start and stop, and a row is the only place its state is visible --
+        # without one, five presses of `v` look exactly like one.
+        for step in LOG_STEPS:
             record = state.record(step)
             status = state.status(step)
             detail = record.error or (state.stale_reason(step) or "")
+            if step == "preview" and status is StepStatus.RUNNING:
+                detail = (
+                    f"http://127.0.0.1:{record.params.get('web_port', 5173)} (pid {record.pid})"
+                )
             table.add_row(
                 step,
                 status_cell(status),
@@ -185,12 +192,14 @@ class CityScreen(Screen[None]):
         """Turn "running" into a position and an estimate, from the event stream."""
         label = self.query_one("#progress-label", Static)
         bar = self.query_one("#progress", ProgressBar)
-        running = [step for step in CHAIN if state.status(step) is StepStatus.RUNNING]
+        running = [step for step in LOG_STEPS if state.status(step) is StepStatus.RUNNING]
         if not running:
             label.update("nothing running")
             bar.update(total=100, progress=0)
             return
-        step = running[0]
+        # A preview has nothing to count and never ends on its own, so it must
+        # not be mistaken for a step in flight when a build is also running.
+        step = next((name for name in running if name != "preview"), running[0])
         progress = progress_of(state, step)
         if progress is None:
             phase = latest_phase(state, step)
@@ -289,7 +298,12 @@ class CityScreen(Screen[None]):
             # LOG_STEPS and not CHAIN: preview writes a log too, and it is the
             # one you are most likely to be reading while it runs.
             for step in LOG_STEPS
-            if (record := state.record(step)).log and record.started_at
+            if (record := state.record(step)).log
+            and record.started_at
+            # A record can name a log that was never written: a step that died
+            # before it opened one is still the newest record there is, and
+            # following it leaves this tab blank with no explanation.
+            and Path(record.log).exists()
         ]
         if not candidates:
             return

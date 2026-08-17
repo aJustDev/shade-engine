@@ -7,8 +7,9 @@ loaded, the city list worked, and the map parsed ``index.html`` as JSON. That is
 a wiring bug, and wiring is exactly what a test can pin.
 """
 
+import signal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -24,6 +25,8 @@ class FakeProcess:
         self.env: dict[str, str] = kwargs.get("env") or {}
         self.cwd = kwargs.get("cwd")
         self.terminated = False
+
+    pid = 424242
 
     def terminate(self) -> None:
         self.terminated = True
@@ -47,7 +50,14 @@ def started(monkeypatch: pytest.MonkeyPatch) -> list[FakeProcess]:
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     monkeypatch.setattr(preview_module, "_wait_for", lambda *args, **kwargs: None)
-    monkeypatch.setattr(preview_module, "_claim_ports", lambda *args: None)
+    monkeypatch.setattr(preview_module, "claim_ports", lambda *args: None)
+    # Signalling a fake pid would reach a real process; the group logic has its
+    # own test below and this fixture is about what the children are told.
+    monkeypatch.setattr(
+        preview_module,
+        "_signal_group",
+        lambda process, _sig: setattr(process, "terminated", True),
+    )
     return processes
 
 
@@ -149,3 +159,23 @@ def test_everything_started_is_stopped_again(
         pass
 
     assert started and all(process.terminated for process in started)
+
+
+def test_stopping_signals_the_whole_group_not_just_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`pnpm vite` is a chain, and the node process at the end holds the port.
+
+    Terminating what we started killed the wrapper and left the server orphaned
+    and listening -- which is what made the next preview walk to 5174, and why
+    five could pile up with nothing to show for it.
+    """
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("os.killpg", lambda group, sig: signalled.append((group, sig)))
+    process = FakeProcess(["pnpm", "vite"])
+
+    preview_module._signal_group(cast("Any", process), signal.SIGTERM)
+
+    assert signalled == [(process.pid, signal.SIGTERM)]
+    assert not process.terminated  # the group got it, not the child alone

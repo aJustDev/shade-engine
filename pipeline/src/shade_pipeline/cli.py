@@ -44,6 +44,7 @@ from shade_pipeline.preview import (
     DEFAULT_WEB_DIR,
     DEFAULT_WEB_PORT,
     PreviewError,
+    claim_ports,
     preview,
 )
 from shade_pipeline.progress import format_bytes, format_duration
@@ -291,6 +292,28 @@ def preview_command(
     state = log_path = None
     if city is not None:
         state = RunState.open(city, cities_dir=cities_dir, data_root=data_root)
+        # Before recording anything. A second preview cannot work -- the ports
+        # are taken -- and the damage was not the failure but the bookkeeping:
+        # begin() marked it running, the port check then failed it, and the
+        # record of the preview that *was* alive had already been overwritten.
+        # After that the console could no longer see it to stop it, so every
+        # press of `v` started another one.
+        # And before recording, not after: a preview that cannot have the ports
+        # is not a run, and letting it write a failed record was how the live
+        # one got forgotten.
+        try:
+            claim_ports(api_port, web_port)
+        except PreviewError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        current = state.record("preview")
+        if state.status("preview") is StepStatus.RUNNING and current.is_alive:
+            typer.echo(
+                f"error: {city} is already being previewed by pid {current.pid}; "
+                f"stop that one first (v in the console, or kill it)",
+                err=True,
+            )
+            raise typer.Exit(1)
         log_path, events_path = state.paths_for("preview")
         state.begin(
             "preview",

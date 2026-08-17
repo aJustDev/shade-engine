@@ -15,7 +15,9 @@ online when the extract is missing, so the overlay is exactly what it will be in
 production and only the backdrop differs.
 """
 
+import contextlib
 import os
+import signal
 import socket
 import subprocess
 import time
@@ -59,7 +61,7 @@ def _in_use(port: int) -> bool:
     return False
 
 
-def _claim_ports(api_port: int, web_port: int) -> None:
+def claim_ports(api_port: int, web_port: int) -> None:
     """Refuse to start on top of a preview that is already running.
 
     Both halves used to fail quietly and in different ways, which between them
@@ -76,6 +78,24 @@ def _claim_ports(api_port: int, web_port: int) -> None:
             f"by itself, so this is probably an earlier one. Stop it first, or pass "
             f"--api-port/--web-port to run beside it."
         )
+
+
+def _signal_group(process: subprocess.Popen[bytes], sig: int) -> None:
+    """Signal the child's whole process group, not just the child.
+
+    ``pnpm vite`` is a chain: pnpm execs a second pnpm which spawns the node
+    process that actually holds the port. Terminating what we started killed the
+    wrapper and left the server orphaned and listening, which is what made every
+    later preview walk to the next port -- and why five of them could pile up
+    with nothing to show for it. Each child is started in its own session, so
+    its group id is its pid and one signal reaches the lot.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), sig)
+    except ProcessLookupError, PermissionError:
+        # Already gone, or not ours to signal: fall back to the child alone.
+        with contextlib.suppress(OSError):
+            process.send_signal(sig)
 
 
 def _wait_for(
@@ -114,7 +134,7 @@ def preview(
     the caller had, which for a console launching this detached is nowhere.
     """
     echo = progress if progress is not None else lambda _message: None
-    _claim_ports(api_port, web_port)
+    claim_ports(api_port, web_port)
     environment = {
         **os.environ,
         "SHADE_API_CITIES_DIR": str(cities_dir),
@@ -144,6 +164,10 @@ def preview(
                     str(api_port),
                 ],
                 env=environment,
+                # Its own session, so _stop can signal a group. Also keeps a
+                # Ctrl-C in the launching terminal from racing the orderly
+                # shutdown below.
+                start_new_session=True,
                 **output,
             )
         )
@@ -188,6 +212,7 @@ def preview(
                         "SHADE_API_PROXY": api_url,
                         "SHADE_TILES_DIR": str(output_root.resolve()),
                     },
+                    start_new_session=True,
                     **output,
                 )
             )
@@ -198,14 +223,15 @@ def preview(
 
         yield Preview(api_url=api_url, web_url=web_url)
     finally:
-        # Reverse order, and terminate rather than kill: vite writes to its
+        # Reverse order, and signal the group rather than the process: see
+        # _signal_group. Terminate rather than kill, because vite writes its dependency
         # cache on the way out.
         for process in reversed(processes):
-            process.terminate()
+            _signal_group(process, signal.SIGTERM)
         for process in reversed(processes):
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                process.kill()
+                _signal_group(process, signal.SIGKILL)
         if sink is not None:
             sink.close()
