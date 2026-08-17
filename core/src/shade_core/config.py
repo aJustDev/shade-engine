@@ -189,6 +189,18 @@ class CityConfig(BaseModel):
 
 
 def load_city(path: str | Path) -> CityConfig:
-    """Load and validate a city YAML file."""
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    """Load and validate a city YAML file.
+
+    A parser error becomes a ``ValueError``. A file caught halfway through a
+    save is not a different kind of problem from a file that says the wrong
+    thing, and every caller in the engine already writes ``except (OSError,
+    ValueError)`` around this call -- but ``yaml.YAMLError`` descends from
+    ``Exception`` and not from ``ValueError``, so that guard was a half-truth
+    and an editor mid-save took the whole console down with it.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        raise ValueError(f"{path} is not readable YAML: {error}") from error
     return CityConfig.model_validate(raw)

@@ -27,6 +27,23 @@ def test_every_city_file_validates() -> None:
         load_city(path)
 
 
+def test_a_file_caught_mid_save_reads_as_a_value_error(tmp_path: Path) -> None:
+    """``yaml.YAMLError`` descends from Exception, and every caller guards for ValueError.
+
+    An editor writing half a line is an everyday state, and letting the
+    parser's own exception through meant that ``except (OSError, ValueError)``
+    -- which is what the CLI, the console and ``verify`` all write around this
+    call -- did not catch it.
+    """
+    broken = tmp_path / "roto.yaml"
+    broken.write_text('id: roto\nname: "sin cerrar\n', encoding="utf-8")
+
+    with pytest.raises(ValueError) as raised:
+        load_city(broken)
+
+    assert "roto.yaml" in str(raised.value), "name the file that cannot be read"
+
+
 def test_unordered_bbox_rejected() -> None:
     data = load_city(CITIES_DIR / "cordoba.yaml").model_dump()
     data["bbox"] = (349000, 4192000, 341000, 4199000)  # min_x > max_x
