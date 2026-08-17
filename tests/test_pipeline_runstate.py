@@ -182,7 +182,7 @@ def test_logs_are_stamped_not_overwritten(cities_dir: Path, tmp_path: Path) -> N
     state = _state(cities_dir, tmp_path)
     log, events = state.paths_for("tiles")
 
-    assert log.name.startswith("tiles-")
+    assert log.parent.name == "tiles"
     assert log.suffix == ".log"
     assert events.suffix == ".jsonl"
     assert log.parent == events.parent
@@ -269,29 +269,30 @@ def test_the_latest_link_is_relative_so_the_tree_can_move(cities_dir: Path, tmp_
 def test_old_runs_are_pruned_and_the_newest_are_kept(cities_dir: Path, tmp_path: Path) -> None:
     """A directory written to on every rebuild should not grow without end."""
     state = _state(cities_dir, tmp_path)
+    (state.directory / "tiles").mkdir(parents=True, exist_ok=True)
     for index in range(KEEP_RUNS + 4):
         # paths_for stamps to the second, so write the files by hand to get
         # distinct names without sleeping through fourteen seconds.
-        (state.directory).mkdir(parents=True, exist_ok=True)
-        (state.directory / f"tiles-202608{index + 1:02d}T000000.log").write_text("x")
+        (state.directory / "tiles" / f"202608{index + 1:02d}T000000.log").write_text("x")
     state.paths_for("tiles")
 
-    kept = sorted(path.name for path in state.directory.glob("tiles-*.log"))
+    kept = sorted(path.name for path in (state.directory / "tiles").glob("*.log"))
     assert len(kept) == KEEP_RUNS
     # The stamp sorts chronologically, so the survivors are the tail.
-    assert kept[0] == "tiles-20260805T000000.log"
+    assert kept[0] == "20260805T000000.log"
 
 
 def test_pruning_one_step_leaves_the_others_alone(cities_dir: Path, tmp_path: Path) -> None:
     state = _state(cities_dir, tmp_path)
-    state.directory.mkdir(parents=True, exist_ok=True)
+    (state.directory / "tiles").mkdir(parents=True, exist_ok=True)
+    (state.directory / "build").mkdir(parents=True, exist_ok=True)
     for index in range(KEEP_RUNS + 4):
-        (state.directory / f"tiles-202608{index + 1:02d}T000000.log").write_text("x")
-    (state.directory / "build-20260801T000000.log").write_text("keep me")
+        (state.directory / "tiles" / f"202608{index + 1:02d}T000000.log").write_text("x")
+    (state.directory / "build" / "20260801T000000.log").write_text("keep me")
 
     state.paths_for("tiles")
 
-    assert (state.directory / "build-20260801T000000.log").exists()
+    assert (state.directory / "build" / "20260801T000000.log").exists()
 
 
 def test_the_logs_command_finds_a_run_without_being_told_its_timestamp(
@@ -334,3 +335,121 @@ def test_the_logs_command_lists_the_steps_when_asked_for_none(
     assert result.exit_code == 0, result.output
     assert "latest/build.log" in result.output
     assert "publish" in result.output
+
+
+def test_the_history_keeps_a_run_the_state_file_forgets(cities_dir: Path, tmp_path: Path) -> None:
+    """The real case: a build that failed, then one that worked.
+
+    state.json holds only the current record of each step, so the second attempt
+    overwrote the first's duration, parameters and error. The log survived and
+    the fact did not.
+    """
+    state = _state(cities_dir, tmp_path)
+    log, events = state.paths_for("build")
+    state.begin("build", params={"workers": 1}, log=log, events=events)
+    state.fail("build", "CnigError: 0 tiles for bbox")
+    log, events = state.paths_for("build")
+    state.begin("build", params={"workers": 13}, log=log, events=events)
+    state.complete("build")
+
+    assert state.status("build") is StepStatus.DONE
+
+    history = state.history()
+    assert [entry.status for entry in history] == [StepStatus.FAILED, StepStatus.DONE]
+    assert history[0].error is not None and "CnigError" in history[0].error
+    assert history[0].params == {"workers": 1}
+    assert history[1].params == {"workers": 13}
+
+
+def test_the_history_outlives_the_logs_it_points_at(cities_dir: Path, tmp_path: Path) -> None:
+    """Logs are tens of KB and get pruned; a history line is 200 bytes and stays."""
+    state = _state(cities_dir, tmp_path)
+    for _ in range(KEEP_RUNS + 3):
+        log, events = state.paths_for("tiles")
+        state.begin("tiles", log=log, events=events)
+        state.complete("tiles")
+
+    assert len(state.history()) == KEEP_RUNS + 3
+
+
+def test_an_undone_step_is_a_run_that_happened(cities_dir: Path, tmp_path: Path) -> None:
+    """History records runs, not states: unpublish succeeded, the step is pending."""
+    state = _state(cities_dir, tmp_path)
+    log, events = state.paths_for("publish")
+    state.begin("publish", params={"undo": True}, log=log, events=events)
+    state.undo("publish")
+
+    assert state.status("publish") is StepStatus.PENDING
+    assert state.history()[-1].status is StepStatus.DONE
+    assert state.history()[-1].params == {"undo": True}
+
+
+def test_the_history_survives_a_line_it_cannot_read(cities_dir: Path, tmp_path: Path) -> None:
+    """Half a record is worth more than an exception when you are reading a log."""
+    state = _state(cities_dir, tmp_path)
+    log, events = state.paths_for("area")
+    state.begin("area", log=log, events=events)
+    state.complete("area")
+    with state.history_path.open("a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+
+    assert len(state.history()) == 1
+
+
+def test_the_old_flat_layout_is_filed_away_and_the_state_follows(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    """Cities built before this existed keep working, and their logs stay findable.
+
+    The state file points at paths by name; moving the files without rewriting
+    it would leave the console following a log that was no longer there.
+    """
+    state = _state(cities_dir, tmp_path)
+    state.directory.mkdir(parents=True, exist_ok=True)
+    old = state.directory / "build-20260817T075245.log"
+    old.write_text("swept", encoding="utf-8")
+    (state.directory / "build-20260817T075245.jsonl").write_text("{}", encoding="utf-8")
+    state.state.steps["build"] = StepRecord(status=StepStatus.DONE, log=str(old))
+    state.save()
+
+    state.refresh_latest()
+
+    moved = state.directory / "build" / "20260817T075245.log"
+    assert moved.read_text(encoding="utf-8") == "swept"
+    assert not old.exists()
+    assert _state(cities_dir, tmp_path).record("build").log == str(moved)
+    assert (state.directory / LATEST_DIRNAME / "build.log").read_text(encoding="utf-8") == "swept"
+
+
+def test_a_city_that_predates_the_history_gets_the_floor_the_state_remembers(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    """One run per step is all state.json keeps, so that is all this can recover.
+
+    A floor, not the truth. Everything appended after it is real.
+    """
+    state = _state(cities_dir, tmp_path)
+    for step in ("build", "tiles"):
+        log, events = state.paths_for(step)
+        state.begin(step, log=log, events=events)
+        state.complete(step)
+    state.history_path.unlink()
+
+    state.refresh_latest()
+
+    assert [entry.step for entry in state.history()] == ["build", "tiles"]
+
+
+def test_seeding_never_touches_a_history_that_already_exists(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    state = _state(cities_dir, tmp_path)
+    log, events = state.paths_for("build")
+    state.begin("build", log=log, events=events)
+    state.complete("build")
+    before = state.history_path.read_text(encoding="utf-8")
+
+    state.refresh_latest()
+    state.paths_for("build")
+
+    assert state.history_path.read_text(encoding="utf-8") == before

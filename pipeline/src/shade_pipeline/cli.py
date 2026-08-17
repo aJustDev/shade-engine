@@ -447,6 +447,9 @@ def logs(
     step: Annotated[
         str | None, typer.Argument(help=f"One of {', '.join(CHAIN)}; omit to list them")
     ] = None,
+    history: Annotated[
+        bool, typer.Option("--history", help="Every run this city has had, oldest first")
+    ] = False,
     path_only: Annotated[
         bool, typer.Option("--path", help="Print the path instead of the contents")
     ] = False,
@@ -472,6 +475,21 @@ def logs(
     # no links to them, and so does one whose runs were tidied up by hand.
     state.refresh_latest()
     latest = state.directory / LATEST_DIRNAME
+
+    if history:
+        records = [entry for entry in state.history() if step is None or entry.step == step]
+        if not records:
+            typer.echo(f"no runs recorded for {city} yet ({state.history_path})")
+            return
+        typer.echo(f"{'step':>8}  {'when':<16}  {'took':>7}  status")
+        for entry in records:
+            when = (
+                entry.started_at.astimezone().strftime("%d %b %H:%M") if entry.started_at else "-"
+            )
+            took = format_duration(entry.duration_s) if entry.duration_s else "-"
+            detail = entry.error or ", ".join(f"{k}={v}" for k, v in entry.params.items())
+            typer.echo(f"{entry.step:>8}  {when:<16}  {took:>7}  {entry.status.value:<8} {detail}")
+        return
 
     if step is None:
         typer.echo(f"{city}: {state.directory}")

@@ -51,6 +51,19 @@ purpose; it exists so a directory that is written to every rebuild does not grow
 without end, not to save space.
 """
 
+HISTORY_FILENAME = "history.jsonl"
+"""Every run this city has ever had, one line each, appended and never pruned.
+
+Separate from ``state.json``, which holds only the *current* record of each step
+because that is all staleness needs -- and which therefore forgets. A build that
+failed and was re-run leaves its log on disk and no trace at all in the state:
+duration, parameters and error were overwritten by the attempt that replaced it.
+
+Separate from the logs too, and that is the point of it. A tile log is tens of
+kilobytes and gets pruned; a line here is two hundred bytes and is kept, so
+*that* something happened outlives the detail of what it printed.
+"""
+
 DEPENDS_ON: dict[str, tuple[str, ...]] = {
     "area": (),
     "build": (),
@@ -110,6 +123,38 @@ class StepRecord(BaseModel):
         except OSError:
             return False
         return True
+
+
+class RunRecord(BaseModel):
+    """One finished run, for the history. Not a state: a thing that happened.
+
+    Which is why ``step`` is a field rather than a key, and why nothing here is
+    ever updated in place. ``status`` is the outcome of the run itself, so an
+    ``unpublish`` reads ``done`` even though it leaves its step pending -- the
+    run succeeded, and what the step is *now* is state.json's business.
+    """
+
+    step: str
+    status: StepStatus
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_s: float | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    log: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def of(cls, step: str, entry: StepRecord, status: StepStatus) -> Self:
+        return cls(
+            step=step,
+            status=status,
+            started_at=entry.started_at,
+            finished_at=entry.finished_at,
+            duration_s=entry.duration_s,
+            params=dict(entry.params),
+            log=entry.log,
+            error=entry.error,
+        )
 
 
 class CityState(BaseModel):
@@ -234,41 +279,72 @@ class RunState:
     def paths_for(self, step: str) -> tuple[Path, Path]:
         """Where this step's next run should write its human log and its events.
 
-        Stamped with the start time rather than overwritten, so a failed attempt
-        is still readable after the retry that replaced it. ``latest/`` gets a
-        symlink under a stable name, and the oldest runs beyond
-        :data:`KEEP_RUNS` are pruned.
+        ``<city>/<step>/<stamp>.log``: stamped with the start time rather than
+        overwritten, so a failed attempt is still readable after the retry that
+        replaced it, and filed under its step so the directory reads as a
+        history instead of a heap. ``latest/`` gets a symlink under a stable
+        name, and runs beyond :data:`KEEP_RUNS` are pruned.
         """
+        self._migrate_flat()
+        self._seed_history()
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-        self.directory.mkdir(parents=True, exist_ok=True)
-        paths = (self.directory / f"{step}-{stamp}.log", self.directory / f"{step}-{stamp}.jsonl")
+        (self.directory / step).mkdir(parents=True, exist_ok=True)
+        paths = (self.directory / step / f"{stamp}.log", self.directory / step / f"{stamp}.jsonl")
         for path in paths:
             self._point_latest_at(step, path)
         self._prune(step)
         return paths
 
     def newest_run(self, step: str, suffix: str = ".log") -> Path | None:
-        """This step's most recent stamped file, by name.
+        """This step's most recent run file, by name.
 
-        Globbed rather than read from the state file: a step recorded before
-        ``latest/`` existed still has its logs on disk, and the stamp sorts
-        chronologically, so the newest is simply the last.
+        Globbed rather than read from the state file, because the state file
+        only knows the last run and this has to work for a city whose logs
+        predate it. The stamp sorts chronologically, so the newest is the last.
         """
-        runs = sorted(self.directory.glob(f"{step}-*{suffix}"))
+        runs = sorted((self.directory / step).glob(f"*{suffix}"))
         return runs[-1] if runs else None
 
     def refresh_latest(self) -> None:
-        """Rebuild every ``latest/`` link from what is actually on disk.
+        """Tidy the layout and rebuild every ``latest/`` link from what is on disk.
 
         Links are made when a step starts, which leaves nothing for the cities
         built before this existed, and nothing correct if somebody deletes a run
         by hand. Cheap enough to do on every read.
         """
+        self._migrate_flat()
+        self._seed_history()
         for step in DEPENDS_ON:
             for suffix in (".log", ".jsonl"):
                 newest = self.newest_run(step, suffix)
                 if newest is not None:
                     self._point_latest_at(step, newest)
+
+    def _migrate_flat(self) -> None:
+        """Move the old flat ``<step>-<stamp>.log`` files into ``<step>/``.
+
+        Done here rather than in a migration script because the only thing that
+        knows a runs directory exists is whatever is about to write to it. The
+        state file points at the paths by name, so they are rewritten too --
+        otherwise the console would go on following a log that had moved.
+        """
+        moved: dict[str, str] = {}
+        for path in sorted(self.directory.glob("*-*.log")) + sorted(
+            self.directory.glob("*-*.jsonl")
+        ):
+            step, _, stamp = path.stem.partition("-")
+            if step not in DEPENDS_ON or not stamp:
+                continue
+            target = self.directory / step / f"{stamp}{path.suffix}"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            path.replace(target)
+            moved[str(path)] = str(target)
+        if not moved:
+            return
+        for entry in self.state.steps.values():
+            entry.log = moved.get(entry.log or "", entry.log)
+            entry.events = moved.get(entry.events or "", entry.events)
+        self.save()
 
     def _point_latest_at(self, step: str, path: Path) -> None:
         """Repoint ``latest/<step>.<ext>`` at ``path``, best effort.
@@ -281,20 +357,74 @@ class RunState:
         try:
             link.parent.mkdir(parents=True, exist_ok=True)
             link.unlink(missing_ok=True)
-            link.symlink_to(Path("..") / path.name)
+            link.symlink_to(Path("..") / step / path.name)
         except OSError:
             pass
 
     def _prune(self, step: str) -> None:
         """Delete this step's oldest runs, keeping the newest :data:`KEEP_RUNS`.
 
-        By name, not by mtime: the stamp sorts chronologically and is the same
-        for a log and its events, so both halves of a run go together.
+        Only the files. The history line for a pruned run stays, which is the
+        whole reason the two are kept apart: you lose what it printed, never
+        that it happened.
         """
         for suffix in (".log", ".jsonl"):
-            runs = sorted(self.directory.glob(f"{step}-*{suffix}"))
+            runs = sorted((self.directory / step).glob(f"*{suffix}"))
             for stale in runs[:-KEEP_RUNS]:
                 stale.unlink(missing_ok=True)
+
+    @property
+    def history_path(self) -> Path:
+        return self.directory / HISTORY_FILENAME
+
+    def history(self) -> list[RunRecord]:
+        """Every run recorded for this city, oldest first.
+
+        A malformed line is skipped rather than fatal: this is a record to read,
+        and half of it is worth more than an exception.
+        """
+        records: list[RunRecord] = []
+        try:
+            text = self.history_path.read_text(encoding="utf-8")
+        except OSError:
+            return records
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                records.append(RunRecord.model_validate_json(line))
+            except ValueError:
+                continue
+        return records
+
+    def _seed_history(self) -> None:
+        """Start a city's history from what the state file still remembers.
+
+        Once, for cities that were built before there was a history. It can only
+        recover one run per step -- the last, which is all ``state.json`` keeps
+        -- so it is a floor and not the truth; everything after this is real.
+        """
+        if self.history_path.exists():
+            return
+        seeded = [
+            RunRecord.of(step, entry, entry.status)
+            for step, entry in self.state.steps.items()
+            if entry.started_at is not None
+        ]
+        if not seeded:
+            return
+        seeded.sort(key=lambda entry: entry.started_at or datetime.min.replace(tzinfo=UTC))
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with self.history_path.open("w", encoding="utf-8") as handle:
+            for entry in seeded:
+                handle.write(entry.model_dump_json() + "\n")
+
+    def _remember_run(self, step: str, status: StepStatus) -> None:
+        """Append what just happened. Append-only, and never rewritten."""
+        record = RunRecord.of(step, self.record(step), status)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with self.history_path.open("a", encoding="utf-8") as handle:
+            handle.write(record.model_dump_json() + "\n")
 
     def begin(
         self, step: str, *, params: dict[str, Any] | None = None, log: Path, events: Path
@@ -336,6 +466,7 @@ class RunState:
             }
         )
         self.save()
+        self._remember_run(step, StepStatus.DONE)
 
     def fail(self, step: str, error: str) -> None:
         entry = self.record(step)
@@ -350,6 +481,7 @@ class RunState:
             }
         )
         self.save()
+        self._remember_run(step, StepStatus.FAILED)
 
     def undo(self, step: str) -> None:
         """Put a step back to pending because its result was removed, not redone.
@@ -374,6 +506,9 @@ class RunState:
             }
         )
         self.save()
+        # The run itself succeeded -- it removed the city -- even though what it
+        # leaves behind is a pending step. History records runs, not states.
+        self._remember_run(step, StepStatus.DONE)
 
     def record(self, step: str) -> StepRecord:
         return self.state.record(step)
