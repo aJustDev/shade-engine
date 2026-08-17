@@ -31,6 +31,7 @@ from shade_pipeline.area import utm_crs
 from shade_pipeline.console.app import ConsoleApp
 from shade_pipeline.console.cities import CitiesScreen
 from shade_pipeline.console.city import CityScreen
+from shade_pipeline.console.confirm import ConfirmScreen
 from shade_pipeline.console.jobs import progress_of
 from shade_pipeline.console.launch import (
     LaunchScreen,
@@ -616,3 +617,23 @@ def test_unpublish_is_offered_for_a_city_with_nothing_built(workspace: Path) -> 
 
     assert isinstance(app.publish_plan("cube"), str)
     assert not isinstance(app.unpublish_plan("cube"), str)
+
+
+def test_unpublish_asks_before_deleting_anything(workspace: Path) -> None:
+    """`U` must reach a confirmation and nothing else; it deletes from production."""
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("U")
+        await pilot.pause()
+        seen["screen"] = app.screen
+
+    drive(app, scenario)
+
+    screen = seen["screen"]
+    assert isinstance(screen, ConfirmScreen)
+    assert "rm -rf /opt/shade/data/cities/cube" in screen.body
+    assert "rm -rf /opt/shade/cities/cube.yaml" in screen.body
