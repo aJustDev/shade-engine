@@ -48,6 +48,7 @@ from shade_pipeline.declutter import (
     SLAB_ROUGHNESS_MAX_M,
     declutter_dsm,
 )
+from shade_pipeline.events import EventSink, emit
 from shade_pipeline.footprints import (
     ROOF_TOLERANCE_M,
     FootprintSource,
@@ -82,6 +83,7 @@ def build_city(
     footprints: FootprintSource | None = None,
     trees: TreeInventorySource | None = None,
     declutter: bool = True,
+    events: EventSink | None = None,
 ) -> Path:
     """Produce ``<output_root>/<city>/v1/`` artifacts; returns that directory.
 
@@ -101,6 +103,10 @@ def build_city(
     ``declutter`` takes cables and awnings out of the DSM before the sweep
     reads it (see :mod:`shade_pipeline.declutter`). False reproduces the raw
     LiDAR surface every build shipped before ADR-022.
+
+    ``events`` receives the same phase boundaries as structured records (see
+    :mod:`shade_pipeline.events`), for a supervisor or console that has to know
+    where a multi-hour build is without parsing the sentences above.
     """
     if params is None:
         params = HorizonParams(
@@ -112,6 +118,17 @@ def build_city(
     def say(message: str) -> None:
         if progress is not None:
             progress(message)
+
+    def phase(name: str, since: float, **payload: object) -> None:
+        """Close a phase on the structured channel, with what it cost."""
+        emit(
+            events,
+            "build",
+            "phase",
+            name=name,
+            elapsed_s=round(time.monotonic() - since, 1),
+            **payload,
+        )
 
     build_start = time.monotonic()
     resolution = config.resolution_m
@@ -140,6 +157,7 @@ def build_city(
         f"{len(files)} lidar files ready in {format_duration(time.monotonic() - build_start)} "
         f"({format_bytes(sum(path.stat().st_size for path in files))})"
     )
+    phase("lidar", build_start, files=len(files))
 
     # Before the hours of binning and sweeping: a dead Overpass has to fail now,
     # not three phases in. The polygons cover the padded bbox because obstacles
@@ -152,6 +170,7 @@ def build_city(
             f"{len(outlines)} osm building footprints in "
             f"{format_duration(time.monotonic() - phase_start)}"
         )
+        phase("footprints", phase_start, outlines=len(outlines))
 
     # Same reasoning: a dead WFS has to fail here and not after the sweep. Only
     # the trees over the city grid are asked for, plus the margin the dense
@@ -173,6 +192,7 @@ def build_city(
             f"{len(tree_positions):,} tree inventory specimens in "
             f"{format_duration(time.monotonic() - phase_start)}"
         )
+        phase("trees", phase_start, specimens=len(tree_positions))
 
     phase_start = time.monotonic()
     stack = rasterize_lidar(files, padded, resolution, progress=progress)
@@ -181,6 +201,7 @@ def build_city(
         f"binning done in {format_duration(time.monotonic() - phase_start)} "
         f"({total_points:,} points)"
     )
+    phase("binning", phase_start, points=total_points)
 
     relabelled = 0
     built: npt.NDArray[np.bool_] | None = None
@@ -197,6 +218,7 @@ def build_city(
             f"footprints relabelled {relabelled:,} cells as building in "
             f"{format_duration(time.monotonic() - phase_start)}"
         )
+        phase("footprint_override", phase_start, relabelled=relabelled)
 
     # Last thing before the sweep, so every obstacle the horizon sees has
     # already been through it. Deliberately after the footprint override: that
@@ -209,6 +231,7 @@ def build_city(
             f"declutter removed {cleaned.linear_px:,} linear px and {cleaned.slab_px:,} "
             f"slab px from the dsm in {format_duration(time.monotonic() - phase_start)}"
         )
+        phase("declutter", phase_start, linear_px=cleaned.linear_px, slab_px=cleaned.slab_px)
     del built  # city-sized; nothing downstream of the declutter wants it
 
     rows, cols = grid_shape(config.bbox, resolution)
@@ -248,8 +271,10 @@ def build_city(
             coverage=coverage,
             scratch_dir=Path(scratch),
             progress=progress,
+            events=events,
         )
         say(f"horizon sweep done in {format_duration(time.monotonic() - phase_start)}")
+        phase("sweep", phase_start)
         timed_cog(
             out_dir / HORIZON_FILENAME,
             result.angles_q,
@@ -381,10 +406,20 @@ def build_city(
     # each file): the horizon-blocker invariant is the cross-cube check that
     # a silent storage failure cannot survive.
     say("verifying artifacts")
+    verify_start = time.monotonic()
     ensure_verified(out_dir, progress=progress)
+    phase("verify", verify_start)
     artifact_size = sum(path.stat().st_size for path in out_dir.iterdir() if path.is_file())
     say(
         f"build done in {format_duration(time.monotonic() - build_start)} "
         f"({format_bytes(artifact_size)} of artifacts)"
+    )
+    emit(
+        events,
+        "build",
+        "finished",
+        elapsed_s=round(time.monotonic() - build_start, 1),
+        bytes=artifact_size,
+        directory=str(out_dir),
     )
     return out_dir

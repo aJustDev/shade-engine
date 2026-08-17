@@ -66,6 +66,7 @@ from shade_pipeline.budget import (
     estimate_sweep_worker_bytes,
     warn_if_serial_is_tight,
 )
+from shade_pipeline.events import EventSink, emit
 from shade_pipeline.grid import buffer_pixels
 from shade_pipeline.progress import format_duration
 
@@ -398,6 +399,7 @@ def compute_horizon_tiled(
     coverage: npt.NDArray[np.bool_] | None = None,
     scratch_dir: Path | None = None,
     progress: Callable[[str], None] | None = None,
+    events: EventSink | None = None,
 ) -> HorizonResult:
     """Sweep the ``inner`` window (default: everything) tile by tile.
 
@@ -498,19 +500,30 @@ def compute_horizon_tiled(
             angles_q[out] = tile_angles_q
             blocker[out] = tile_blocker
             angles_noveg_q[out] = tile_noveg_q
+            # Reported on completion, not on start: with N tiles in flight
+            # there is no meaningful "current" one, and elapsed over completed
+            # is throughput, which is what an ETA wants. Held back until the
+            # first full batch has landed, because until then the elapsed time
+            # covers tiles that have not finished and the estimate reads about
+            # `workers` times too long.
+            average = (time.monotonic() - sweep_start) / done
+            eta = average * (len(jobs) - done) if done >= workers else None
             if progress is not None:
-                # Reported on completion, not on start: with N tiles in flight
-                # there is no meaningful "current" one, and elapsed over
-                # completed is throughput, which is what an ETA wants. Held
-                # back until the first full batch has landed, because until
-                # then the elapsed time covers tiles that have not finished
-                # and the estimate reads about `workers` times too long.
-                average = (time.monotonic() - sweep_start) / done
                 line = f"swept tile [{done}/{len(jobs)}]"
-                if done >= workers:
-                    eta = average * (len(jobs) - done)
+                if eta is not None:
                     line += f" (avg {format_duration(average)}/tile, eta {format_duration(eta)})"
                 progress(line)
+            # Per tile rather than per phase: this is the four-hour step, and a
+            # single event at the end of it would tell a console nothing while
+            # it mattered. Hundreds of records over hours costs nothing.
+            emit(
+                events,
+                "build",
+                "tile",
+                done=done,
+                total=len(jobs),
+                eta_s=None if eta is None else round(eta, 1),
+            )
     # Push the scratch cubes through msync before anything reads them back:
     # flush() raises OSError on write-back failure, whereas a silently
     # dropped dirty page would resurface as zeroed sectors in the artifacts.
