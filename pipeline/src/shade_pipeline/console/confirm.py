@@ -37,7 +37,10 @@ class ConfirmScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Static(f"[b]{self.title_text}[/b]")
-            yield Static(self.body, id="body")
+            # The body is a plan rendered elsewhere: paths, commands and git's
+            # own output, none of it written to be markup. It is shown, never
+            # parsed.
+            yield Static(self.body, id="body", markup=False)
             with Horizontal():
                 yield Button("Cancel", id="cancel")
                 yield Button(self.confirm_label, id="confirm", variant="warning")

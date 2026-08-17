@@ -25,6 +25,7 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Grid, Horizontal, VerticalScroll
+from textual.markup import escape
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
@@ -159,11 +160,17 @@ class NewCityScreen(Screen[str | None]):
         self._why = None
         panel = self.query_one("#derived", Static)
         chosen = self.city_crs()
+        # This panel is the one place where text of ours and text from outside
+        # share a widget, so markup stays on and the outside parts are escaped
+        # one by one: a parser's message full of brackets, or an export named
+        # `area[1].geojson`, is content and not a tag.
+        watching = escape(str(self.watch_dir))
         if chosen is None:
             panel.update(
-                self._why
-                or (
-                    f"drop a .geojson in {self.watch_dir}, or type its path above.\n"
+                escape(self._why)
+                if self._why
+                else (
+                    f"drop a .geojson in {watching}, or type its path above.\n"
                     "A map centre below is optional: it only opens geojson.io in the right place."
                 )
             )
@@ -175,9 +182,9 @@ class NewCityScreen(Screen[str | None]):
         if point is not None:
             lines.append(f"draw the area here: {drawing_url(*point)}")
         lines.append(
-            f"picked up: {self.polygon}"
+            f"picked up: {escape(str(self.polygon))}"
             if self.polygon is not None
-            else f"export it and this screen picks it up from {self.watch_dir}"
+            else f"export it and this screen picks it up from {watching}"
         )
         panel.update("\n".join(lines))
         self.refresh_cost()
@@ -239,20 +246,25 @@ class NewCityScreen(Screen[str | None]):
         try:
             drawn = read_area(self.polygon, code)
             check_area_of_use(drawn, code)
+            # Inside the try, and not after it: a ValidationError *is* a
+            # ValueError, and building this outside meant that a timezone with
+            # one letter missing reached the key handler and took the whole
+            # form with it -- from ctrl+s, from the watcher, or from any key
+            # typed into another field.
+            return CityConfig(
+                id=city_id,
+                name=self.query_one("#name", Input).value.strip() or city_id,
+                country=self.query_one("#country", Input).value.strip() or "ES",
+                timezone=self.query_one("#timezone", Input).value.strip() or "Europe/Madrid",
+                crs=code,
+                bbox=snap_bbox(drawn.projected.bounds, 1.0),
+                area=str(self.polygon),
+            )
         except (AreaError, OSError, ValueError) as error:
             # Reachable where city_crs was not: the polygon reads in WGS84 and
             # still does not belong in the projected CRS it implies.
             self._why = str(error)
             return None
-        return CityConfig(
-            id=city_id,
-            name=self.query_one("#name", Input).value.strip() or city_id,
-            country=self.query_one("#country", Input).value.strip() or "ES",
-            timezone=self.query_one("#timezone", Input).value.strip() or "Europe/Madrid",
-            crs=code,
-            bbox=snap_bbox(drawn.projected.bounds, 1.0),
-            area=str(self.polygon),
-        )
 
     def refresh_cost(self) -> None:
         draft = self._draft()

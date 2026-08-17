@@ -32,7 +32,13 @@ class CostPanel(VerticalScroll):
     """
 
     def compose(self) -> ComposeResult:
-        yield Static(id="cost-text")
+        # markup=False, and declared once here rather than escaped at every
+        # call site: everything this panel ever shows comes from outside --
+        # the report, or the reason there is none -- and a pydantic message
+        # carrying `[type=float_parsing, input_value='x']` is markup with an
+        # unclosed tag, which used to raise MarkupError while painting and
+        # take the app down.
+        yield Static(id="cost-text", markup=False)
 
     def show(
         self,

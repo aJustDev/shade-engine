@@ -84,6 +84,25 @@ def status_cell(status: StepStatus) -> Text:
     return Text(status.value, style=STATUS_STYLE.get(status, ""))
 
 
+def error_cell() -> Text:
+    """The cell for a city whose configuration cannot be read at all.
+
+    Not a status: a city in this state has no status, because the file that
+    would say what it is is the one that cannot be parsed.
+    """
+    return Text("error", style="bold red")
+
+
+def first_line(error: Exception) -> str:
+    """One line out of a message that may well be several.
+
+    A YAML parser answers with the file, the line, the column and a caret
+    under it, which is right in a terminal and too tall for a table cell.
+    """
+    lines = str(error).splitlines()
+    return lines[0] if lines else error.__class__.__name__
+
+
 class CityScreen(Screen[None]):
     """The steps, the settings and the live output of one city."""
 
@@ -162,8 +181,16 @@ class CityScreen(Screen[None]):
     # ----------------------------------------------------------------- steps
 
     def refresh_steps(self) -> None:
-        state = self.state()
         table = self.query_one("#steps", DataTable)
+        try:
+            state = self.state()
+        except (OSError, ValueError) as error:
+            # The file can break under a screen that is already showing it --
+            # this runs every two seconds -- and there is no state to draw
+            # without it: the digest of the config is part of every status.
+            table.clear()
+            table.add_row("config", error_cell(), "", "", Text(first_line(error)))
+            return
         cursor = table.cursor_row
         table.clear()
         # LOG_STEPS, so `preview` gets a row. It is not part of the chain and
@@ -228,7 +255,7 @@ class CityScreen(Screen[None]):
         try:
             config = self.config()
         except (OSError, ValueError) as error:
-            table.add_row("error", Text(str(error)), "")
+            table.add_row("error", Text(first_line(error)), "")
             return
         for name in CityConfig.model_fields:
             value = getattr(config, name, None)

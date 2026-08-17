@@ -13,9 +13,10 @@ from textual.binding import Binding, BindingType
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from shade_pipeline.console.city import CityScreen, status_cell
+from shade_pipeline.console.city import CityScreen, error_cell, first_line, status_cell
 from shade_pipeline.console.newcity import NewCityScreen
 from shade_pipeline.runner import CHAIN
+from shade_pipeline.runstate import StepStatus
 
 REFRESH_SECONDS = 2.0
 
@@ -64,15 +65,27 @@ class CitiesScreen(Screen[None]):
         table = self.query_one("#cities", DataTable)
         cursor = table.cursor_row
         table.clear()
+        running: list[str] = []
+        broken: list[str] = []
         for city in app.cities():
-            state = app.state_of(city)
-            table.add_row(city, *(status_cell(state.status(step)) for step in CHAIN), key=city)
+            try:
+                state = app.state_of(city)
+            except (OSError, ValueError) as error:
+                # A city file being edited is an ordinary state, and one of
+                # them halfway through a save used to stop the console from
+                # opening at all. It gets a row saying so, and the other six
+                # cities stay readable.
+                broken.append(f"{city}: {first_line(error)}")
+                table.add_row(city, *(error_cell() for _ in CHAIN), key=city)
+                continue
+            statuses = [state.status(step) for step in CHAIN]
+            table.add_row(city, *(status_cell(status) for status in statuses), key=city)
+            if StepStatus.RUNNING in statuses:
+                running.append(city)
         if 0 <= cursor < table.row_count:
             table.move_cursor(row=cursor)
-        running = [city for city in app.cities() if app.is_busy(city)]
-        self.query_one("#hint", Static).update(
-            f"running: {', '.join(running)}" if running else "nothing running"
-        )
+        lines = [f"running: {', '.join(running)}" if running else "nothing running", *broken]
+        self.query_one("#hint", Static).update("\n".join(lines))
 
     def action_refresh_now(self) -> None:
         self.refresh_rows()

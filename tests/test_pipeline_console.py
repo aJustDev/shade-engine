@@ -34,6 +34,7 @@ from shade_pipeline.console.app import ConsoleApp
 from shade_pipeline.console.cities import CitiesScreen
 from shade_pipeline.console.city import CityScreen
 from shade_pipeline.console.confirm import ConfirmScreen
+from shade_pipeline.console.cost import CostPanel
 from shade_pipeline.console.jobs import progress_of
 from shade_pipeline.console.launch import (
     LaunchScreen,
@@ -876,3 +877,141 @@ def test_pressing_v_twice_while_it_shuts_down_does_not_signal_twice(workspace: P
         drive(app, scenario)
 
     assert [call for call in signalled if call[1] != 0] == [(os.getpid(), signal.SIGTERM)]
+
+
+# ------------------------------------------------------------ surviving bad data
+
+HALF_SAVED = 'id: roto\nname: "sin cerrar\n'
+"""A city file caught mid-save: the quote is open, so this is not YAML at all."""
+
+PYDANTIC_NOISE = (
+    "1 validation error for CityConfig\ntimezone\n  Value error, unknown timezone "
+    "[type=value_error, input_value='Europe/Madri', input_type=str]"
+)
+"""A real pydantic message. The brackets are console markup to a Static."""
+
+
+def test_a_city_file_caught_mid_save_does_not_stop_the_console(workspace: Path) -> None:
+    """One unreadable city file and the console would not open at all.
+
+    ``RunState.open`` fingerprints the config, so the read happens before a
+    single row is painted, and nothing in between was catching it: the app died
+    with a traceback in the terminal instead of starting.
+    """
+    (workspace / "cities" / "roto.yaml").write_text(HALF_SAVED, encoding="utf-8")
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        table = app.screen.query_one("#cities", DataTable)
+        seen["cities"] = [str(table.get_row_at(row)[0]) for row in range(table.row_count)]
+        seen["cells"] = [str(cell) for cell in table.get_row_at(1)]
+        seen["hint"] = str(app.screen.query_one("#hint", Static).render())
+
+    drive(app, scenario)
+
+    assert seen["cities"] == ["cube", "roto"], "the broken one is a row, not the end of the app"
+    assert all(cell == "error" for cell in seen["cells"][1:]), seen["cells"]
+    assert "roto" in seen["hint"], "say which city, and why"
+
+
+def test_a_city_file_missing_fields_is_a_row_and_not_a_crash(workspace: Path) -> None:
+    """Same crash, the other half of it: valid YAML that is not a city."""
+    (workspace / "cities" / "roto.yaml").write_text("id: roto\n", encoding="utf-8")
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        table = app.screen.query_one("#cities", DataTable)
+        seen["cities"] = [str(table.get_row_at(row)[0]) for row in range(table.row_count)]
+
+    drive(app, scenario)
+
+    assert seen["cities"] == ["cube", "roto"]
+
+
+def test_a_city_that_breaks_while_its_screen_is_open_survives_the_tick(workspace: Path) -> None:
+    """The file can break under a screen that is already showing it."""
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("o")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, CityScreen)
+        (workspace / "cities" / "cube.yaml").write_text(HALF_SAVED, encoding="utf-8")
+        screen.refresh_steps()
+        await pilot.pause()
+        table = screen.query_one("#steps", DataTable)
+        seen["cells"] = [str(cell) for cell in table.get_row_at(0)]
+
+    drive(app, scenario)
+
+    assert "error" in seen["cells"][1]
+    assert "cube.yaml" in seen["cells"][-1], "name the file that cannot be read"
+
+
+def test_a_timezone_half_typed_does_not_take_the_form_with_it(workspace: Path) -> None:
+    """``CityConfig(...)`` sat outside the try that already wrapped the polygon.
+
+    A timezone with one letter missing is a ValidationError, it reached the key
+    handler, and the whole registration form went with it.
+    """
+    import json
+
+    polygon = workspace / "montalban.geojson"
+    polygon.write_text(json.dumps(MONTALBAN), encoding="utf-8")
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        screen.query_one("#city_id", Input).value = "montalban"
+        screen.query_one("#polygon", Input).value = str(polygon)
+        screen.query_one("#timezone", Input).value = "Europe/Madri"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        seen["screen"] = type(app.screen).__name__
+        seen["cost"] = str(screen.query_one("#cost-text", Static).render())
+
+    drive(app, scenario)
+
+    assert seen["screen"] == "NewCityScreen", "the form survives its own bad value"
+    assert "Europe/Madri" in seen["cost"], "and says what is wrong with it"
+    assert not (workspace / "cities" / "montalban.yaml").exists()
+
+
+def test_an_error_with_brackets_is_shown_and_not_parsed(workspace: Path) -> None:
+    """Pydantic writes ``[type=value_error, ...]`` and a Static reads markup.
+
+    The panels that show text from outside -- the price of a city, the plan a
+    confirmation displays -- must render it, not interpret it.
+    """
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("o")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, CityScreen)
+        screen.query_one("#config-cost", CostPanel).clear(PYDANTIC_NOISE)
+        await pilot.pause()
+        seen["cost"] = str(screen.query_one("#cost-text", Static).render())
+        app.push_screen(ConfirmScreen("Publish cube", PYDANTIC_NOISE, "Publish"))
+        await pilot.pause()
+        seen["body"] = str(app.screen.query_one("#body", Static).render())
+        # The third route the same text takes. Checked rather than assumed:
+        # `notify` renders markup too, by default.
+        screen.notify(PYDANTIC_NOISE, severity="error")
+        await pilot.pause()
+
+    drive(app, scenario)
+
+    assert "type=value_error" in seen["cost"]
+    assert "type=value_error" in seen["body"]
