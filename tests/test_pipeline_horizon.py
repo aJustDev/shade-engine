@@ -451,13 +451,23 @@ def test_quantization_roundtrip() -> None:
     assert np.abs(dequantized - angles).max() <= 90.0 / 255.0 / 2.0 + 1e-4
 
 
-def test_geometric_mode_close_to_reference(cube_grid: HorizonGrid) -> None:
-    """Sanity only: the fast far-field schedule stays near the oracle here.
+def test_geometric_mode_agrees_in_the_bulk_and_not_in_the_tail(
+    cube_grid: HorizonGrid,
+) -> None:
+    """What thinning the far field really costs, now that the oracle can see it.
 
-    Quantile, not max: geometric distances round to cell offsets the exact
-    schedule never visits, so a ray grazing a cube corner can legitimately
-    hit a cell the oracle skipped (tens of degrees on isolated pixels). Same
-    discretization family as the phase-1 corner traps; the bulk must agree.
+    This used to demand the 99.9th percentile stay under half a degree, and it
+    passed -- because the oracle sampled a rounded schedule too and shared part
+    of the blind spot. Since ADR-027 the oracle walks every cell the ray
+    crosses, so the cells ``geometric`` drops are visible for the first time,
+    and the honest shape of its error is: the bulk agrees exactly and the tail
+    is brutal, which is what skipping cells does. Measured here, 921,600 cells
+    of the cube fixture:
+
+        p90 = 0.000 deg, p99 = 1.4, p99.9 = 16.0, 0.134% above 5 degrees
+
+    Pinned as-is rather than relaxed to a number that hides it: S4 decides
+    whether the mode survives, with its own measurement against the arbiter.
     """
     dsm, dtm = synthetic.cube_scene()
     params = HorizonParams(max_distance_m=80.0, step_mode="geometric")
@@ -465,4 +475,6 @@ def test_geometric_mode_close_to_reference(cube_grid: HorizonGrid) -> None:
         dsm, dtm, synthetic.cube_landcover(), 1.0, params, _full_window(dsm)
     )
     difference = np.abs(angles - cube_grid.angles_deg)
-    assert np.quantile(difference, 0.999) <= 0.5
+    assert np.quantile(difference, 0.90) <= 0.01, "the bulk must still agree"
+    assert np.quantile(difference, 0.99) <= 3.0
+    assert float((difference > 5.0).mean()) <= 0.003, "the tail must not grow"

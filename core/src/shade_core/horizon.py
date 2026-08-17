@@ -32,6 +32,8 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+from shade_core.raycast import ray_cells
+
 
 @dataclass(frozen=True)
 class HorizonGrid:
@@ -98,17 +100,20 @@ def compute_horizon_reference(
 ) -> HorizonGrid:
     """Brute-force reference horizon: obviously correct, deliberately slow.
 
-    For every pixel and sector, walk the line of sight in half-pixel steps up
-    to ``max_distance_m``, sample the DSM at the nearest pixel, and keep
-    ``max(atan2(obstacle_z - observer_z, distance))``. The observer stands at
-    DTM + ``observer_height_m``; angles are floored at 0 (the astronomical
-    horizon). ``max_distance_m`` bounds both cost and the lowest resolvable
-    horizon angle: obstacles further away can only cast very low-sun shadows.
+    For every pixel and sector, **walk the cells the line of sight crosses**
+    (:func:`shade_core.raycast.ray_cells`) up to ``max_distance_m`` and keep
+    ``max(atan2(obstacle_z - observer_z, entry_distance))``. A DSM cell is a
+    1x1 m column, so it starts blocking at the distance the ray enters it; see
+    [[ADR-027]] and shade-docs: learning/recorrido-de-rayo.md. The observer
+    stands at DTM + ``observer_height_m``; angles are floored at 0 (the
+    astronomical horizon). ``max_distance_m`` bounds both cost and the lowest
+    resolvable horizon angle: obstacles further away can only cast very
+    low-sun shadows.
 
     Intended for small synthetic arrays in tests. The pipeline's vectorized,
-    tiled implementation (phase 2) must reproduce these values on the same
-    fixtures -- this function is its oracle. Discretization error is bounded
-    by half a pixel of distance per sample.
+    tiled implementation must reproduce these values on the same fixtures --
+    this function is its oracle, and it can only be one while both walk the
+    ray the same way.
     """
     if dsm.shape != dtm.shape:
         raise ValueError("dsm and dtm must have the same shape")
@@ -120,19 +125,12 @@ def compute_horizon_reference(
     surface_z = dsm.astype(np.float64)
     row_index = np.arange(rows)[:, None]
     col_index = np.arange(cols)[None, :]
-    step = resolution_m / 2.0
-    distances = np.arange(step, max_distance_m + step / 2.0, step)
 
     angles = np.zeros((sectors, rows, cols), dtype=np.float32)
     for k in range(sectors):
-        azimuth = math.radians(k * 360.0 / sectors)
-        east, north = math.sin(azimuth), math.cos(azimuth)
+        azimuth_deg = k * 360.0 / sectors
         best = np.full((rows, cols), -np.inf)
-        for distance in distances:
-            d_col = round(distance * east / resolution_m)
-            d_row = -round(distance * north / resolution_m)  # y up = row index down
-            if d_row == 0 and d_col == 0:
-                continue
+        for d_row, d_col, distance, _exit in ray_cells(azimuth_deg, max_distance_m, resolution_m):
             source_row = row_index + d_row
             source_col = col_index + d_col
             inside = (

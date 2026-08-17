@@ -1,17 +1,16 @@
 """Production horizon sweep: tiled, vectorized, and true to the oracle.
 
 This reimplements ``shade_core.horizon.compute_horizon_reference`` for real
-city rasters. In ``exact`` step mode it visits exactly the oracle's samples
--- same half-pixel distances, same ``round()`` offsets -- restructured in
-four ways, three of which cannot change the result and one that changes it
-by less than the artifact can represent:
+city rasters. In ``exact`` step mode both walk the same cells the same way ---
+the ray traversal of :func:`shade_core.raycast.ray_cells`, which since
+[[ADR-027]] is what "the sample is at distance d" means here: a DSM cell is a
+1x1 m column and it starts blocking at the distance the ray enters it. That
+convention took the engine's verdict from 2.263% wrong against exact traversal
+to 0.714% over open sky, the single largest correction of the phase.
 
-- **Offset dedup**: consecutive half-pixel distances often snap to the same
-  (d_row, d_col) cell; only the smallest distance per cell is kept. Safe
-  proof: for a fixed target pixel and offset, ``dz = obstacle_z - observer_z``
-  is constant and ``dz / d`` is non-increasing in ``d`` when ``dz >= 0``, so
-  the smallest distance attains that offset's maximum; when ``dz < 0`` every
-  sample is negative and the final floor at 0 absorbs it.
+Restructured on top of it in two ways that cannot change the result, plus one
+that changes it by less than the artifact can represent:
+
 - **Tiling with buffer**: the target area is swept in tiles, each reading a
   window padded by ``buffer_pixels`` -- at least the largest possible offset
   -- so a sample is inside the padded window iff it is inside the dataset.
@@ -56,10 +55,14 @@ cube costs +9% of sweep time because it accumulates the tangent; a second
 ``arctan2`` per sample would have been +109%. That measurement is what
 eventually sent the first cube down the same road.
 
-``geometric`` step mode grows the distance step multiplicatively in the far
-field (constant relative error, far fewer samples) as a future knob for
-city-scale runs; it can skip thin distant obstacles and is never validated
-against the oracle at tight tolerance.
+``geometric`` step mode thins that traversal in the far field, keeping one cell
+per multiplicatively growing window (154 per sector against 636 at 500 m). It
+is the same cells and the same distances, minus the ones it drops --- and
+dropping cells is exactly the coverage hole ADR-027 closes, reopened on purpose
+where a thin obstacle rarely wins. Measured cost, now that the oracle can see
+what it skips: the bulk agrees exactly (p90 = 0) and the tail does not
+(p99.9 = 16 deg on the cube fixture). Whether that trade is worth taking is
+S4's call, with its own measurement against ``shade_pipeline.arbiter``.
 
 Because tiles are independent by construction, the sweep parallelizes by tile
 (``workers``). Two properties keep the output bit-identical to a serial run:
@@ -83,6 +86,7 @@ from typing import Final, Literal
 import numpy as np
 import numpy.typing as npt
 
+from shade_core.raycast import ray_cells
 from shade_core.shade import NO_BLOCKER, Landcover
 from shade_pipeline.budget import (
     check_worker_budget,
@@ -186,33 +190,49 @@ def height_datum(dtm: npt.NDArray[np.floating]) -> float:
 def sector_offsets(
     sector: int, params: HorizonParams, resolution_m: float
 ) -> list[tuple[int, int, float]]:
-    """Deduped (d_row, d_col, distance) samples for one sector, ascending distance.
+    """(d_row, d_col, distance) samples for one sector, ascending distance.
 
-    Uses the exact expressions of the oracle (``np.arange`` half-pixel
-    distances, builtin ``round`` -- half-to-even, never ``int(x + 0.5)``) so
-    exact mode stays bit-identical to it.
+    In ``exact`` mode these are the cells the ray really crosses, each at the
+    distance it is entered (:func:`shade_core.raycast.ray_cells`), which is the
+    convention of [[ADR-027]]: a DSM cell is a 1x1 m column and it starts
+    blocking at its nearest face. Same convention in the oracle and in the
+    API's ray-march, or none of them can check the others.
+
+    ``geometric`` walks the same cells and keeps the same distances, and then
+    **drops** the ones that fall inside a multiplicatively growing window:
+    dense near the observer, sparse far away. It had to move with ``exact``,
+    because a mode that rounded its own schedule would no longer be measurable
+    against the oracle at all -- and that is not the same as deciding whether
+    it is worth using, which is S4's job with its own numbers. What it does
+    remains what it always did: skip distant cells on purpose, which is exactly
+    the coverage hole ADR-027 closes, reopened in the far field where a thin
+    obstacle rarely wins the argmax. Its published figures were measured
+    against the old ``exact`` and have to be taken again.
     """
-    azimuth = math.radians(sector * 360.0 / params.sectors)
-    east, north = math.sin(azimuth), math.cos(azimuth)
-    step = resolution_m / 2.0
+    azimuth_deg = sector * 360.0 / params.sectors
+    cells = ray_cells(azimuth_deg, params.max_distance_m, resolution_m)
     if params.step_mode == "exact":
-        distances = np.arange(step, params.max_distance_m + step / 2.0, step)
-    else:
-        grown: list[float] = []
-        distance = step
-        while distance <= params.max_distance_m:
-            grown.append(distance)
-            distance = max(distance + step, distance * params.geometric_growth)
-        distances = np.array(grown)
+        return [(d_row, d_col, entry) for d_row, d_col, entry, _ in cells]
 
-    kept: dict[tuple[int, int], float] = {}
-    for distance in distances:
-        d_col = round(distance * east / resolution_m)
-        d_row = -round(distance * north / resolution_m)  # y up = row index down
-        if (d_row == 0 and d_col == 0) or (d_row, d_col) in kept:
+    kept: list[tuple[int, int, float]] = []
+    threshold = 0.0
+    last_entry = math.nan
+    for d_row, d_col, entry, _ in cells:
+        # Cells sharing an entry distance are one stop of the ray, not two: on
+        # a diagonal every step clips a corner and produces a pair. Thinning
+        # them apart would drop one of the two cells that share the corner --
+        # sometimes the one holding the wall (measured on the cube fixture: a
+        # pixel went from 87.8 degrees of horizon to 0). Compared with a
+        # tolerance because the pair's two distances are computed from sin and
+        # cos, which differ by an ulp at 45 degrees.
+        same_stop = math.isclose(entry, last_entry, rel_tol=1e-9)
+        if entry < threshold and not same_stop:
             continue
-        kept[(d_row, d_col)] = float(distance)
-    return [(d_row, d_col, d) for (d_row, d_col), d in kept.items()]
+        kept.append((d_row, d_col, entry))
+        if not same_stop:
+            threshold = max(entry + resolution_m / 2.0, entry * params.geometric_growth)
+            last_entry = entry
+    return kept
 
 
 def iter_horizon_sectors(

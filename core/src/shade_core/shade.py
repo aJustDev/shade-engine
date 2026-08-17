@@ -37,6 +37,7 @@ import numpy as np
 import numpy.typing as npt
 
 from shade_core.horizon import HorizonGrid
+from shade_core.raycast import ray_cells
 from shade_core.solar import SunPosition, sun_positions_for_day
 
 
@@ -220,22 +221,22 @@ def _ray_march_blocker(
 ) -> ShadeType | None:
     assert scene.dsm is not None and scene.landcover is not None
     grid = scene.horizon
-    azimuth = math.radians(azimuth_deg)
-    east, north = math.sin(azimuth), math.cos(azimuth)
-    # Half-pixel steps, matching the reference horizon sweep: full-pixel steps
-    # can hop over an obstacle whose intersection with the ray is shorter than
-    # one pixel (corner clipping).
-    step = grid.resolution_m / 2.0
-    distance = step
-    while True:
-        try:
-            r, c = grid.rowcol(x + east * distance, y + north * distance)
-        except ValueError:
+    rows, cols = scene.dsm.shape
+    row, col = grid.rowcol(x, y)
+    # The cells the ray really crosses, each at the distance it is entered --
+    # the same convention as the sweep and the oracle (ADR-027). Marching a
+    # fixed step instead would both skip cells the ray goes through and put
+    # them at the wrong distance. The radius is the grid's diagonal, so the
+    # walk ends by leaving the block, exactly as the old loop did.
+    reach = math.hypot(rows, cols) * grid.resolution_m
+    for d_row, d_col, distance, _exit in ray_cells(azimuth_deg, reach, grid.resolution_m):
+        r, c = row + d_row, col + d_col
+        if not (0 <= r < rows and 0 <= c < cols):
             return None
         angle = math.degrees(math.atan2(float(scene.dsm[r, c]) - observer_z, distance))
         if angle >= elevation_deg:
             return _SHADE_TYPE_BY_LANDCOVER.get(Landcover(int(scene.landcover[r, c])))
-        distance += step
+    return None
 
 
 def shade_timeline(
