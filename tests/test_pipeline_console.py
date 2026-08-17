@@ -13,6 +13,7 @@ import asyncio
 import os
 import signal
 from collections.abc import Awaitable, Callable
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -27,7 +28,7 @@ from shade_pipeline.runstate import RunState, StepStatus
 # Everything below this line needs the optional extra, imports included.
 pytest.importorskip("textual", reason="the console needs the 'tui' extra")
 
-from textual.widgets import DataTable, Input, Static, Switch
+from textual.widgets import Button, DataTable, Input, Static, Switch, TextArea
 
 from shade_pipeline.area import utm_crs
 from shade_pipeline.console.app import ConsoleApp
@@ -42,8 +43,14 @@ from shade_pipeline.console.launch import (
     suggested_workers,
     to_argv,
 )
-from shade_pipeline.console.newcity import NewCityScreen, drawing_url, newest_geojson
-from shade_pipeline.console.utilities import UTILITIES
+from shade_pipeline.console.newcity import (
+    NewCityScreen,
+    PasteScreen,
+    default_watch_dir,
+    drawing_url,
+    newest_geojson,
+)
+from shade_pipeline.console.utilities import UTILITIES, UtilitiesScreen
 from shade_pipeline.console.utilities import to_argv as utility_argv
 
 
@@ -487,7 +494,7 @@ def test_the_polygon_decides_the_crs_not_what_you_typed(workspace: Path) -> None
         screen.query_one("#lat", Input).value = "37.59"
         screen.query_one("#lon", Input).value = "4.75"  # the minus sign, forgotten
         screen.query_one("#polygon", Input).value = str(polygon)
-        await pilot.pause()
+        await pilot.pause(0.4)
         seen["crs"] = screen.city_crs()
         draft = screen._draft()
         seen["bbox"] = None if draft is None else draft.bbox
@@ -518,7 +525,7 @@ def test_a_polygon_path_that_is_not_there_says_so(workspace: Path) -> None:
         assert isinstance(screen, NewCityScreen)
         screen.query_one("#city_id", Input).value = "cuesta-blanca"
         screen.query_one("#polygon", Input).value = str(workspace / "cuesta-banca.geojson")
-        await pilot.pause()
+        await pilot.pause(0.4)
         seen["derived"] = str(screen.query_one("#derived", Static).render())
         screen.action_save()
         await pilot.pause()
@@ -545,7 +552,7 @@ def test_a_polygon_that_is_not_json_says_which_file_and_why(workspace: Path) -> 
         assert isinstance(screen, NewCityScreen)
         screen.query_one("#city_id", Input).value = "roto"
         screen.query_one("#polygon", Input).value = str(broken)
-        await pilot.pause()
+        await pilot.pause(0.4)
         seen["derived"] = str(screen.query_one("#derived", Static).render())
 
     drive(app, scenario)
@@ -570,10 +577,10 @@ def test_the_reason_clears_once_the_polygon_is_good(workspace: Path) -> None:
         assert isinstance(screen, NewCityScreen)
         screen.query_one("#city_id", Input).value = "montalban"
         screen.query_one("#polygon", Input).value = str(workspace / "typo.geojson")
-        await pilot.pause()
+        await pilot.pause(0.4)
         seen["first"] = str(screen.query_one("#derived", Static).render())
         screen.query_one("#polygon", Input).value = str(polygon)
-        await pilot.pause()
+        await pilot.pause(0.4)
         seen["second"] = str(screen.query_one("#derived", Static).render())
 
     drive(app, scenario)
@@ -627,6 +634,152 @@ def test_the_new_city_screen_shows_the_derived_crs(workspace: Path) -> None:
     assert "geojson.io" in shown["derived"]
 
 
+def test_clearing_the_polygon_field_clears_the_polygon(workspace: Path) -> None:
+    """`if value.strip():` had no else, so the last path typed survived the delete.
+
+    Emptying the field left the screen pricing a polygon that was no longer
+    named anywhere on it.
+    """
+    import json
+
+    polygon = workspace / "montalban.geojson"
+    polygon.write_text(json.dumps(MONTALBAN), encoding="utf-8")
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        screen.query_one("#city_id", Input).value = "montalban"
+        screen.query_one("#polygon", Input).value = str(polygon)
+        await pilot.pause(0.4)
+        seen["with"] = screen.polygon
+        screen.query_one("#polygon", Input).value = ""
+        await pilot.pause(0.4)
+        seen["without"] = screen.polygon
+        seen["cost"] = str(screen.query_one("#cost-text", Static).render())
+
+    drive(app, scenario)
+
+    assert seen["with"] == polygon
+    assert seen["without"] is None, "an emptied field means no polygon"
+    assert "an id and a polygon" in seen["cost"]
+
+
+def test_a_pasted_polygon_needs_neither_a_file_nor_a_path(workspace: Path) -> None:
+    """The drawing is copied from geojson.io, so let it be pasted.
+
+    Writing it to a file by hand and then typing that file's path is the step
+    this removes; the draft it leaves behind is what `plan_city` prices, since
+    pricing reads the area from disk.
+    """
+    import json
+
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        screen.query_one("#city_id", Input).value = "montalban"
+        await pilot.press("p")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PasteScreen)
+        modal.query_one("#pasted", TextArea).text = json.dumps(MONTALBAN)
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.4)
+        seen["derived"] = str(screen.query_one("#derived", Static).render())
+        seen["cost"] = str(screen.query_one("#cost-text", Static).render())
+        seen["path"] = screen.query_one("#polygon", Input).value
+
+    drive(app, scenario)
+
+    assert "EPSG:25830" in seen["derived"], "the polygon decides the CRS, pasted or not"
+    assert "cannot price" not in seen["cost"]
+    assert seen["path"], "the pasted draft names itself in the path field"
+    assert (workspace / "data" / "drafts" / "pasted.geojson").exists()
+
+
+def test_pasting_something_that_is_not_json_says_so_and_keeps_the_form(
+    workspace: Path,
+) -> None:
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        await pilot.press("p")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PasteScreen)
+        modal.query_one("#pasted", TextArea).text = "{not json at all"
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.4)
+        seen["screen"] = type(app.screen).__name__
+        seen["derived"] = str(screen.query_one("#derived", Static).render())
+
+    drive(app, scenario)
+
+    assert seen["screen"] == "NewCityScreen"
+    assert "not valid JSON" in seen["derived"]
+    assert not (workspace / "data" / "drafts" / "pasted.geojson").exists(), "nothing written"
+
+
+def test_q_asks_before_throwing_away_a_form_with_something_in_it(workspace: Path) -> None:
+    """`q` quit the whole app from any non-modal screen once focus left an Input.
+
+    With the button focused -- which is one tab away -- it took the entire
+    registration form with it, without asking.
+    """
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, NewCityScreen)
+        screen.query_one("#city_id", Input).value = "montalban"
+        screen.query_one("#save", Button).focus()
+        await pilot.press("q")
+        await pilot.pause()
+        seen["screen"] = type(app.screen).__name__
+        seen["running"] = app.is_running
+
+    drive(app, scenario)
+
+    assert seen["running"], "the app is still up"
+    assert seen["screen"] == "ConfirmScreen", "and it asked"
+
+
+def test_q_on_an_empty_form_just_goes_back(workspace: Path) -> None:
+    """Nothing to lose, nothing to ask."""
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#save", Button).focus()
+        await pilot.press("q")
+        await pilot.pause()
+        seen["screen"] = type(app.screen).__name__
+        seen["running"] = app.is_running
+
+    drive(app, scenario)
+
+    assert seen["running"]
+    assert seen["screen"] == "CitiesScreen"
+
+
 # ------------------------------------------------------------------- utilities
 
 
@@ -654,6 +807,90 @@ def test_a_utility_becomes_the_right_command_line(tmp_path: Path) -> None:
         "import-layer", "cube", "parking", cities_dir=tmp_path / "cities", output_root=tmp_path
     )
     assert layer[:3] == ["import-layer", "cube", "parking"]
+
+
+def test_predict_runs_for_a_day_that_is_asked_for_and_not_a_fixed_one(tmp_path: Path) -> None:
+    """It carried `--day 2026-08-16`, so it predicted a day already gone, always.
+
+    `predict` is the tool for checking the model against somebody standing in
+    the street, and that person is standing there today.
+    """
+    chosen = utility_argv(
+        "predict",
+        "cube",
+        "points.csv",
+        cities_dir=tmp_path / "cities",
+        output_root=tmp_path / "out",
+        day=date(2026, 9, 1),
+    )
+    assert chosen[chosen.index("--day") + 1] == "2026-09-01"
+
+    today = utility_argv(
+        "predict",
+        "cube",
+        "points.csv",
+        cities_dir=tmp_path / "cities",
+        output_root=tmp_path / "out",
+    )
+    assert today[today.index("--day") + 1] == date.today().isoformat()
+
+
+def test_a_palette_is_never_filtered_out_of_the_command_line(tmp_path: Path) -> None:
+    """`recolor` took no --cities-dir, and the way it took none was to remove it.
+
+    Filtering the argv by value removes whatever equals the directory -- so a
+    palette that happens to be that string disappears and recolor is left
+    without the argument it needs.
+    """
+    cities_dir = tmp_path / "cities"
+    argv = utility_argv(
+        "recolor", "cube", str(cities_dir), cities_dir=cities_dir, output_root=tmp_path / "out"
+    )
+
+    assert argv[argv.index("--palette") + 1] == str(cities_dir), "a palette is not a flag"
+    assert "--cities-dir" not in argv
+
+
+def test_q_in_the_utilities_screen_goes_back_instead_of_quitting(workspace: Path) -> None:
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("o")
+        await pilot.pause()
+        await pilot.press("u")
+        await pilot.pause()
+        assert isinstance(app.screen, UtilitiesScreen)
+        await pilot.press("q")
+        await pilot.pause()
+        seen["screen"] = type(app.screen).__name__
+        seen["running"] = app.is_running
+
+    drive(app, scenario)
+
+    assert seen["running"]
+    assert seen["screen"] == "CityScreen"
+
+
+def test_the_watched_directory_is_one_that_exists_or_none(tmp_path: Path) -> None:
+    """`~/Descargas` is not on this machine, and the screen promised it anyway.
+
+    Nothing is watched when none of the candidates is there, and the screen
+    stops telling people to drop a file into a directory that does not exist.
+    """
+    there = tmp_path / "Downloads"
+    there.mkdir()
+
+    with patch(
+        "shade_pipeline.console.newcity.watch_candidates",
+        lambda: (tmp_path / "Descargas", there),
+    ):
+        assert default_watch_dir() == there
+
+    with patch(
+        "shade_pipeline.console.newcity.watch_candidates", lambda: (tmp_path / "Descargas",)
+    ):
+        assert default_watch_dir() is None
 
 
 def test_the_assets_utility_is_about_the_machine_and_not_the_city(tmp_path: Path) -> None:
@@ -973,7 +1210,7 @@ def test_a_timezone_half_typed_does_not_take_the_form_with_it(workspace: Path) -
         screen.query_one("#city_id", Input).value = "montalban"
         screen.query_one("#polygon", Input).value = str(polygon)
         screen.query_one("#timezone", Input).value = "Europe/Madri"
-        await pilot.pause()
+        await pilot.pause(0.4)
         screen.action_save()
         await pilot.pause()
         seen["screen"] = type(app.screen).__name__

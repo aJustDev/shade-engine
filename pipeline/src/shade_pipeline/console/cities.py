@@ -110,7 +110,9 @@ class CitiesScreen(Screen[None]):
 
         app = self.app
         assert isinstance(app, ConsoleApp)
-        self.app.push_screen(NewCityScreen(app.cities_dir, app.watch_dir), self.city_registered)
+        self.app.push_screen(
+            NewCityScreen(app.cities_dir, app.data_root, app.watch_dir), self.city_registered
+        )
 
     def city_registered(self, city: str | None) -> None:
         self.refresh_rows()

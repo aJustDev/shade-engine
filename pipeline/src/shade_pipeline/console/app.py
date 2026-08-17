@@ -22,7 +22,7 @@ from textual.binding import Binding, BindingType
 from shade_core.config import CityConfig, load_city
 from shade_pipeline.build import ARTIFACT_VERSION
 from shade_pipeline.console.cities import CitiesScreen
-from shade_pipeline.console.newcity import DEFAULT_WATCH
+from shade_pipeline.console.newcity import default_watch_dir
 from shade_pipeline.publish import (
     DEFAULT_BASE_URL,
     PublishError,
@@ -51,14 +51,16 @@ class ConsoleApp(App[None]):
         cities_dir: Path,
         output_root: Path,
         data_root: Path,
-        watch_dir: Path = DEFAULT_WATCH,
+        watch_dir: Path | None = None,
         base_url: str = DEFAULT_BASE_URL,
     ) -> None:
         super().__init__()
         self.cities_dir = cities_dir
         self.output_root = output_root
         self.data_root = data_root
-        self.watch_dir = watch_dir
+        # None means nothing to watch, which is a normal answer: a machine
+        # whose home has no downloads directory registers cities by pasting.
+        self.watch_dir = watch_dir if watch_dir is not None else default_watch_dir()
         self.base_url = base_url
 
     def on_mount(self) -> None:
@@ -130,5 +132,5 @@ def run_console(
         cities_dir=cities_dir,
         output_root=output_root,
         data_root=data_root,
-        watch_dir=watch_dir or DEFAULT_WATCH,
+        watch_dir=watch_dir,
     ).run()
