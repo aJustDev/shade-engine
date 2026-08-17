@@ -123,7 +123,8 @@ def test_the_city_config_travels_with_its_data(publishable: Path) -> None:
     sent = next(command for command in plan.commands if "--relative" in command.argv)
     assert "cities/./cube.yaml" in sent.argv
     assert "cities/./cube" in sent.argv
-    assert sent.argv[-1].endswith(":/opt/shade/cities/")
+    # Not /opt/shade/cities: that is the deploy's git checkout (see below).
+    assert sent.argv[-1].endswith(":/opt/shade/live/cities/")
 
 
 def test_a_city_without_a_polygon_sends_only_its_yaml(publishable: Path) -> None:
@@ -308,7 +309,7 @@ def test_unpublish_removes_both_halves_and_then_restarts() -> None:
     execute(plan_unpublish(CUBE_CITY), run=run)
 
     artifacts = run.index_of("data/cities/cube")
-    config = run.index_of("/opt/shade/cities/cube.yaml")
+    config = run.index_of("/opt/shade/live/cities/cube.yaml")
     restart = run.index_of("restart api")
     assert artifacts < config < restart
 
@@ -344,22 +345,29 @@ def test_an_id_that_could_widen_an_rm_is_refused(bad: str) -> None:
         plan_unpublish(dangerous)
 
 
-def test_unpublish_predicts_what_git_will_put_back(
+def test_neither_publish_nor_unpublish_writes_into_the_deploys_checkout() -> None:
+    """One directory, two owners was the bug: `git reset --hard` versus publish.
+
+    It looked harmless because a published YAML usually matches its commit byte
+    for byte. Publish one you edited and did not commit, though, and the next
+    deploy reverts it under artifacts that stayed new -- and nothing checks:
+    CityRegistry cross-checks only the CRS and takes name and timezone from the
+    YAML as given.
+    """
+    for command in plan_unpublish(CUBE_CITY).commands:
+        assert "/opt/shade/cities" not in command.shell()
+
+
+def test_unpublish_says_when_the_working_tree_is_about_to_be_the_only_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """/opt/shade/cities is the deploy's checkout, and deploy.sh resets it hard.
-
-    Deleting a committed YAML there is undone by the next deploy. The city stays
-    unserved -- no artifacts, so the registry skips it -- but "I deleted it and
-    it came back" is worth predicting rather than discovering.
-    """
+    """Committed, it is reversible by republishing; uncommitted, it is not."""
     monkeypatch.chdir(tmp_path)
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "cities").mkdir()
-    yaml_path = tmp_path / "cities" / f"{CUBE_CITY.id}.yaml"
-    yaml_path.write_text("id: cube\n", encoding="utf-8")
+    (tmp_path / "cities" / f"{CUBE_CITY.id}.yaml").write_text("id: cube\n", encoding="utf-8")
 
-    assert unpublish_notes(CUBE_CITY, Path("cities")) == []
+    assert any("only one" in note for note in unpublish_notes(CUBE_CITY, Path("cities")))
 
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
     subprocess.run(
@@ -368,7 +376,7 @@ def test_unpublish_predicts_what_git_will_put_back(
         check=True,
     )
 
-    assert any("next deploy will put it back" in note for note in unpublish_notes(CUBE_CITY))
+    assert unpublish_notes(CUBE_CITY, Path("cities")) == []
 
 
 def test_a_stray_file_beside_the_yaml_does_not_change_what_git_is_asked(
@@ -378,8 +386,7 @@ def test_a_stray_file_beside_the_yaml_does_not_change_what_git_is_asked(
 
     Asking "is anything dirty around here" was wrong in both directions: one
     uncommitted export left beside a committed YAML made publish claim the city
-    was not in git, and made unpublish forget to warn that a deploy would put it
-    back.
+    was not in git, and made unpublish warn about a copy that was safe all along.
     """
     monkeypatch.chdir(tmp_path)
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -394,4 +401,4 @@ def test_a_stray_file_beside_the_yaml_does_not_change_what_git_is_asked(
     with_area = CUBE_CITY.model_copy(update={"area": f"cities/{CUBE_CITY.id}/area.geojson"})
     (tmp_path / "cities" / CUBE_CITY.id / "raw-export.geojson").write_text("{}", encoding="utf-8")
 
-    assert any("next deploy will put it back" in note for note in unpublish_notes(with_area))
+    assert unpublish_notes(with_area) == []

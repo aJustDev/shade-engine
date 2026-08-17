@@ -50,6 +50,22 @@ from shade_pipeline.verify import verify_artifacts
 
 DEFAULT_HOST = "cartagena"
 DEFAULT_REMOTE_ROOT = "/opt/shade"
+LIVE_CONFIG_DIR = "live/cities"
+"""Where the server keeps the configs it is actually serving, relative to the root.
+
+Deliberately *outside* the deploy's git checkout. The first version of ADR-025
+mounted ``./cities`` -- the checkout itself -- and that gave one directory two
+owners: ``deploy.sh`` runs ``git reset --hard origin/main`` over it, while
+``publish`` and ``unpublish`` write into it. The collision looked harmless
+because a published YAML usually matches its commit byte for byte, but publish a
+config you edited and have not committed and the next deploy reverts it under
+artifacts that stay new -- silently, since ``CityRegistry.load`` cross-checks
+only the CRS and takes ``name`` and ``timezone`` from the YAML unquestioned.
+
+So: ``cities/`` in git is the catalogue of cities that exist as configurations,
+and this directory is what *this server* currently serves. One writer each, and
+a deploy has no opinion about the second.
+"""
 DEFAULT_BASE_URL = "https://shade.ajustino.dev"
 LIGHT_PALETTE = "light"
 CHECK_RETRY = ("--retry", "10", "--retry-delay", "3", "--retry-all-errors")
@@ -277,9 +293,10 @@ def plan_publish(
         "rsync",
         "-a",
         "--relative",
+        "--mkpath",
         *RSYNC_REPORTING,
         *sources,
-        f"{host}:{remote_root}/cities/",
+        f"{host}:{remote_root}/{LIVE_CONFIG_DIR}/",
     )
     if recolor:
         # `pipeline` has no build of its own -- it runs `image: shade:prod`,
@@ -317,22 +334,18 @@ def plan_publish(
 def unpublish_notes(config: CityConfig, cities_dir: Path = Path("cities")) -> list[str]:
     """What is worth knowing before taking a city off the server.
 
-    The one that matters is git. ``/opt/shade/cities`` is the deploy's own
-    checkout and ``deploy.sh`` runs ``git reset --hard origin/main``, so deleting
-    a *committed* YAML there is undone by the next deploy. That does not put the
-    city back: ``CityRegistry.load`` skips a config with no ``metadata.json`` and
-    the artifacts are gone. But "I deleted it and it came back" deserves to be
-    predicted rather than discovered.
+    Only one thing is, now that the live config directory is outside the deploy's
+    checkout: whether git still has the YAML. If it does, unpublishing is
+    entirely reversible -- republishing is the whole of putting the city back. If
+    it does not, the copy in front of you becomes the only one there is.
     """
-    notes = []
     yaml_path = config_paths(config, cities_dir)[0]
     if tracked(yaml_path):
-        notes.append(
-            f"{yaml_path} is in git, so the next deploy will put it back on the server; "
-            f"without artifacts the API skips it, but to retire the city for good "
-            f"remove it from git too"
-        )
-    return notes
+        return []
+    return [
+        f"{yaml_path} is not in git; the server's copy is about to go, which "
+        f"leaves this working tree holding the only one"
+    ]
 
 
 def plan_unpublish(
@@ -379,7 +392,8 @@ def plan_unpublish(
         "delete the city config, which is what the API lists it from",
         "ssh",
         host,
-        f"rm -rf {remote_root}/cities/{city}.yaml {remote_root}/cities/{city}",
+        f"rm -rf {remote_root}/{LIVE_CONFIG_DIR}/{city}.yaml "
+        f"{remote_root}/{LIVE_CONFIG_DIR}/{city}",
     )
     add(
         "restart the API, which is what makes it forget",

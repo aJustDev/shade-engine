@@ -17,6 +17,18 @@ log "fetch + reset -> origin/main"
 git fetch origin main
 git reset --hard origin/main
 
+# Bootstrap only, never a sync. The configs this machine serves live in
+# live/cities/ and belong to `shade-engine publish` (ADR-025); a deploy has no
+# opinion about which cities are up. Seeding an empty directory is what makes a
+# fresh machine work at all -- but copying over a populated one would revert a
+# published config under artifacts that stayed new, silently, which is the exact
+# bug this directory was split out to prevent.
+if [ -z "$(ls -A live/cities 2>/dev/null)" ]; then
+  log "bootstrap live/cities from the repo (first deploy on this machine)"
+  mkdir -p live/cities
+  cp -a cities/. live/cities/
+fi
+
 log "build image"
 $COMPOSE build api
 

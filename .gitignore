@@ -13,8 +13,14 @@ dist/
 .mypy_cache/
 .ruff_cache/
 
-# Local raster artifacts and downloads (COGs, LAZ) live outside git
+# Local raster artifacts and downloads (COGs, LAZ) live outside git, and so do
+# the run logs under data/runs/
 data/
+
+# What a deployed machine is currently serving: the city configs `publish` put
+# there. Tracked configs live in cities/; this is runtime state, and the whole
+# point of ADR-025 is that git does not get a second opinion about it.
+live/
 
 # Scratch del MCP de Playwright (capturas y logs de sesiones de agente)
 .playwright-mcp/
