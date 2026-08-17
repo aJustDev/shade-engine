@@ -321,10 +321,19 @@ def preview_command(
             log=log_path,
             events=events_path,
         )
+
     # SIGTERM is how the console stops a preview, and the default action would
     # kill this process without unwinding -- orphaning both servers, which is
     # exactly the pile-up that makes the next preview land on another port.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    def stop(*_: object) -> None:
+        # One shot. A second SIGTERM arriving while the first is still tearing
+        # the servers down would raise inside the cleanup and abandon it half
+        # done -- and pressing `v` twice during vite's slow first start is
+        # exactly how that happens.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
     try:
         with preview(
             cities_dir=cities_dir,
@@ -339,17 +348,23 @@ def preview_command(
             if log_path is not None:
                 typer.echo(f"both servers log to {log_path}")
             typer.echo("Ctrl-C to stop\n")
-            try:
-                while True:
-                    time.sleep(3600)
-            except KeyboardInterrupt:
-                typer.echo("stopping")
+            while True:
+                time.sleep(3600)
+    except KeyboardInterrupt:
+        # Outside the `with`, not inside it, because a stop can arrive while the
+        # servers are still coming up -- vite's first start re-optimizes its
+        # dependencies and takes the best part of a minute. Caught in there, the
+        # interrupt escaped past `except PreviewError` and the step was left
+        # claiming to run for ever, with nothing alive behind it.
+        typer.echo("stopping")
     except PreviewError as exc:
         if state is not None:
             state.fail("preview", str(exc))
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     if state is not None:
+        # Stopping a preview on purpose is how a preview ends; there is no other
+        # way for it to finish, so this is `complete` and never `fail`.
         state.complete("preview")
 
 

@@ -110,6 +110,8 @@ class CityScreen(Screen[None]):
         self.city = city
         self._log_path: Path | None = None
         self._offset = 0
+        self._stopping: int | None = None
+        """Pid of a preview already told to stop, so `v` does not signal twice."""
 
     # ---------------------------------------------------------------- layout
 
@@ -200,6 +202,13 @@ class CityScreen(Screen[None]):
         # A preview has nothing to count and never ends on its own, so it must
         # not be mistaken for a step in flight when a build is also running.
         step = next((name for name in running if name != "preview"), running[0])
+        if step == "preview":
+            record = state.record("preview")
+            where = f"http://127.0.0.1:{record.params.get('web_port', 5173)}"
+            stopping = " (stopping)" if record.pid == self._stopping else ""
+            label.update(f"preview: serving {where}{stopping}")
+            bar.update(total=100, progress=0)
+            return
         progress = progress_of(state, step)
         if progress is None:
             phase = latest_phase(state, step)
@@ -368,12 +377,20 @@ class CityScreen(Screen[None]):
         state = self.state()
         running = state.record("preview")
         if state.status("preview") is StepStatus.RUNNING and running.pid:
+            # Shutting the servers down takes a few seconds, and the record does
+            # not change until it is over. Signalling again in the meantime does
+            # not help and used to stack up a toast per press.
+            if running.pid == self._stopping:
+                self.notify(f"already stopping pid {running.pid}")
+                return
             try:
                 os.kill(running.pid, signal.SIGTERM)
             except OSError as error:
                 self.notify(f"could not stop pid {running.pid}: {error}", severity="error")
                 return
+            self._stopping = running.pid
             self.notify(f"stopping the preview (pid {running.pid})")
+            self.refresh_steps()
             return
         pid = launch(
             engine_argv(

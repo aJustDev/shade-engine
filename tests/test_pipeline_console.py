@@ -742,3 +742,30 @@ def test_the_log_tab_ignores_a_record_whose_file_was_never_written(workspace: Pa
     drive(app, scenario)
 
     assert copied and "swept tile" in copied[0]
+
+
+def test_pressing_v_twice_while_it_shuts_down_does_not_signal_twice(workspace: Path) -> None:
+    """Tearing the servers down takes seconds; the record only changes at the end.
+
+    Signalling again in the meantime cannot help -- and a second SIGTERM used to
+    land inside the cleanup and abandon it half done.
+    """
+    state = _state(workspace)
+    log, events = state.paths_for("preview")
+    state.begin("preview", params={"web_port": 5173}, log=log, events=events)
+    app = _app(workspace)
+    signalled: list[tuple[int, int]] = []
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in range(4):
+            await pilot.press("v")
+            await pilot.pause()
+
+    with patch(
+        "shade_pipeline.console.city.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    ):
+        drive(app, scenario)
+
+    assert [call for call in signalled if call[1] != 0] == [(os.getpid(), signal.SIGTERM)]
