@@ -1,4 +1,4 @@
-"""CLI: ``shade-engine run|area|build|graph|tiles|publish`` plus the utilities.
+"""CLI: ``shade-engine run|area|basemap|build|graph|tiles|publish`` plus the utilities.
 
 ``run`` walks the whole chain for a city and is what an unattended build uses;
 the individual commands remain, both because they are what ``run`` calls and
@@ -29,6 +29,14 @@ from shade_pipeline.area import (
     plan_area,
     read_area,
     rewrite_config,
+)
+from shade_pipeline.basemap import (
+    ASSETS_DIRNAME,
+    DEFAULT_MARGIN_M,
+    SPRITE_SET,
+    BasemapError,
+    build_basemap,
+    ensure_assets,
 )
 from shade_pipeline.budget import MemoryBudgetError, cpu_budget
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
@@ -68,11 +76,19 @@ from shade_pipeline.runner import (
     step_scope,
     steps_between,
 )
-from shade_pipeline.runstate import LATEST_DIRNAME, LOG_STEPS, RunState, StepStatus
+from shade_pipeline.runstate import (
+    LATEST_DIRNAME,
+    LOG_STEPS,
+    RunState,
+    StepStatus,
+    config_digest,
+)
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 from shade_pipeline.tiles import (
+    BASEMAP_FILENAME,
     DEFAULT_MAX_ZOOM,
     DEFAULT_MIN_ZOOM,
+    TILES_DIRNAME,
     build_tiles,
     season_preset_instants,
 )
@@ -276,8 +292,9 @@ def preview_command(
 
     The step that actually looks at the result instead of at numbers, and the
     one that used to be skipped because it meant starting two servers by hand in
-    two repositories. A city with no basemap extract previews fine: the client
-    falls back to OSM online, so the overlay is what production will show.
+    two repositories. A city with no basemap extract, or a machine with no
+    glyphs and sprites, is previewed with a warning saying so: the overlay would
+    otherwise be drawn on black and look like a fault in the shade itself.
 
     Both servers log to ``data/runs/<city>/preview/``, which is what the console
     shows and ``shade-engine logs CITY preview`` prints. A preview that is up but
@@ -288,6 +305,19 @@ def preview_command(
         if not (artifact_dir / METADATA_FILENAME).exists():
             typer.echo(f"error: no artifacts under {artifact_dir}", err=True)
             raise typer.Exit(1)
+        # Warnings and not refusals: previewing the overlay alone is a perfectly
+        # good reason to start this. But a black map with no streets is what a
+        # missing backdrop looks like, and it looks exactly like a broken build.
+        if not (artifact_dir / TILES_DIRNAME / BASEMAP_FILENAME).exists():
+            typer.echo(
+                f"warning: {city} has no {BASEMAP_FILENAME}; the viewer will fall back to "
+                f"OSM online. Run `shade-engine basemap {city}` for the real backdrop"
+            )
+        if not (output_root / ASSETS_DIRNAME / SPRITE_SET).is_dir():
+            typer.echo(
+                f"warning: no glyphs or sprites under {output_root / ASSETS_DIRNAME}; the "
+                f"basemap will draw with no labels at all. Run `shade-engine assets`"
+            )
 
     state = log_path = None
     if city is not None:
@@ -965,6 +995,73 @@ def graph(
     try:
         build_graph(config, artifact_dir, source, spacing_m=spacing, progress=typer.echo)
     except (ValueError, FileNotFoundError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def basemap(
+    city: str,
+    margin: Annotated[
+        float, typer.Option(help="Metres past the bbox to include")
+    ] = DEFAULT_MARGIN_M,
+    build: Annotated[
+        str | None, typer.Option(help="Planet build to cut from, YYYYMMDD (default: the newest)")
+    ] = None,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+) -> None:
+    """Cut CITY out of the Protomaps planet build: streets, labels, buildings.
+
+    The shade tiles are a transparent overlay and carry none of that; without
+    this the viewer draws them on black. A town is a few hundred kilobytes and
+    under a minute, because ``pmtiles extract`` reads the 137 GB archive with
+    HTTP Range requests and downloads only the tiles inside the bbox.
+
+    Also part of ``run``. It is here on its own because a city built before this
+    step existed needs it applied without re-rendering anything, which is what
+    the manifest rewrite at the end is for.
+    """
+    config = load_city(cities_dir / f"{city}.yaml")
+    artifact_dir = output_root / config.id / ARTIFACT_VERSION
+    state = RunState.open(city, cities_dir=cities_dir, data_root=data_root)
+    try:
+        with step_scope(state, "basemap", {"margin_m": margin, "build": build or "newest"}) as say:
+
+            def report(message: str) -> None:
+                say(message)
+                typer.echo(message)
+
+            ensure_assets(output_root, progress=report)
+            build_basemap(config, artifact_dir, margin_m=margin, stamp=build, progress=report)
+    except BasemapError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    state.complete("basemap", digest=config_digest(cities_dir, city))
+
+
+@app.command()
+def assets(
+    force: Annotated[bool, typer.Option("--force", help="Download them again")] = False,
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+) -> None:
+    """Download the glyphs and sprites every city's basemap style needs.
+
+    Once per machine, not once per city: they are the same bytes everywhere, so
+    they live at ``<output-root>/assets/`` and are served as though "assets"
+    were a city of its own. Without the glyphs there are no labels at all --
+    MapLibre cannot draw text it has no glyphs for -- and without the sprites
+    the style's fill patterns are missing.
+
+    ``run`` calls this itself as part of the basemap step; it is separate
+    because a fresh working copy needs it once and no city in particular.
+    """
+    try:
+        ensure_assets(output_root, force=force, progress=typer.echo)
+    except BasemapError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
 

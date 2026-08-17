@@ -10,9 +10,14 @@ purpose -- ``shade-web`` is a separate, private repository, and the engine must
 not depend on it being checked out. Without it you still get an API to query;
 with it you get the map.
 
-A city with no ``basemap.pmtiles`` previews fine: the client falls back to OSM
-online when the extract is missing, so the overlay is exactly what it will be in
-production and only the backdrop differs.
+A city with no ``basemap.pmtiles`` previews, but it does not preview *fine*, and
+this file used to claim otherwise. The overlay carries no street, no label and
+no building outline -- all of that is the basemap underneath -- so without it the
+map is shade on black, which at low zoom reads as a haze over nothing. The
+viewer falls back to OSM online only when the manifest omits ``basemap_url``
+entirely; a manifest that names a file which is not there gets a source that
+404s and a black backdrop. Hence the warnings below: what is missing is said out
+loud, before you spend ten minutes wondering what you are looking at.
 """
 
 import contextlib

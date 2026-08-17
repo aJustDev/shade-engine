@@ -951,9 +951,9 @@ def build_tiles(
     legacy ``url``/``urls.building`` (cast building shade, same semantics
     as the original split) and ``urls.vegetation`` (pointing at the static
     canopy) keep a deployed schema-2 client rendering sensibly without
-    changes. Output lands under ``<artifact_dir>/tiles/``; the basemap
-    referenced by ``basemap_url`` is produced out of band (see
-    shade-docs: ops/anadir-ciudad.md).
+    changes. Output lands under ``<artifact_dir>/tiles/``; the basemap is cut
+    by its own chain step (:mod:`shade_pipeline.basemap`) and ``basemap_url``
+    appears only when that file is actually on disk.
 
     ``resume`` skips units whose archives are already on disk, and only when
     ``render.json`` says they came from these artifacts and this zoom range.
@@ -1168,7 +1168,12 @@ def build_tiles(
             else {}
         ),
         "ladder": declination_ladder(),
-        "basemap_url": BASEMAP_FILENAME,
+        # Present exactly when the file is. The key is a promise the client
+        # believes: given it, the viewer declares a PMTiles source and, when
+        # that source 404s, draws black rather than falling back to OSM. Written
+        # unconditionally, it turned a missing basemap into an unreadable map
+        # instead of a plainer one.
+        **({"basemap_url": BASEMAP_FILENAME} if (tiles_dir / BASEMAP_FILENAME).exists() else {}),
         "instants": entries,
         "generated_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "attribution": metadata.attribution,

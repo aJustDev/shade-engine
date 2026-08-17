@@ -41,6 +41,7 @@ from pathlib import Path
 from shade_core.artifacts import COVERAGE_FILENAME, METADATA_FILENAME, load_metadata
 from shade_core.config import CityConfig
 from shade_pipeline.tiles import (
+    BASEMAP_FILENAME,
     MANIFEST_FILENAME,
     TILES_DIRNAME,
     read_render_state,
@@ -171,9 +172,10 @@ def check_ready(
 
     Everything here is answerable locally and cheaply, and every item is a
     mistake that has actually been made: shipping without ``coverage.tif`` (the
-    only thing distinguishing "no data" from "sunny"), shipping a tile pyramid
-    rendered from the previous build, shipping a directory whose horizon cube
-    is quietly corrupt.
+    only thing distinguishing "no data" from "sunny"), shipping without a
+    basemap (the overlay on black, with nothing to read it against), shipping a
+    tile pyramid rendered from the previous build, shipping a directory whose
+    horizon cube is quietly corrupt.
     """
     notes: list[str] = []
     if not (artifact_dir / METADATA_FILENAME).exists():
@@ -199,6 +201,17 @@ def check_ready(
         raise PublishError(
             f"no tile manifest at {tiles_dir / MANIFEST_FILENAME}; render them first"
         )
+    # The overlay carries no street, no name and no building outline: all of
+    # that is the basemap, drawn underneath. Without it the viewer paints the
+    # shade on black, which at low zoom reads as a haze over nothing -- which is
+    # exactly how Montalban went to production.
+    if not (tiles_dir / BASEMAP_FILENAME).exists():
+        raise PublishError(
+            f"{config.id} has no {BASEMAP_FILENAME}; without it the viewer draws the "
+            f"overlay on black, with no streets, no labels and no buildings. "
+            f"Run `shade-engine basemap {config.id}`"
+        )
+
     manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
     recorded = read_render_state(tiles_dir)
     expected = render_state(int(manifest["min_zoom"]), int(manifest["max_zoom"]), metadata.built_at)

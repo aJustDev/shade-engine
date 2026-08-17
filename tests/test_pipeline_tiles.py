@@ -40,6 +40,7 @@ from shade_pipeline.shade_raster import (
     compute_state_raster,
 )
 from shade_pipeline.tiles import (
+    BASEMAP_FILENAME,
     BUILDINGS_COLORS,
     BUILDINGS_TILES_FILENAME,
     CANOPY_COLORS,
@@ -337,6 +338,31 @@ def test_transparent_tiles_skipped(built_city: Path, tmp_path: Path) -> None:
         # min_zoom always written, even where a blank tile would be skipped.
         base_tile = mercantile.tile(cube_lon, cube_lat, 12)
         assert reader.get(base_tile.z, base_tile.x, base_tile.y) is not None
+
+
+def test_the_manifest_promises_a_basemap_only_when_there_is_one(
+    built_city: Path, tmp_path: Path
+) -> None:
+    """`basemap_url` is a promise, and the client believes it.
+
+    Given the key it declares a PMTiles source; given a source that 404s it
+    draws BLACK rather than falling back to OSM. Written unconditionally, a
+    missing extract turned into an unreadable map instead of a plainer one --
+    which is how Montalban reached production.
+    """
+    without = tmp_path / "without"
+    shutil.copytree(built_city, without)
+    tiles_dir = build_tiles(CUBE_CITY, without, [WINTER_NOON], min_zoom=14, max_zoom=14)
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert "basemap_url" not in manifest
+
+    with_it = tmp_path / "with"
+    shutil.copytree(built_city, with_it)
+    (with_it / "tiles").mkdir(parents=True)
+    (with_it / "tiles" / BASEMAP_FILENAME).write_bytes(b"PMTiles")
+    tiles_dir = build_tiles(CUBE_CITY, with_it, [WINTER_NOON], min_zoom=14, max_zoom=14)
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert manifest["basemap_url"] == BASEMAP_FILENAME
 
 
 def test_build_tiles_manifest(built_city: Path, tmp_path: Path) -> None:

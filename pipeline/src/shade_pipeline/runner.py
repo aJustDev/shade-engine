@@ -1,6 +1,7 @@
 """The chain a city walks, driven from its state file rather than from memory.
 
-``area`` -> ``build`` -> ``graph`` -> ``tiles`` -> ``publish``. Each step writes
+``area`` -> ``basemap`` -> ``build`` -> ``graph`` -> ``tiles`` -> ``publish``.
+Each step writes
 its own log and event stream, records what it did in
 :mod:`shade_pipeline.runstate`, and stops the chain if it fails. Re-running
 picks up from the state file instead of starting over, which is the difference
@@ -29,6 +30,7 @@ from zoneinfo import ZoneInfo
 from shade_core.artifacts import METADATA_FILENAME
 from shade_core.config import CityConfig, load_city
 from shade_pipeline.area import plan_city
+from shade_pipeline.basemap import DEFAULT_MARGIN_M, build_basemap, ensure_assets
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.events import JsonlSink, emit
 from shade_pipeline.graph import DEFAULT_SPACING_M, build_graph
@@ -42,20 +44,26 @@ from shade_pipeline.tiles import (
     season_preset_instants,
 )
 
-CHAIN: tuple[str, ...] = ("area", "build", "graph", "tiles", "publish")
+CHAIN: tuple[str, ...] = ("area", "basemap", "build", "graph", "tiles", "publish")
 """The order steps run in. ``publish`` is in the chain but gated (see module doc)."""
 
-UNATTENDED: tuple[str, ...] = ("area", "build", "graph", "tiles")
+UNATTENDED: tuple[str, ...] = ("area", "basemap", "build", "graph", "tiles")
 """How far ``run`` goes on its own."""
 
-OPTIONAL: frozenset[str] = frozenset({"graph"})
+OPTIONAL: frozenset[str] = frozenset({"basemap", "graph"})
 """Steps whose failure is worth recording and not worth stopping for.
 
-The pedestrian graph is the only one. ``CityRegistry.load`` treats its absence
-as an ordinary state and simply answers 503 for routes, so a city whose walk
+Both are things a city can be built without, and both need the network at a
+moment when nothing else does. ``CityRegistry.load`` treats a missing pedestrian
+graph as an ordinary state and answers 503 for routes, so a city whose walk
 network OSM does not have -- or whose Overpass call timed out -- still has a
-perfectly good shade map to render and publish. Stopping there would mean
-skipping six hours of tiles because an extra was unavailable.
+perfectly good shade map. The basemap is a download from a third party with a
+week of retention; losing four hours of sweeping because it was unreachable
+would be absurd.
+
+Optional here, and refused by ``publish``: the failure is recorded, the build
+carries on, and the city does not reach a browser without a backdrop. That pair
+is the whole design -- see :func:`shade_pipeline.publish.check_ready`.
 """
 
 
@@ -284,6 +292,15 @@ def _run_step(
                 say(note)
                 echo(f"  {note}")
         return "; ".join(notes)
+
+    if step == "basemap":
+        # Behind `area` because `area --write` can move the bbox, and the
+        # extract is cut from it; in front of `build` because it is a minute
+        # against four hours and a missing binary is worth hearing about early.
+        with step_scope(state, "basemap", {"margin_m": DEFAULT_MARGIN_M}) as say:
+            ensure_assets(options.output_root, progress=say)
+            out = build_basemap(config, artifact_dir, progress=say)
+        return str(out)
 
     if step == "build":
         params = {"workers": options.workers, "tile_size": options.tile_size}

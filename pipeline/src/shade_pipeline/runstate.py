@@ -66,10 +66,11 @@ kilobytes and gets pruned; a line here is two hundred bytes and is kept, so
 
 DEPENDS_ON: dict[str, tuple[str, ...]] = {
     "area": (),
+    "basemap": (),
     "build": (),
     "graph": ("build",),
     "tiles": ("build",),
-    "publish": ("build", "tiles"),
+    "publish": ("basemap", "build", "tiles"),
 }
 """What each step is computed *from*, which is what makes it stale.
 
@@ -78,6 +79,11 @@ the rasters and neither reads the other, so re-running the pedestrian graph must
 not mark a perfectly good tile pyramid as out of date. ``area`` produces nothing
 at all -- it prices the city -- so nothing depends on it; a configuration change
 is caught by the digest instead, which applies to every step at once.
+
+``basemap`` reads nothing of ours either: it cuts a city out of a planet build
+by bbox, so a rebuild of the rasters leaves it perfectly valid and a change to
+the bbox invalidates it through the digest, like everything else. ``publish``
+depends on it because publishing is what puts it in front of somebody.
 """
 
 

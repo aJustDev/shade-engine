@@ -95,7 +95,15 @@ def test_the_city_list_shows_a_row_per_city_and_a_column_per_step(workspace: Pat
     drive(app, scenario)
 
     assert seen["rows"] == 1
-    assert seen["columns"] == ["city", "area", "build", "graph", "tiles", "publish"]
+    assert seen["columns"] == [
+        "city",
+        "area",
+        "basemap",
+        "build",
+        "graph",
+        "tiles",
+        "publish",
+    ]
 
 
 def test_a_step_recorded_by_another_process_shows_up(workspace: Path) -> None:
@@ -560,6 +568,20 @@ def test_a_utility_becomes_the_right_command_line(tmp_path: Path) -> None:
         "import-layer", "cube", "parking", cities_dir=tmp_path / "cities", output_root=tmp_path
     )
     assert layer[:3] == ["import-layer", "cube", "parking"]
+
+
+def test_the_assets_utility_is_about_the_machine_and_not_the_city(tmp_path: Path) -> None:
+    """Glyphs and sprites are the same bytes everywhere and live once beside the cities.
+
+    Reached from a city screen only because that is where the utilities are.
+    Handing it a city id would name a directory it is not going to touch.
+    """
+    argv = utility_argv(
+        "assets", "cube", "", cities_dir=tmp_path / "cities", output_root=tmp_path / "out"
+    )
+
+    assert argv == ["assets", "--output-root", str(tmp_path / "out")]
+    assert "cube" not in argv
 
 
 # --------------------------------------------------------------------- publish

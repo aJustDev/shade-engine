@@ -15,7 +15,8 @@ import yaml
 import laz_fixture
 import synthetic
 from conftest import CUBE_CITY
-from shade_pipeline import budget
+from shade_pipeline import budget, runner
+from shade_pipeline.basemap import BasemapError
 from shade_pipeline.runner import (
     CHAIN,
     ChainError,
@@ -231,6 +232,38 @@ def test_a_failed_graph_does_not_stop_the_map(workspace: Path) -> None:
     assert (options.output_root / "cube" / "v1" / "tiles" / "index.json").exists()
 
 
+def test_an_unreachable_basemap_does_not_stop_the_build(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is a download from a third party, in front of four hours of sweeping.
+
+    Optional here and refused by ``publish``: losing a night's render because
+    build.protomaps.com was down would be absurd, and so would letting the city
+    reach a browser with the overlay drawn on black.
+    """
+    options = _options(workspace)
+    monkeypatch.setattr(
+        runner,
+        "build_basemap",
+        lambda *args, **kwargs: (_ for _ in ()).throw(BasemapError("connection reset")),
+    )
+    monkeypatch.setattr(runner, "ensure_assets", lambda *args, **kwargs: None)
+    lines: list[str] = []
+
+    outcomes = run_chain(
+        "cube",
+        steps=("basemap", "build"),
+        options=options,
+        source=_source(workspace),  # type: ignore[arg-type]
+        progress=lines.append,
+    )
+
+    statuses = {outcome.step: outcome.status for outcome in outcomes}
+    assert statuses["basemap"] is StepStatus.FAILED
+    assert statuses["build"] is StepStatus.DONE
+    assert any("it is optional, carrying on" in line for line in lines)
+
+
 def test_rerunning_the_graph_does_not_invalidate_the_tiles(workspace: Path) -> None:
     """Staleness follows what a step is computed from, not the running order."""
     options = _options(workspace)
@@ -280,7 +313,7 @@ def test_the_lidar_download_reports_into_the_step_log(workspace: Path) -> None:
 
 def test_step_slicing() -> None:
     assert steps_between("build", "tiles") == ("build", "graph", "tiles")
-    assert steps_between(None, None) == ("area", "build", "graph", "tiles")
+    assert steps_between(None, None) == ("area", "basemap", "build", "graph", "tiles")
     assert steps_between("tiles", "tiles") == ("tiles",)
     assert steps_between(None, "publish") == CHAIN
 

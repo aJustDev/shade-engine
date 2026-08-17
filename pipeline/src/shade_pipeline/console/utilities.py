@@ -7,8 +7,10 @@ shade. They are rare, which is exactly why nobody remembers they are there --
 so they get a screen that says what each does and runs it, instead of a line in
 a runbook.
 
-Everything runs detached and writes to the same per-step log the chain uses, so
-the output shows up in the city's Log tab like anything else.
+Everything runs detached, and -- unlike a chain step -- none of these records a
+run or keeps a log: ``launch`` sends their output to ``/dev/null``. They are
+minutes, not hours, and the way to see what they said is to run them from a
+terminal. The Log tab shows the chain.
 """
 
 from dataclasses import dataclass
@@ -69,6 +71,13 @@ UTILITIES: tuple[Utility, ...] = (
         "the city's rows, so it is idempotent.",
         argument="layer",
         placeholder="parking",
+    ),
+    Utility(
+        "assets",
+        "Download the glyphs and sprites every basemap style needs. Once per MACHINE, not "
+        "per city -- it ignores the city you came from. Without the glyphs the map draws no "
+        "labels at all. `run` does it as part of the basemap step; this is for a fresh "
+        "working copy.",
     ),
 )
 
@@ -155,6 +164,10 @@ def to_argv(
     output_root: Path,
 ) -> list[str]:
     """The command line for one utility, as the CLI would take it."""
+    if utility == "assets":
+        # Takes no city and no --cities-dir: it is the one utility about the
+        # machine rather than about a city.
+        return ["assets", "--output-root", str(output_root)]
     argv = [utility, city]
     if utility == "predict":
         argv += [argument, "--day", "2026-08-16"]

@@ -21,6 +21,7 @@ import pytest
 
 from conftest import CUBE_CITY
 from shade_core.artifacts import COVERAGE_FILENAME
+from shade_pipeline.basemap import declare_in_manifest
 from shade_pipeline.publish import (
     Command,
     PublishError,
@@ -31,17 +32,29 @@ from shade_pipeline.publish import (
     plan_unpublish,
     unpublish_notes,
 )
-from shade_pipeline.tiles import MANIFEST_FILENAME, RENDER_STATE_FILENAME, build_tiles
+from shade_pipeline.tiles import (
+    BASEMAP_FILENAME,
+    MANIFEST_FILENAME,
+    RENDER_STATE_FILENAME,
+    build_tiles,
+)
 
 NOON = datetime(2026, 6, 21, 13, 0, tzinfo=ZoneInfo("Europe/Madrid"))
 
 
 @pytest.fixture
 def publishable(built_city: Path, tmp_path: Path) -> Path:
-    """Artifacts with a tile pyramid rendered from exactly these artifacts."""
+    """Artifacts with a tile pyramid rendered from exactly these artifacts.
+
+    And a basemap, because ``check_ready`` refuses without one: the overlay
+    carries no street, no label and no building outline, so a city published
+    without a backdrop is shade drawn on black.
+    """
     target = tmp_path / "city"
     shutil.copytree(built_city, target)
-    build_tiles(CUBE_CITY, target, [NOON], min_zoom=17, max_zoom=18)
+    tiles_dir = build_tiles(CUBE_CITY, target, [NOON], min_zoom=17, max_zoom=18)
+    (tiles_dir / BASEMAP_FILENAME).write_bytes(b"PMTiles")
+    declare_in_manifest(tiles_dir)
     return target
 
 
@@ -263,6 +276,22 @@ def test_publishing_tiles_from_an_older_build_is_refused(publishable: Path) -> N
     state_path.write_text(json.dumps(recorded), encoding="utf-8")
 
     with pytest.raises(PublishError, match="rendered from other artifacts"):
+        check_ready(CUBE_CITY, publishable)
+
+
+def test_publishing_without_a_basemap_is_refused(publishable: Path) -> None:
+    """The mistake that put Montalban into production looking like a haze.
+
+    The shade tiles are a transparent overlay: no street, no label, no building
+    outline. All of that is the basemap underneath, and without it the viewer
+    draws the overlay on black -- which at low zoom is exactly what an
+    unreadable smear looks like. Optional in the chain, refused here: a build
+    should not stop because a third-party download was unreachable, and a
+    browser should not be shown the result.
+    """
+    (publishable / "tiles" / BASEMAP_FILENAME).unlink()
+
+    with pytest.raises(PublishError, match="no streets, no labels and no buildings"):
         check_ready(CUBE_CITY, publishable)
 
 
