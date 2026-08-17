@@ -1,0 +1,15 @@
+id: montalban
+name: Montalbán de Córdoba
+country: ES
+timezone: Europe/Madrid # IANA; se valida al cargar
+crs: EPSG:25830 # ETRS89 / UTM zone 30N
+bbox: [345074, 4159819, 346122, 4161773] # en CRS local (metros), no lat/lon
+area: cities/montalban/area.geojson # area de computo dentro del bbox (ADR-020)
+resolution_m: 1.0
+horizon_sectors: 64
+horizon_max_distance_m: 500.0 # radio del barrido; tambien buffer del bbox
+sources:
+  lidar: pnoa # driver de descarga (CnigSource)
+  pnoa_series: LIDA3 # codSerie del centro de descargas
+attribution:
+  - Obra derivada de PNOA-cob3 2022-2025 CC-BY 4.0 scne.es
