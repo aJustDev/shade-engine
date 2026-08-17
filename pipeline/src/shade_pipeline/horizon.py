@@ -1,20 +1,33 @@
 """Production horizon sweep: tiled, vectorized, and true to the oracle.
 
 This reimplements ``shade_core.horizon.compute_horizon_reference`` for real
-city rasters. In ``exact`` step mode it reproduces the oracle's sampling
-bit for bit -- same half-pixel distances, same ``round()`` offsets, same
-float64 math -- restructured in two ways that do not change results:
+city rasters. In ``exact`` step mode it visits exactly the oracle's samples
+-- same half-pixel distances, same ``round()`` offsets -- restructured in
+three ways that do not change the result:
 
 - **Offset dedup**: consecutive half-pixel distances often snap to the same
   (d_row, d_col) cell; only the smallest distance per cell is kept. Safe
   proof: for a fixed target pixel and offset, ``dz = obstacle_z - observer_z``
-  is constant and ``atan2(dz, d)`` is non-increasing in ``d`` when
-  ``dz >= 0``, so the smallest distance attains that offset's maximum; when
-  ``dz < 0`` every sample is negative and the final floor at 0 absorbs it.
+  is constant and ``dz / d`` is non-increasing in ``d`` when ``dz >= 0``, so
+  the smallest distance attains that offset's maximum; when ``dz < 0`` every
+  sample is negative and the final floor at 0 absorbs it.
 - **Tiling with buffer**: the target area is swept in tiles, each reading a
   window padded by ``buffer_pixels`` -- at least the largest possible offset
   -- so a sample is inside the padded window iff it is inside the dataset.
   Per-pixel sample sets are therefore identical regardless of tile bounds.
+- **One arctan per sector**: both accumulators keep ``(dz / d)``, the tangent,
+  and convert once per sector instead of once per sample. ``arctan`` is
+  monotonic, so neither the maximum nor the argmax moves -- neither the angle
+  nor the blocker class can change. This is *not* the oracle's arithmetic and
+  does not claim to be: on a real 512x512 tile of ``montilla-test`` the
+  float64 accumulator disagrees with a per-sample ``arctan2`` on 7.1% of
+  values, by at most 2 ulp (1.4e-14 deg). What it reproduces is the oracle's
+  result: all 2,097,152 float32 values measured came out identical, and the
+  artifact's 0.353 deg quantization step sits twelve orders of magnitude
+  above that discrepancy. Worth 5.1x on the kernel (25.0 -> 4.9
+  ns/px/sample) and 4.8x on a whole montilla-test sweep, 16m 57s -> 3m 32s,
+  with all three cubes coming out byte-identical to the published artifacts
+  (shade-docs: learning/horizon-algorithm.md).
 
 The sweep also records *what* blocks each sector: whenever a sample raises a
 pixel's max angle, its landcover class is kept. Strict ``>`` with ascending
@@ -25,12 +38,10 @@ A single class per sector cannot answer "would this pixel be shaded anyway
 without the trees": the class only names whichever obstacle won the argmax,
 often by centimetres. So the same pass builds a **second horizon** over the
 surface with vegetation lowered to the ground, and the two cubes together give
-a real decomposition (see ``shade_pipeline.shade_raster``). That accumulator
-keeps ``(dz / d)`` -- the tangent -- and converts once per sector instead of
-once per sample: ``arctan`` is monotonic, so the maximum is the same, and the
-measured cost of the whole second cube is +9% of sweep time (a second
-``arctan2`` per sample would be +109%). The exact path above is untouched, so
-``horizon.tif`` stays bit-identical to the oracle.
+a real decomposition (see ``shade_pipeline.shade_raster``). The whole second
+cube costs +9% of sweep time because it accumulates the tangent; a second
+``arctan2`` per sample would have been +109%. That measurement is what
+eventually sent the first cube down the same road.
 
 ``geometric`` step mode grows the distance step multiplicatively in the far
 field (constant relative error, far fewer samples) as a future knob for
@@ -184,9 +195,9 @@ def iter_horizon_sectors(
     surface_noveg_z = np.where(landcover == Landcover.VEGETATION, dtm, dsm).astype(np.float64)
 
     for k in range(params.sectors):
-        best = np.full((height, width), -np.inf)
-        best_class = np.full((height, width), NO_BLOCKER, dtype=np.uint8)
         best_slope = np.full((height, width), -np.inf)
+        best_class = np.full((height, width), NO_BLOCKER, dtype=np.uint8)
+        best_slope_noveg = np.full((height, width), -np.inf)
         for d_row, d_col, distance in sector_offsets(k, params, resolution_m):
             # Target pixel (i, j) samples array cell (row0 + i + d_row, ...);
             # clamp to the sub-rectangle of targets whose sample is in range.
@@ -201,22 +212,23 @@ def iter_horizon_sectors(
                 slice(col0 + j_lo + d_col, col0 + j_hi + d_col),
             )
             sub = (slice(i_lo, i_hi), slice(j_lo, j_hi))
-            angle = np.degrees(np.arctan2(surface_z[src] - observer_z[sub], distance))
-            improved = angle > best[sub]
-            best[sub] = np.where(improved, angle, best[sub])
-            best_class[sub] = np.where(improved, landcover[src], best_class[sub])
+            slope = (surface_z[src] - observer_z[sub]) / distance
+            improved = slope > best_slope[sub]
+            np.copyto(best_slope[sub], slope, where=improved)
+            np.copyto(best_class[sub], landcover[src], where=improved)
             np.maximum(
-                best_slope[sub],
+                best_slope_noveg[sub],
                 (surface_noveg_z[src] - observer_z[sub]) / distance,
-                out=best_slope[sub],
+                out=best_slope_noveg[sub],
             )
-        best_class[best <= 0.0] = NO_BLOCKER
+        # Sign survives arctan, so a non-positive tangent is a non-positive angle.
+        best_class[best_slope <= 0.0] = NO_BLOCKER
         # One arctan per sector, on the accumulated tangent. -inf (no sample in
-        # range) lands on -90 and the floor at 0 absorbs it, same as above.
+        # range) lands on -90 and the floor at 0 absorbs it.
         yield (
-            np.maximum(best, 0.0).astype(np.float32),
-            best_class,
             np.maximum(np.degrees(np.arctan(best_slope)), 0.0).astype(np.float32),
+            best_class,
+            np.maximum(np.degrees(np.arctan(best_slope_noveg)), 0.0).astype(np.float32),
         )
 
 
