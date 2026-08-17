@@ -47,6 +47,16 @@ DEFAULT_HOST = "cartagena"
 DEFAULT_REMOTE_ROOT = "/opt/shade"
 DEFAULT_BASE_URL = "https://shade.ajustino.dev"
 LIGHT_PALETTE = "light"
+CHECK_RETRY = ("--retry", "10", "--retry-delay", "3", "--retry-all-errors")
+"""How the closing checks wait for the API they just restarted.
+
+``docker compose restart`` returns when the container has *started*, not when
+uvicorn is serving: the registry still has to open every city's rasters. The
+first check used to fire into that gap and take a 502 from the proxy, failing a
+publish that had in fact worked. Thirty seconds of patience, the same budget
+``deploy/deploy.sh`` gives itself.
+"""
+
 RSYNC_REPORTING = ("-v", "--info=stats1")
 """How rsync reports into a log file.
 
@@ -268,21 +278,14 @@ def plan_publish(
         host,
         f"{compose} restart api",
     )
-    add("the API is healthy", "curl", "-fsS", "-o", "/dev/null", f"{base_url}/healthz")
-    add(
-        "the city is listed",
-        "curl",
-        "-fsS",
-        "-o",
-        "/dev/null",
-        f"{base_url}/v1/cities/{city}",
-    )
-    add(
+
+    def check(what: str, url: str) -> None:
+        add(what, "curl", "-fsS", *CHECK_RETRY, "-o", "/dev/null", url)
+
+    check("the API is healthy", f"{base_url}/healthz")
+    check("the city is listed", f"{base_url}/v1/cities/{city}")
+    check(
         "the tile manifest is served",
-        "curl",
-        "-fsS",
-        "-o",
-        "/dev/null",
         f"{base_url}/tiles/{city}/v1/tiles/{MANIFEST_FILENAME}",
     )
     return plan

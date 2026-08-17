@@ -143,6 +143,20 @@ def test_rsync_reports_in_lines_a_log_can_hold(publishable: Path) -> None:
             assert "--info=stats1" in command.argv
 
 
+def test_the_checks_wait_for_the_api_they_just_restarted(publishable: Path) -> None:
+    """`docker compose restart` returns on started, not on serving.
+
+    The registry opens every city's rasters before uvicorn answers, and the
+    first check used to fire into that gap and take a 502 from the proxy --
+    failing a publish that had worked.
+    """
+    plan = _plan(publishable)
+
+    checks = [command for command in plan.commands if command.argv[0] == "curl"]
+    assert len(checks) == 3
+    assert all("--retry" in command.argv for command in checks)
+
+
 def test_the_rollback_is_taken_before_anything_is_overwritten(publishable: Path) -> None:
     run = Recorder()
 
