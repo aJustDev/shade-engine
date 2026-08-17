@@ -50,6 +50,9 @@ COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 # City configs and vector layers live in git and ship with the image; raster
 # artifacts (data/cities, ~2.4 GB) are bind-mounted read-only by compose.
+# In production compose *also* bind-mounts ./cities over this copy (ADR-025),
+# so publishing a new city needs no deploy; what stays here is the fallback for
+# one-shot containers and for CI, where there is no host directory to mount.
 COPY cities ./cities
 
 USER app

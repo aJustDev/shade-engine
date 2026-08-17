@@ -94,6 +94,12 @@ services:
       # Raster artifacts (~2.4 GB) stay out of git and out of the image;
       # they are rsync'd to the host and mounted read-only.
       - ./data/cities:/app/data/cities:ro
+      # City configs travel with their data, not inside the image (ADR-025).
+      # This shadows the image's own `cities/`, so `shade-engine publish` can
+      # make a brand-new city appear with an rsync and a restart instead of a
+      # commit, a CI run and a deploy. The host directory is the git checkout,
+      # so a deploy still lands whatever git says.
+      - ./cities:/app/cities:ro
     depends_on:
       db:
         condition: service_healthy
