@@ -91,6 +91,9 @@ class CityScreen(Screen[None]):
         Binding("r", "run", "Run"),
         Binding("v", "preview", "Preview"),
         Binding("p", "publish", "Publish"),
+        # Shifted, and not next to `p` by accident: this one deletes from a
+        # production server, and a mistyped neighbour should not reach it.
+        Binding("U", "unpublish", "Unpublish"),
         Binding("u", "utilities", "Utilities"),
         Binding("y", "copy_log", "Copy log"),
     ]
@@ -378,6 +381,34 @@ class CityScreen(Screen[None]):
             )
         )
         self.notify(f"{self.city}: publishing as pid {pid}")
+
+    def action_unpublish(self) -> None:
+        """Show what would be deleted, then ask. Same gate as publish, higher stakes."""
+        app = self.console_app
+        plan = app.unpublish_plan(self.city)
+        if isinstance(plan, str):
+            self.notify(plan, severity="error")
+            return
+        self.app.push_screen(
+            ConfirmScreen(f"Unpublish {self.city}", plan.render(), "Delete from the server"),
+            self.do_unpublish,
+        )
+
+    def do_unpublish(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        app = self.console_app
+        pid = launch(
+            engine_argv(
+                "unpublish",
+                self.city,
+                "--cities-dir",
+                str(app.cities_dir),
+                "--data-root",
+                str(app.data_root),
+            )
+        )
+        self.notify(f"{self.city}: removing from the server as pid {pid}")
 
     def action_copy_log(self) -> None:
         """Put the whole current log on the clipboard.

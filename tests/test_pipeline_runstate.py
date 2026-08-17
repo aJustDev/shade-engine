@@ -203,3 +203,32 @@ def test_a_finished_step_is_not_stale_against_an_older_predecessor(
 
     assert state.status("tiles") is StepStatus.DONE
     assert state.stale_reason("tiles") is None
+
+
+def test_an_undone_step_goes_back_to_pending_but_keeps_its_log(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    """Unpublishing removes the result, so `done` becomes a claim about nothing.
+
+    The record survives with its log because the console follows the newest log
+    across the chain, and dropping it would hide the very run that just undid
+    the step.
+    """
+    state = _state(cities_dir, tmp_path)
+    _run(state, "publish")
+    log = state.record("publish").log
+
+    state.undo("publish")
+
+    assert state.status("publish") is StepStatus.PENDING
+    assert state.record("publish").log == log
+    assert state.record("publish").started_at is not None
+
+
+def test_undoing_a_step_survives_a_reread(cities_dir: Path, tmp_path: Path) -> None:
+    """The console is another process; it only ever sees the file."""
+    state = _state(cities_dir, tmp_path)
+    _run(state, "publish")
+    state.undo("publish")
+
+    assert _state(cities_dir, tmp_path).status("publish") is StepStatus.PENDING

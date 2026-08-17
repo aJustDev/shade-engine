@@ -29,6 +29,8 @@ from shade_pipeline.publish import (
     PublishPlan,
     check_ready,
     plan_publish,
+    plan_unpublish,
+    unpublish_notes,
 )
 from shade_pipeline.runner import CHAIN
 from shade_pipeline.runstate import RunState, StepStatus
@@ -93,6 +95,23 @@ class ConsoleApp(App[None]):
                 base_url=self.base_url,
                 cities_dir=self.cities_dir,
             )
+        except (PublishError, OSError, ValueError) as error:
+            return str(error)
+
+    def unpublish_plan(self, city: str) -> PublishPlan | str:
+        """The plan for taking a city off the server, or the reason there is not one.
+
+        No ``check_ready`` here: what is being removed does not have to be fit to
+        serve, and often the reason for removing it is that it is not. The notes
+        that do apply -- what git will put back -- ride in the plan's headline so
+        the confirmation screen shows them.
+        """
+        try:
+            config = self.config_of(city)
+            plan = plan_unpublish(config, base_url=self.base_url)
+            for note in unpublish_notes(config, self.cities_dir):
+                plan.headline += f"\n\nnote: {note}"
+            return plan
         except (PublishError, OSError, ValueError) as error:
             return str(error)
 

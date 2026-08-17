@@ -593,3 +593,26 @@ def test_publishing_a_city_with_nothing_built_is_refused_before_it_is_offered(
 
     assert isinstance(result, str)
     assert "no artifacts" in result
+
+
+def test_unpublishing_shows_what_it_would_delete_before_asking(workspace: Path) -> None:
+    """Two of those commands are `rm -rf` on a production server."""
+    app = _app(workspace)
+
+    plan = app.unpublish_plan("cube")
+
+    assert not isinstance(plan, str)
+    rendered = plan.render()
+    assert "rm -rf /opt/shade/data/cities/cube" in rendered
+    assert "rm -rf /opt/shade/cities/cube.yaml" in rendered
+
+
+def test_unpublish_is_offered_for_a_city_with_nothing_built(workspace: Path) -> None:
+    """Unlike publish: what you are removing does not have to be fit to serve.
+
+    Often the reason to remove it is precisely that it is not.
+    """
+    app = _app(workspace)
+
+    assert isinstance(app.publish_plan("cube"), str)
+    assert not isinstance(app.unpublish_plan("cube"), str)

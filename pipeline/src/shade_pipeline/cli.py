@@ -54,6 +54,8 @@ from shade_pipeline.publish import (
     check_ready,
     execute,
     plan_publish,
+    plan_unpublish,
+    unpublish_notes,
 )
 from shade_pipeline.recolor import PALETTES, recolor_city
 from shade_pipeline.runner import (
@@ -373,6 +375,70 @@ def publish(
         raise typer.Exit(1) from exc
     state.complete("publish")
     typer.echo(f"{city} is live at {base_url}")
+
+
+@app.command()
+def unpublish(
+    city: str,
+    host: Annotated[str, typer.Option(help="ssh host holding the deployment")] = DEFAULT_HOST,
+    remote_root: Annotated[
+        str, typer.Option(help="Deployment directory on that host")
+    ] = DEFAULT_REMOTE_ROOT,
+    base_url: Annotated[str, typer.Option(help="Public API, for the checks")] = DEFAULT_BASE_URL,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the commands in order and run none of them")
+    ] = False,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+) -> None:
+    """Take CITY off the server: delete its artifacts and config, then restart.
+
+    The undo of ``publish``, and the way to rehearse it: with both halves gone,
+    the next publish is a new city arriving rather than an update. Nothing local
+    is touched -- the build stays where it is, and republishing costs only the
+    upload.
+
+    The step goes back to ``pending`` afterwards, because that is what it now is.
+
+    ``--dry-run`` prints every command and runs none. Worth doing first: two of
+    them are ``rm -rf`` on a production server.
+    """
+    config = load_city(cities_dir / f"{city}.yaml")
+    try:
+        notes = unpublish_notes(config, cities_dir)
+        plan = plan_unpublish(config, host=host, remote_root=remote_root, base_url=base_url)
+    except PublishError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if dry_run:
+        for note in notes:
+            typer.echo(f"  {note}")
+        typer.echo(plan.render())
+        typer.echo("\nnothing run; drop --dry-run to do it")
+        return
+
+    state = RunState.open(city, cities_dir=cities_dir, data_root=data_root)
+    try:
+        # Recorded against `publish`, because `publish` is the step whose state
+        # this changes; the console follows that log and the table shows it move.
+        with step_scope(state, "publish", {"host": host, "undo": True}) as say:
+
+            def report(message: str) -> None:
+                say(message)
+                typer.echo(message)
+
+            report(f"removing {city} from {host}")
+            for note in notes:
+                report(f"  {note}")
+            execute(plan, progress=report)
+    except PublishError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    state.undo("publish")
+    typer.echo(f"{city} is off {base_url}; publish it again when you want it back")
 
 
 @app.command()

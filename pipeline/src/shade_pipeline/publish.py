@@ -21,12 +21,17 @@ a twenty-minute wait for CI in the middle of it, purely because the YAML rode
 inside the image. See ADR-025. Committing the YAML is still worth doing, but it
 is a separate act from publishing, and :func:`check_ready` says so out loud.
 
+:func:`plan_unpublish` is the undo, and is built out of the same
+:class:`Command` list rather than a machine of its own, so it inherits the dry
+run, the log and the confirmation screen for free.
+
 Nothing here is secret: the connection to the server is an ssh key, and every
 step is a command you could have typed. ``--dry-run`` prints exactly those
 commands and runs none of them.
 """
 
 import json
+import re
 import shlex
 import subprocess
 from collections.abc import Callable, Sequence
@@ -67,6 +72,17 @@ rasters, a hundred-odd pmtiles archives: you watch the instants arrive) and
 """
 
 
+SAFE_CITY_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+"""What an id must look like before it is allowed into a remote path.
+
+``CityConfig.id`` is a plain string, and unpublishing interpolates it into
+``rm -rf`` on a production server. An empty id would delete every city's
+artifacts; one containing ``/`` or ``..`` could reach further than that. Nothing
+legitimate is excluded -- the id is also a filename and a URL segment -- and the
+check costs a regex.
+"""
+
+
 class PublishError(RuntimeError):
     """The city is not fit to publish, or a step of the publish failed."""
 
@@ -90,9 +106,10 @@ class PublishPlan:
 
     city: str
     commands: list[Command] = field(default_factory=list)
+    headline: str = "everything it needs, then the restart that reads it"
 
     def render(self) -> str:
-        lines = [f"{self.city}: everything it needs, then the restart that reads it", ""]
+        lines = [f"{self.city}: {self.headline}", ""]
         for index, command in enumerate(self.commands, start=1):
             lines.append(f"{index:>2}. {command.what}")
             lines.append(f"    {command.shell()}")
@@ -107,22 +124,28 @@ def config_paths(config: CityConfig, cities_dir: Path) -> list[Path]:
     return paths
 
 
-def uncommitted(paths: Sequence[Path]) -> bool:
-    """Whether git has anything outstanding for ``paths`` (untracked included).
+def tracked(path: Path) -> bool:
+    """Whether git knows this file at all.
 
-    Best effort on purpose: no git, no repository, no answer, no note. This
-    decides the wording of a warning, never whether a publish happens.
+    Asked of the file and not of the directory it sits in. "Is anything dirty
+    around here" was the first version and it was wrong in both directions: one
+    stray untracked export beside a perfectly committed YAML was enough to make
+    ``publish`` claim the city was not in git, and to make ``unpublish`` forget
+    to say that a deploy would put it back.
+
+    Best effort: no git, no repository, no answer, and neither caller says
+    anything. This picks the wording of a note, never whether work happens.
     """
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain", "--", *(str(path) for path in paths)],
+            ["git", "ls-files", "--error-unmatch", "--", str(path)],
             capture_output=True,
             text=True,
             check=False,
         )
     except OSError:
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+        return True
+    return result.returncode == 0
 
 
 def check_ready(
@@ -176,10 +199,10 @@ def check_ready(
     # A note, never a refusal. Publishing sends the YAML to the server itself,
     # so the city works either way; what it cannot do is put it in git, and a
     # config that exists only on a VPS is one reinstall from gone.
-    tracked = config_paths(config, cities_dir)
-    if uncommitted(tracked):
+    yaml_path = config_paths(config, cities_dir)[0]
+    if not tracked(yaml_path):
         notes.append(
-            f"{tracked[0]} is not committed; production will serve it from the mount, "
+            f"{yaml_path} is not in git; production will serve it from the mount, "
             f"but git will not know about it"
         )
     return notes
@@ -287,6 +310,93 @@ def plan_publish(
     check(
         "the tile manifest is served",
         f"{base_url}/tiles/{city}/v1/tiles/{MANIFEST_FILENAME}",
+    )
+    return plan
+
+
+def unpublish_notes(config: CityConfig, cities_dir: Path = Path("cities")) -> list[str]:
+    """What is worth knowing before taking a city off the server.
+
+    The one that matters is git. ``/opt/shade/cities`` is the deploy's own
+    checkout and ``deploy.sh`` runs ``git reset --hard origin/main``, so deleting
+    a *committed* YAML there is undone by the next deploy. That does not put the
+    city back: ``CityRegistry.load`` skips a config with no ``metadata.json`` and
+    the artifacts are gone. But "I deleted it and it came back" deserves to be
+    predicted rather than discovered.
+    """
+    notes = []
+    yaml_path = config_paths(config, cities_dir)[0]
+    if tracked(yaml_path):
+        notes.append(
+            f"{yaml_path} is in git, so the next deploy will put it back on the server; "
+            f"without artifacts the API skips it, but to retire the city for good "
+            f"remove it from git too"
+        )
+    return notes
+
+
+def plan_unpublish(
+    config: CityConfig,
+    *,
+    host: str = DEFAULT_HOST,
+    remote_root: str = DEFAULT_REMOTE_ROOT,
+    base_url: str = DEFAULT_BASE_URL,
+) -> PublishPlan:
+    """The commands that take a city off the server: artifacts, config, restart.
+
+    The mirror image of :func:`plan_publish`, and deliberately built out of the
+    same :class:`Command` list so it inherits the dry run, the log and the
+    confirmation screen rather than growing a second machine beside them.
+
+    Both halves go: removing the artifacts alone would already unserve the city
+    (the registry skips a config it has no ``metadata.json`` for), but leaving
+    the YAML behind means the next publish is an update rather than the arrival
+    of a new city, and that is the path worth being able to rehearse.
+    """
+    city = config.id
+    if not SAFE_CITY_ID.fullmatch(city):
+        raise PublishError(
+            f"refusing to build remote commands for city id {city!r}: "
+            f"an id goes straight into `rm -rf` on the server and must match "
+            f"{SAFE_CITY_ID.pattern}"
+        )
+    compose = f"cd {remote_root} && docker compose -f compose.yml"
+    plan = PublishPlan(city=city, headline="removed from the server, artifacts and config")
+
+    def add(what: str, *argv: str) -> None:
+        plan.commands.append(Command(what, tuple(argv)))
+
+    # -rf, so unpublishing twice is not an error: the second run is a no-op and
+    # says so by succeeding. Takes the rollback hardlinks with it, which is the
+    # point -- "unpublished" should not leave 600 MB of previous builds behind.
+    add(
+        "delete the artifacts, tile pyramids and rollbacks",
+        "ssh",
+        host,
+        f"rm -rf {remote_root}/data/cities/{city}",
+    )
+    add(
+        "delete the city config, which is what the API lists it from",
+        "ssh",
+        host,
+        f"rm -rf {remote_root}/cities/{city}.yaml {remote_root}/cities/{city}",
+    )
+    add(
+        "restart the API, which is what makes it forget",
+        "ssh",
+        host,
+        f"{compose} restart api",
+    )
+    add(
+        "the API is healthy", "curl", "-fsS", *CHECK_RETRY, "-o", "/dev/null", f"{base_url}/healthz"
+    )
+    # Inverted on purpose: here success is the city being gone. `curl -f` gives
+    # exit 22 on a 404, so the test is on the status code and not on the exit.
+    add(
+        "the city is no longer served",
+        "bash",
+        "-c",
+        f'test "$(curl -s -o /dev/null -w %{{http_code}} {base_url}/v1/cities/{city})" = 404',
     )
     return plan
 

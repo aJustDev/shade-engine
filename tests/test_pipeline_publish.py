@@ -28,6 +28,8 @@ from shade_pipeline.publish import (
     check_ready,
     execute,
     plan_publish,
+    plan_unpublish,
+    unpublish_notes,
 )
 from shade_pipeline.tiles import MANIFEST_FILENAME, RENDER_STATE_FILENAME, build_tiles
 
@@ -241,7 +243,7 @@ def test_a_city_git_does_not_know_about_is_published_with_a_warning(
 
     notes = check_ready(CUBE_CITY, publishable, Path("cities"))
 
-    assert any("git will not know about it" in note for note in notes)
+    assert any("is not in git" in note for note in notes)
 
 
 def test_publishing_without_a_tile_manifest_is_refused(built_city: Path, tmp_path: Path) -> None:
@@ -290,3 +292,106 @@ def test_every_command_is_printable(publishable: Path) -> None:
     for command in plan.commands:
         assert isinstance(command, Command)
         assert command.shell()
+
+
+# ------------------------------------------------------------------- unpublish
+
+
+def test_unpublish_removes_both_halves_and_then_restarts() -> None:
+    """Artifacts alone would unserve it; the config has to go for the rehearsal.
+
+    Leaving the YAML behind means the next publish is an update, and the path
+    worth being able to practise is a new city arriving.
+    """
+    run = Recorder()
+
+    execute(plan_unpublish(CUBE_CITY), run=run)
+
+    artifacts = run.index_of("data/cities/cube")
+    config = run.index_of("/opt/shade/cities/cube.yaml")
+    restart = run.index_of("restart api")
+    assert artifacts < config < restart
+
+
+def test_unpublish_checks_the_city_is_gone_not_that_it_is_there() -> None:
+    """The one assertion that is inverted, and the easiest to get backwards."""
+    plan = plan_unpublish(CUBE_CITY)
+
+    final = plan.commands[-1].shell()
+    assert "404" in final
+    assert f"/v1/cities/{CUBE_CITY.id}" in final
+
+
+def test_unpublish_takes_the_rollbacks_with_it() -> None:
+    """ "Unpublished" should not leave 600 MB of previous builds on the disk."""
+    plan = plan_unpublish(CUBE_CITY)
+
+    removal = plan.commands[0].argv[-1]
+    assert removal == "rm -rf /opt/shade/data/cities/cube"
+    assert "v1" not in removal
+
+
+@pytest.mark.parametrize("bad", ["", ".", "..", "/", "cube/../..", "cube; rm -rf /", "-rf"])
+def test_an_id_that_could_widen_an_rm_is_refused(bad: str) -> None:
+    """The id goes straight into `rm -rf` on a production server.
+
+    CityConfig.id is a plain string, so nothing upstream guarantees this. An
+    empty one would delete every city's artifacts at once.
+    """
+    dangerous = CUBE_CITY.model_copy(update={"id": bad})
+
+    with pytest.raises(PublishError, match="rm -rf"):
+        plan_unpublish(dangerous)
+
+
+def test_unpublish_predicts_what_git_will_put_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/opt/shade/cities is the deploy's checkout, and deploy.sh resets it hard.
+
+    Deleting a committed YAML there is undone by the next deploy. The city stays
+    unserved -- no artifacts, so the registry skips it -- but "I deleted it and
+    it came back" is worth predicting rather than discovering.
+    """
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "cities").mkdir()
+    yaml_path = tmp_path / "cities" / f"{CUBE_CITY.id}.yaml"
+    yaml_path.write_text("id: cube\n", encoding="utf-8")
+
+    assert unpublish_notes(CUBE_CITY, Path("cities")) == []
+
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    assert any("next deploy will put it back" in note for note in unpublish_notes(CUBE_CITY))
+
+
+def test_a_stray_file_beside_the_yaml_does_not_change_what_git_is_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The question is about the YAML, not about the tidiness of its directory.
+
+    Asking "is anything dirty around here" was wrong in both directions: one
+    uncommitted export left beside a committed YAML made publish claim the city
+    was not in git, and made unpublish forget to warn that a deploy would put it
+    back.
+    """
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "cities" / CUBE_CITY.id).mkdir(parents=True)
+    (tmp_path / "cities" / f"{CUBE_CITY.id}.yaml").write_text("id: cube\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
+        cwd=tmp_path,
+        check=True,
+    )
+    with_area = CUBE_CITY.model_copy(update={"area": f"cities/{CUBE_CITY.id}/area.geojson"})
+    (tmp_path / "cities" / CUBE_CITY.id / "raw-export.geojson").write_text("{}", encoding="utf-8")
+
+    assert any("next deploy will put it back" in note for note in unpublish_notes(with_area))

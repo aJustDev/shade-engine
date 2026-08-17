@@ -279,6 +279,30 @@ class RunState:
         )
         self.save()
 
+    def undo(self, step: str) -> None:
+        """Put a step back to pending because its result was removed, not redone.
+
+        Unpublishing a city leaves ``publish`` claiming a success whose result no
+        longer exists, and neither ``fail`` (it did not fail) nor a fresh
+        ``begin`` (nothing is running) says that.
+
+        The record is kept rather than dropped, with its log: the console follows
+        the newest log across the chain, and deleting the record here would hide
+        the log of the very thing that just ran. ``status`` returns a stored
+        ``PENDING`` untouched, so the table reads as it should.
+        """
+        entry = self.record(step)
+        self.state.steps[step] = entry.model_copy(
+            update={
+                "status": StepStatus.PENDING,
+                "duration_s": None,
+                "config_digest": None,
+                "pid": None,
+                "error": None,
+            }
+        )
+        self.save()
+
     def record(self, step: str) -> StepRecord:
         return self.state.record(step)
 
