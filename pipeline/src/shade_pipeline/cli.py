@@ -243,7 +243,10 @@ def run(
 def console(
     watch_dir: Annotated[
         Path | None,
-        typer.Option(help="Where a drawn .geojson gets exported to (default: ~/Descargas)"),
+        typer.Option(
+            help="Where a drawn .geojson gets exported to "
+            "(default: ~/Descargas or ~/Downloads, if either is there)"
+        ),
     ] = None,
     cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
         "cities"
@@ -635,7 +638,17 @@ def status(
         if not (cities_dir / f"{name}.yaml").exists():
             typer.echo(f"error: no config at {cities_dir / f'{name}.yaml'}", err=True)
             raise typer.Exit(1)
-        state = RunState.open(name, cities_dir=cities_dir, data_root=data_root)
+        try:
+            state = RunState.open(name, cities_dir=cities_dir, data_root=data_root)
+        except (OSError, ValueError) as error:
+            # Every status is derived from the digest of the config, so a city
+            # whose file cannot be read has none. It gets its row and the other
+            # cities keep theirs -- they are why the command was run.
+            typer.echo(f"{name:<{width}}  " + "  ".join(f"{'error':>8}" for _ in CHAIN))
+            typer.echo(f"{' ' * width}  {error}", err=True)
+            if city is not None:
+                raise typer.Exit(1) from error
+            continue
         cells = [f"{state.status(step).value:>8}" for step in CHAIN]
         typer.echo(f"{name:<{width}}  " + "  ".join(cells))
         for step in CHAIN:

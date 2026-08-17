@@ -295,6 +295,41 @@ def test_pruning_one_step_leaves_the_others_alone(cities_dir: Path, tmp_path: Pa
     assert (state.directory / "build" / "20260801T000000.log").exists()
 
 
+def test_status_reports_a_broken_city_instead_of_dying_on_it(
+    cities_dir: Path, tmp_path: Path
+) -> None:
+    """One unreadable city file used to cut the table in half with a traceback.
+
+    Same shape as the crash the console had: the digest of every city is read
+    before anything is printed. A file being edited is an ordinary state, and
+    the other cities are the reason the command was run.
+    """
+    (cities_dir / "roto.yaml").write_text('id: roto\nname: "sin cerrar\n', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        ["status", "--cities-dir", str(cities_dir), "--data-root", str(tmp_path / "data")],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "cube" in result.output, "the readable cities are why the command was run"
+    assert "roto" in result.output
+    assert "error" in result.output
+
+
+def test_status_of_one_broken_city_is_an_error(cities_dir: Path, tmp_path: Path) -> None:
+    """Asking about a single city that cannot be read is a failed question."""
+    (cities_dir / "roto.yaml").write_text('id: roto\nname: "sin cerrar\n', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        ["status", "roto", "--cities-dir", str(cities_dir), "--data-root", str(tmp_path / "data")],
+    )
+
+    assert result.exit_code == 1
+    assert "roto.yaml" in result.output
+
+
 def test_the_logs_command_finds_a_run_without_being_told_its_timestamp(
     cities_dir: Path, tmp_path: Path
 ) -> None:
