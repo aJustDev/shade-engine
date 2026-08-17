@@ -18,14 +18,13 @@ from conftest import CUBE_CITY
 from shade_pipeline import budget, runner
 from shade_pipeline.basemap import BasemapError
 from shade_pipeline.runner import (
-    CHAIN,
     ChainError,
     ChainOptions,
     preflight,
     run_chain,
     steps_between,
 )
-from shade_pipeline.runstate import RunState, StepStatus
+from shade_pipeline.runstate import CHAIN, RunState, StepStatus
 from shade_pipeline.sources import LocalDirectory
 
 

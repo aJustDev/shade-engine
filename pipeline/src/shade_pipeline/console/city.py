@@ -37,7 +37,6 @@ from shade_pipeline.cityfile import PROTECTED, CityFileError, edit_city
 from shade_pipeline.console.confirm import ConfirmScreen, DetailScreen, EditScreen
 from shade_pipeline.console.cost import CostPanel
 from shade_pipeline.console.jobs import engine_argv, latest_phase, launch, progress_of
-from shade_pipeline.console.launch import LaunchScreen, to_argv
 from shade_pipeline.console.utilities import UtilitiesScreen
 from shade_pipeline.console.utilities import to_argv as utility_argv
 from shade_pipeline.runstate import LOG_STEPS, RunState, StepStatus
@@ -417,6 +416,11 @@ class CityScreen(Screen[None]):
     # --------------------------------------------------------------- actions
 
     def action_run(self) -> None:
+        # The dialog computes how many render workers fit in memory, which is
+        # what brings `tiles` and `grid` -- and the geospatial stack -- along.
+        # A city screen that is only being looked at should not pay for it.
+        from shade_pipeline.console.launch import LaunchScreen
+
         app = self.console_app
         if app.is_busy(self.city):
             self.notify(f"{self.city} already has a step running", severity="warning")
@@ -426,6 +430,8 @@ class CityScreen(Screen[None]):
         )
 
     def start_chain(self, options: dict[str, Any] | None) -> None:
+        from shade_pipeline.console.launch import to_argv
+
         if options is None:
             return
         app = self.console_app

@@ -14,9 +14,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from shade_pipeline.console.city import CityScreen, error_cell, first_line, status_cell
-from shade_pipeline.console.newcity import NewCityScreen
-from shade_pipeline.runner import CHAIN
-from shade_pipeline.runstate import StepStatus
+from shade_pipeline.runstate import CHAIN, StepStatus
 
 REFRESH_SECONDS = 2.0
 
@@ -113,7 +111,11 @@ class CitiesScreen(Screen[None]):
             self.action_open()
 
     def action_new_city(self) -> None:
+        # Imported on the keypress, not at the top: registering a city needs
+        # pyproj and shapely to work out the CRS, and opening the console does
+        # not.
         from shade_pipeline.console.app import ConsoleApp
+        from shade_pipeline.console.newcity import NewCityScreen
 
         app = self.app
         assert isinstance(app, ConsoleApp)

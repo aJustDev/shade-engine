@@ -12,6 +12,9 @@ async test in the repository and a helper is cheaper than a dependency.
 import asyncio
 import os
 import signal
+import subprocess
+import sys
+import time
 from collections.abc import Awaitable, Callable
 from datetime import date
 from pathlib import Path
@@ -678,6 +681,7 @@ def test_clearing_the_polygon_field_clears_the_polygon(workspace: Path) -> None:
         screen.query_one("#polygon", Input).value = ""
         await pilot.pause(0.4)
         seen["without"] = screen.polygon
+        await app.workers.wait_for_complete()
         seen["cost"] = str(screen.query_one("#cost-text", Static).render())
 
     drive(app, scenario)
@@ -712,6 +716,7 @@ def test_a_pasted_polygon_needs_neither_a_file_nor_a_path(workspace: Path) -> No
         modal.query_one("#pasted", TextArea).text = json.dumps(MONTALBAN)
         await pilot.press("ctrl+s")
         await pilot.pause(0.4)
+        await app.workers.wait_for_complete()
         seen["derived"] = str(screen.query_one("#derived", Static).render())
         seen["cost"] = str(screen.query_one("#cost-text", Static).render())
         seen["path"] = screen.query_one("#polygon", Input).value
@@ -1232,6 +1237,7 @@ def test_a_timezone_half_typed_does_not_take_the_form_with_it(workspace: Path) -
         await pilot.pause(0.4)
         screen.action_save()
         await pilot.pause()
+        await app.workers.wait_for_complete()
         seen["screen"] = type(app.screen).__name__
         seen["cost"] = str(screen.query_one("#cost-text", Static).render())
 
@@ -1418,6 +1424,91 @@ def test_the_whole_reason_a_step_failed_can_be_read(workspace: Path) -> None:
     assert len(seen["cell"]) < len(reason), "the cell still truncates; a table cell must"
     assert seen["modal"] == "DetailScreen"
     assert "and 3 more" in seen["shown"], "the end of the message is the part that was lost"
+
+
+# ------------------------------------------------------------ off the event loop
+
+
+def test_opening_the_console_does_not_import_the_geospatial_stack() -> None:
+    """Startup was 1.604 ms of imports before a single row was painted.
+
+    Around 950 of those were pyproj, shapely and rasterio, arriving through
+    `area`, `build`, `publish` and `runner` -- none of which the opening table
+    needs. This test is what keeps them from creeping back in unnoticed.
+    """
+    probe = (
+        "import sys, shade_pipeline.console.app; "
+        "print(sorted(m for m in ('rasterio', 'pyproj', 'shapely', 'laspy') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.strip() == "[]", f"the console is importing the engine again: {result}"
+
+
+def test_pricing_a_city_does_not_block_the_interface(workspace: Path) -> None:
+    """191 ms for Cordoba, measured, and every one of them was the UI not answering."""
+    import shade_pipeline.area as area_module
+
+    def slow_and_broken(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.3)
+        raise ValueError("slow on purpose")
+
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        screen = await open_config_tab(pilot, app)
+        await app.workers.wait_for_complete()
+        panel = screen.query_one("#config-cost", CostPanel)
+        with patch.object(area_module, "plan_city", slow_and_broken):
+            started = time.perf_counter()
+            worker = panel.show(app.config_of("cube"))
+            seen["returned_ms"] = (time.perf_counter() - started) * 1000
+            # Right here, with the thread still sleeping: the panel says it is
+            # working before anything has come back.
+            seen["pricing"] = panel.has_class("pricing")
+            await worker.wait()
+        await pilot.pause()
+        seen["text"] = str(screen.query_one("#cost-text", Static).render())
+
+    drive(app, scenario)
+
+    assert seen["returned_ms"] < 50, (
+        f"show() waited for the arithmetic: {seen['returned_ms']:.0f}ms"
+    )
+    assert seen["pricing"], "and says it is working while it does"
+    assert "slow on purpose" in seen["text"]
+
+
+def test_the_last_price_asked_for_is_the_one_shown(workspace: Path) -> None:
+    """Typing 128 one digit at a time used to leave several prices racing.
+
+    `exclusive` cancels the previous run of the group; a thread cannot be
+    interrupted, so the loser finishes and drops its answer instead of painting
+    a price for a configuration nobody asked about any more.
+    """
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+    first = CUBE_CITY.model_copy(update={"id": "stale-answer"})
+    last = CUBE_CITY.model_copy(update={"id": "the-one-asked-for"})
+
+    async def scenario(pilot: Any) -> None:
+        screen = await open_config_tab(pilot, app)
+        await app.workers.wait_for_complete()
+        panel = screen.query_one("#config-cost", CostPanel)
+        panel.show(first)
+        # Waiting on this one only: the first is cancelled on purpose, and
+        # `wait_for_complete` would raise on its behalf.
+        await panel.show(last).wait()
+        await pilot.pause()
+        seen["text"] = str(screen.query_one("#cost-text", Static).render())
+
+    drive(app, scenario)
+
+    assert "the-one-asked-for" in seen["text"]
+    assert "stale-answer" not in seen["text"]
 
 
 def test_with_no_cities_the_screen_says_how_to_make_one(tmp_path: Path) -> None:

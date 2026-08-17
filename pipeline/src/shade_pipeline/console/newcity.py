@@ -181,6 +181,11 @@ class NewCityScreen(Screen[str | None]):
         super().__init__()
         self.cities_dir = cities_dir
         self.data_root = data_root
+        # Resolved here and not by the app: which directory a browser drops an
+        # export into is this screen's question, and asking it at startup would
+        # mean importing this module -- and the geospatial stack it needs to
+        # work out a CRS -- before the first table is on screen.
+        watch_dir = watch_dir if watch_dir is not None else default_watch_dir()
         self.watch_dir = watch_dir
         self.polygon: Path | None = None
         self._seen: float = 0.0

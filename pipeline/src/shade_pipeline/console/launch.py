@@ -20,7 +20,7 @@ from textual.widgets import Button, Footer, Input, Label, Static, Switch
 from shade_core.config import CityConfig
 from shade_pipeline.budget import cpu_budget, estimate_tiles_worker_bytes, workers_that_fit
 from shade_pipeline.grid import grid_shape
-from shade_pipeline.runner import CHAIN, UNATTENDED
+from shade_pipeline.runstate import CHAIN, UNATTENDED
 from shade_pipeline.tiles import DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM
 
 NUMBERS = ("workers", "tile_size", "min_zoom", "max_zoom")

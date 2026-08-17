@@ -95,6 +95,19 @@ LOG_STEPS: tuple[str, ...] = (*DEPENDS_ON, "preview")
 it. It still has plenty to say while it runs, and that has to be findable.
 """
 
+CHAIN: tuple[str, ...] = ("area", "basemap", "build", "graph", "tiles", "publish")
+"""The order steps run in. ``publish`` is in the chain but gated.
+
+Here and not in :mod:`shade_pipeline.runner`, which is where it used to live and
+which is where it is *used*: naming the steps and running them are different
+weights. Importing ``runner`` pulls in pyproj, shapely and rasterio -- close to
+a second -- and the console needs nothing more than these six strings to draw
+its first table. ``runner`` re-exports both names, so nothing else changed.
+"""
+
+UNATTENDED: tuple[str, ...] = ("area", "basemap", "build", "graph", "tiles")
+"""How far ``run`` goes on its own."""
+
 
 class StepStatus(StrEnum):
     """What a step's own record says. The *effective* status may still be stale."""

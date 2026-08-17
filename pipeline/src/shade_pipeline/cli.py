@@ -69,7 +69,6 @@ from shade_pipeline.publish import (
 )
 from shade_pipeline.recolor import PALETTES, recolor_city
 from shade_pipeline.runner import (
-    CHAIN,
     ChainError,
     ChainOptions,
     run_chain,
@@ -77,6 +76,7 @@ from shade_pipeline.runner import (
     steps_between,
 )
 from shade_pipeline.runstate import (
+    CHAIN,
     LATEST_DIRNAME,
     LOG_STEPS,
     RunState,

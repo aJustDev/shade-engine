@@ -14,26 +14,18 @@ alone.
 """
 
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
+from textual import work
 from textual.app import App
 from textual.binding import Binding, BindingType
 
 from shade_core.config import CityConfig, load_city
-from shade_pipeline.build import ARTIFACT_VERSION
 from shade_pipeline.console.cities import CitiesScreen
-from shade_pipeline.console.newcity import default_watch_dir
-from shade_pipeline.publish import (
-    DEFAULT_BASE_URL,
-    PublishError,
-    PublishPlan,
-    check_ready,
-    plan_publish,
-    plan_unpublish,
-    unpublish_notes,
-)
-from shade_pipeline.runner import CHAIN
-from shade_pipeline.runstate import RunState, StepStatus
+from shade_pipeline.runstate import CHAIN, RunState, StepStatus
+
+if TYPE_CHECKING:
+    from shade_pipeline.publish import PublishPlan
 
 
 class ConsoleApp(App[None]):
@@ -58,19 +50,42 @@ class ConsoleApp(App[None]):
         output_root: Path,
         data_root: Path,
         watch_dir: Path | None = None,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str | None = None,
     ) -> None:
         super().__init__()
         self.cities_dir = cities_dir
         self.output_root = output_root
         self.data_root = data_root
-        # None means nothing to watch, which is a normal answer: a machine
-        # whose home has no downloads directory registers cities by pasting.
-        self.watch_dir = watch_dir if watch_dir is not None else default_watch_dir()
-        self.base_url = base_url
+        # Left as None on purpose. Which directory to watch is the registration
+        # screen's question, and answering it here would mean importing that
+        # screen -- and the geospatial stack behind it -- before the first
+        # table is painted.
+        self.watch_dir = watch_dir
+        self._base_url = base_url
+
+    @property
+    def base_url(self) -> str:
+        """Where a published city will live, resolved as late as its module is imported."""
+        if self._base_url is None:
+            from shade_pipeline.publish import DEFAULT_BASE_URL
+
+            self._base_url = DEFAULT_BASE_URL
+        return self._base_url
 
     def on_mount(self) -> None:
         self.push_screen(CitiesScreen())
+        self.warm_up()
+
+    @work(thread=True, group="warmup")
+    def warm_up(self) -> None:
+        """Load the geospatial stack in the background, before anything asks for it.
+
+        Deferring these imports is what got startup from 1.604 ms down to 295,
+        but somebody has to pay them, and paying them on the first city opened
+        just moves the wait somewhere more annoying. Here they are paid in a
+        thread while the first table is already on screen and being read.
+        """
+        import shade_pipeline.area  # noqa: F401
 
     def cities(self) -> list[str]:
         return sorted(path.stem for path in self.cities_dir.glob("*.yaml"))
@@ -93,6 +108,13 @@ class ConsoleApp(App[None]):
         The refusals happen here rather than in the dialog, so what the user is
         asked to confirm is only ever a publish that would actually work.
         """
+        # `publish` and `build` are imported on the way to publishing, not on
+        # the way to the first screen: between them they pull pyproj, shapely
+        # and rasterio, which is close to a second of startup for a feature
+        # used once a city.
+        from shade_pipeline.build import ARTIFACT_VERSION
+        from shade_pipeline.publish import PublishError, check_ready, plan_publish
+
         try:
             config = self.config_of(city)
             artifact_dir = self.output_root / city / ARTIFACT_VERSION
@@ -114,6 +136,8 @@ class ConsoleApp(App[None]):
         that do apply -- what git will put back -- ride in the plan's headline so
         the confirmation screen shows them.
         """
+        from shade_pipeline.publish import PublishError, plan_unpublish, unpublish_notes
+
         try:
             config = self.config_of(city)
             plan = plan_unpublish(config, base_url=self.base_url)

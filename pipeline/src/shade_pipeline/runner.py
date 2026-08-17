@@ -35,7 +35,7 @@ from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.events import JsonlSink, emit
 from shade_pipeline.graph import DEFAULT_SPACING_M, build_graph
 from shade_pipeline.progress import format_bytes, format_duration
-from shade_pipeline.runstate import RunState, StepStatus, config_digest
+from shade_pipeline.runstate import CHAIN, UNATTENDED, RunState, StepStatus, config_digest
 from shade_pipeline.sources import LidarSource
 from shade_pipeline.tiles import (
     DEFAULT_MAX_ZOOM,
@@ -44,11 +44,11 @@ from shade_pipeline.tiles import (
     season_preset_instants,
 )
 
-CHAIN: tuple[str, ...] = ("area", "basemap", "build", "graph", "tiles", "publish")
-"""The order steps run in. ``publish`` is in the chain but gated (see module doc)."""
-
-UNATTENDED: tuple[str, ...] = ("area", "basemap", "build", "graph", "tiles")
-"""How far ``run`` goes on its own."""
+# CHAIN and UNATTENDED are imported above from `runstate`, where they now live
+# and where this module keeps re-exporting them from: naming the steps and
+# running them are different weights, and something that only needs the six
+# names -- the console's first table, `status` -- should not have to import the
+# geospatial stack to get them.
 
 OPTIONAL: frozenset[str] = frozenset({"basemap", "graph"})
 """Steps whose failure is worth recording and not worth stopping for.
