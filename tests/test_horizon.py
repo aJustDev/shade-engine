@@ -56,3 +56,21 @@ def test_azimuth_interpolation_wraps_around() -> None:
 def test_point_outside_grid_rejected(cube_grid: HorizonGrid) -> None:
     with pytest.raises(ValueError, match="outside"):
         cube_grid.profile_at(-5.0, 60.0)
+
+
+@pytest.mark.parametrize("offset_m", [-0.5, -0.01])
+def test_point_just_west_or_north_of_the_grid_rejected(
+    cube_grid: HorizonGrid, offset_m: float
+) -> None:
+    """Less than a pixel out is still out, west and north included.
+
+    Truncation toward zero maps -0.5 px to pixel 0, so these points used to be
+    answered with the edge pixel instead of rejected -- and ``_ray_march_blocker``
+    reads that ValueError as "the ray left the grid", so it kept marching along
+    the border and could name the wrong blocker.
+    """
+    x_min, y_max = cube_grid.origin
+    with pytest.raises(ValueError, match="outside"):
+        cube_grid.profile_at(x_min + offset_m, 60.0)
+    with pytest.raises(ValueError, match="outside"):
+        cube_grid.profile_at(synthetic.CUBE_CENTER_X, y_max - offset_m)

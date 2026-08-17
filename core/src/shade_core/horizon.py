@@ -56,10 +56,16 @@ class HorizonGrid:
         return int(self.angles_deg.shape[0])
 
     def rowcol(self, x: float, y: float) -> tuple[int, int]:
-        """Nearest pixel for a point in projected CRS meters."""
+        """Nearest pixel for a point in projected CRS meters.
+
+        ``floor``, not ``int``: truncation rounds toward zero, so a point up
+        to one pixel west or north of the grid would land on pixel 0 and be
+        answered instead of rejected. ``SceneReader`` floors too, and the two
+        "nearest pixel" routes have to agree.
+        """
         x_min, y_max = self.origin
-        col = int((x - x_min) / self.resolution_m)
-        row = int((y_max - y) / self.resolution_m)
+        col = math.floor((x - x_min) / self.resolution_m)
+        row = math.floor((y_max - y) / self.resolution_m)
         _, rows, cols = self.angles_deg.shape
         if not (0 <= row < rows and 0 <= col < cols):
             raise ValueError(f"point ({x}, {y}) is outside the horizon grid")
