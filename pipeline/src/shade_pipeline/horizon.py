@@ -44,7 +44,11 @@ that changes it by less than the artifact can represent:
 The sweep also records *what* blocks each sector: whenever a sample raises a
 pixel's max angle, its landcover class is kept. Strict ``>`` with ascending
 distances means the nearest blocker wins ties, matching core's ray-march
-intuition. Sectors whose final angle is 0 (open sky) get ``NO_BLOCKER``.
+intuition -- except at an exact corner crossing, where the two cells genuinely
+share a distance and the tie goes to whichever :func:`~shade_core.raycast.ray_cells`
+emitted first, which is decided by an ulp of sin against cos (measured on
+montilla-test: 246 classes across the four diagonal sectors, and not one angle).
+Sectors whose final angle is 0 (open sky) get ``NO_BLOCKER``.
 
 A single class per sector cannot answer "would this pixel be shaded anyway
 without the trees": the class only names whichever obstacle won the argmax,

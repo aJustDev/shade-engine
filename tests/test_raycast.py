@@ -73,15 +73,57 @@ def test_distances_are_horizontal_and_scale_with_resolution() -> None:
 
 
 def test_diagonal_keeps_the_corner_cells() -> None:
-    """Exactly 45 degrees the ray runs through corners; both cells stay.
+    """Exactly 45 degrees the ray runs through corners; the grazed cell stays.
 
-    Grazing a column's corner does block the sun when a cell is read as a solid
-    column, so the zero-thickness cell is the model's answer and not a glitch.
+    Four cells meet at the corner and the walk emits two: the diagonal, plus one
+    orthogonal neighbour with zero thickness. Keeping that one is measured to
+    beat emitting both (0.722%) or neither (0.739%) against the arbiter -- 0.714%
+    of wrong verdicts, open sky, on montilla-test.
     """
     cells = ray_cells(45.0, 10.0, 1.0)
     zero_thickness = [c for c in cells if c[3] == pytest.approx(c[2])]
     assert zero_thickness, "a 45 degree ray must clip corners"
     assert all(abs(row) + abs(col) <= 2 * 10 for row, col, _, _ in cells)
+
+
+DIAGONAL_SECTORS = {8: (-1, 0), 24: (0, 1), 40: (1, 0), 56: (0, -1)}
+"""Sector -> the orthogonal cell its ray grazes first, on this platform."""
+
+
+@pytest.mark.parametrize(("sector", "grazed"), DIAGONAL_SECTORS.items())
+def test_which_corner_cell_a_diagonal_grazes_is_pinned(
+    sector: int, grazed: tuple[int, int]
+) -> None:
+    """The ulp of sin against cos picks this, so pin it and hear about a change.
+
+    There is no rule behind these four values and no tolerance in ``ray_cells``:
+    at 45 degrees sin and cos differ by 1 to 3 ulp and whichever is smaller wins
+    the step. A libm that rounded the other way would graze the mirror cell,
+    which is legitimate -- measured, it moves 3,675,077 cube cells (4.5%) and the
+    verdict by 0.009 points -- but it must arrive as a red test and not as a city
+    that came out different when someone rebuilt it.
+    """
+    cells = ray_cells(sector * 360.0 / 64, 10.0, 1.0)
+    assert cells[0][:2] == grazed
+    assert cells[0][3] == pytest.approx(cells[0][2]), "the grazed cell has zero thickness"
+    # Exactly one orthogonal per corner: the pair is (orthogonal, diagonal).
+    assert abs(cells[1][0]) == 1 and abs(cells[1][1]) == 1
+
+
+def test_only_the_diagonals_cross_corners_and_they_do_it_every_step() -> None:
+    """354 of 354 steps in four sectors; zero in the other sixty.
+
+    This is what makes the corner case worth a decision instead of a shrug: it
+    is not a rare coincidence, it is the whole geometry of NE, SE, SW and NW.
+    """
+    ties = {}
+    for sector in range(64):
+        cells = ray_cells(sector * 360.0 / 64, 500.0, 1.0)
+        ties[sector] = sum(
+            1 for a, b in itertools.pairwise(cells) if b[2] == pytest.approx(a[2], rel=1e-9)
+        )
+    assert {s for s, n in ties.items() if n} == set(DIAGONAL_SECTORS)
+    assert all(ties[s] == 354 for s in DIAGONAL_SECTORS)
 
 
 def test_a_ray_shorter_than_half_a_cell_crosses_nothing() -> None:

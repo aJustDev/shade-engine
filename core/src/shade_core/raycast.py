@@ -25,11 +25,36 @@ pierced parapet, a cell a wall only half occupies. Reporting both is how the
 engine says what it knows and what it is assuming (see shade-docs:
 learning/recorrido-de-rayo.md).
 
-Deliberately kept: when the ray passes exactly through a cell corner --- the
-diagonal sectors do, every step --- the two cells sharing that corner both come
-out, one of them with zero thickness. Grazing a column's corner does block the
-sun under the solid-column reading, and dropping it would be a different model,
-not a tidier one.
+**Corner crossings, and the bit they rest on.** When the ray passes exactly
+through a cell corner, four cells meet there and the walk emits two: the
+diagonal one, plus *one* of the two orthogonal neighbours, with zero thickness.
+Which one is decided by the last bit of sin against cos -- there is no tolerance
+here and no rule -- so sector 8 grazes the cell to the north and sector 24 the
+one to the east, and nobody chose either. This is not an edge case in the
+sweep: the four diagonal sectors (8, 24, 40, 56 = NE, SE, SW, NW, so mid-morning
+and mid-afternoon) cross a corner at *every* step, 354 of 354, while the other
+sixty never do.
+
+It is kept as it is because emitting one is measured to be the best of the
+three readings, not because it is the tidiest. Against the arbiter over
+montilla-test and the 83 ladder instants, open sky: emitting one gives 0.714% of
+wrong verdicts, both 0.722%, neither 0.739%. The reason is that a sector is a
+5.625-degree *interval* of azimuths, and everywhere in it except the exact
+centre line the ray really does enter exactly one of the two -- which one
+depending on the side. On the centre line the function is genuinely
+discontinuous, and one is the honest average of its two limits.
+
+What rests on that bit, measured: a libm rounding sin/cos the other way would
+emit the mirror cell, move **3,675,077 cube cells (4.5%)** and change the
+verdict by 0.009 points (0.714% -> 0.723%). Deterministic for a given build,
+and small where it counts -- but worth knowing before someone reads a rebuilt
+city as a regression. See shade-docs: learning/recorrido-de-rayo.md.
+
+The same bit picks the blocker class of the pair, since ascending distances and
+a strict ``>`` give ties to whichever cell came out first. Measured on
+montilla-test: reversing the order inside every tied pair moves 246 classes
+across the four diagonal planes (0.005%) and **not one angle**, quantized or
+float -- both cells are always visited, so only the tie-break can differ.
 """
 
 import math
