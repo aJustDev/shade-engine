@@ -73,6 +73,7 @@ from shade_pipeline.budget import (
     estimate_tiles_worker_bytes,
     warn_if_serial_is_tight,
 )
+from shade_pipeline.events import EventSink, emit
 from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.shade_raster import (
@@ -123,6 +124,15 @@ TileState = npt.NDArray[np.uint8]
 TILES_DIRNAME: Final = "tiles"
 MANIFEST_FILENAME: Final = "index.json"
 BASEMAP_FILENAME: Final = "basemap.pmtiles"
+PARTIAL_SUFFIX: Final = ".partial"
+"""Appended while an archive is being written; removed by the rename that ends it."""
+RENDER_STATE_FILENAME: Final = "render.json"
+"""What the pyramids in this directory were rendered from, for :func:`build_tiles`.
+
+Existence of a ``.pmtiles`` says it finished; this says it finished *from the
+artifacts and zoom range being asked for now*. Without it a resumed render
+would happily keep pyramids built at another ``--max-zoom``, or from the
+rasters of a previous build of the same city."""
 
 _WEB_MERCATOR_CIRCUMFERENCE: Final = 2.0 * math.pi * 6378137.0
 
@@ -158,6 +168,8 @@ BUILDINGS_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
     STATE_OUTSIDE: (0, 0, 0, 0),
 }
 BUILDINGS_TILES_FILENAME: Final = "buildings.pmtiles"
+CAST_KINDS: Final = ("building", "trees")
+"""The two disjoint cast-shade sets every instant writes, in filename order."""
 
 # The 2026 declination-ladder preset: 7 canonical dates at ~even solar
 # declination steps (-23.4 to +23.4 in ~7.8 deg rungs), each rendered hourly
@@ -403,7 +415,15 @@ def write_pyramids(
                     categorical_nodata,
                 )
             )
-        writers = [Writer(stack.enter_context(open(output.path, "wb"))) for output in outputs]
+        # Written under a scratch name and renamed once finalized, so the real
+        # filename only ever exists on a complete archive. A PMTiles writer
+        # lays its directory down in `finalize`, which means an interrupted
+        # render used to leave a plausible-looking file (often 0 bytes) exactly
+        # where a finished one belongs -- and nothing downstream could tell
+        # them apart. This is what makes resuming a render a question of
+        # whether the path exists.
+        partials = [output.path.with_name(output.path.name + PARTIAL_SUFFIX) for output in outputs]
+        writers = [Writer(stack.enter_context(open(path, "wb"))) for path in partials]
         for zoom in range(min_zoom, max_zoom + 1):
             tiles = sorted(
                 mercantile.tiles(west, south, east, north, [zoom]),
@@ -471,6 +491,11 @@ def write_pyramids(
         }
         for writer, output in zip(writers, outputs, strict=True):
             writer.finalize(header, output.metadata or {})
+    # Outside the ExitStack, so every handle is closed before the rename: on a
+    # single filesystem `replace` is atomic, and a reader either sees the old
+    # archive or the new one, never a half-written directory.
+    for partial, output in zip(partials, outputs, strict=True):
+        partial.replace(output.path)
     return [(written, skipped) for written, skipped in counts]
 
 
@@ -541,6 +566,23 @@ class RenderJob:
     def label(self) -> str:
         return self.static if self.static is not None else f"{self.when:%Y%m%dT%H%M}"
 
+    @property
+    def filenames(self) -> tuple[str, ...]:
+        """The archives this unit is responsible for.
+
+        Derived from the job rather than reported by the render, so the parent
+        can ask whether a unit is already on disk without opening a raster --
+        and so the two answers cannot drift apart, because the render names its
+        outputs from here too.
+        """
+        if self.static is not None:
+            return (CANOPY_TILES_FILENAME if self.static == "canopy" else BUILDINGS_TILES_FILENAME,)
+        return tuple(f"shade-{self.label}-{kind}.pmtiles" for kind in CAST_KINDS)
+
+    def is_rendered(self) -> bool:
+        """True when every archive of this unit exists under its final name."""
+        return all((self.tiles_dir / name).exists() for name in self.filenames)
+
 
 @dataclass(frozen=True)
 class FileSummary:
@@ -569,6 +611,12 @@ class RenderResult:
     when: datetime | None = None
     sun: SunPosition | None = None
     urls: tuple[tuple[str, str], ...] = ()
+    reused: bool = False
+    """True when the archives were already on disk and this run did not touch them.
+
+    Such a unit still has to appear in ``results``: the manifest is assembled
+    from them, so a resumed render that dropped them would publish a timeline
+    missing every instant it did not personally write."""
 
     @property
     def written(self) -> int:
@@ -581,6 +629,55 @@ class RenderResult:
     @property
     def size(self) -> int:
         return sum(summary.size for summary in self.files)
+
+
+def _reused_result(job: RenderJob) -> RenderResult:
+    """The report a unit would have made, read off the archives already there.
+
+    Written and skipped tile counts come back as zero because this run wrote
+    none; the totals line reports reuse separately rather than inventing
+    numbers it cannot know.
+    """
+    names = job.filenames
+    files = tuple(FileSummary(name, 0, 0, (job.tiles_dir / name).stat().st_size) for name in names)
+    return RenderResult(
+        # Statics label themselves by filename and instants by id; matched here
+        # so a resumed run's progress lines read like an ordinary one's.
+        label=names[0] if job.static is not None else job.label,
+        files=files,
+        elapsed_s=0.0,
+        state_s=0.0,
+        when=job.when,
+        sun=job.sun,
+        urls=() if job.static is not None else tuple(zip(CAST_KINDS, names, strict=True)),
+        reused=True,
+    )
+
+
+def render_state(min_zoom: int, max_zoom: int, built_at: datetime) -> dict[str, object]:
+    """What a pyramid directory was rendered from; compared verbatim on resume.
+
+    Deliberately about *inputs*, not outputs: the build timestamp changes
+    whenever the city's rasters are rebuilt, and the zoom range changes what
+    every archive contains. It does not fingerprint the pipeline's own code, so
+    ``--resume`` after editing the render is the caller's judgement call --
+    which is why resuming is opt-in and not the default.
+    """
+    return {
+        "artifact_built_at": built_at.isoformat(),
+        "min_zoom": min_zoom,
+        "max_zoom": max_zoom,
+    }
+
+
+def read_render_state(tiles_dir: Path) -> dict[str, object] | None:
+    """The recorded render state of a tiles directory, or None if absent/unreadable."""
+    path = tiles_dir / RENDER_STATE_FILENAME
+    try:
+        loaded: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        return None
+    return loaded
 
 
 def render_unit(job: RenderJob) -> RenderResult:
@@ -686,21 +783,12 @@ def _render_static(job: RenderJob) -> RenderResult:
     if job.static == "canopy":
         with rasterio.open(directory / CANOPY_FILENAME) as src:
             mask = src.read()[0] != 0
-        filename, present, label, colors = (
-            CANOPY_TILES_FILENAME,
-            STATE_SHADE_VEGETATION,
-            "tree canopy",
-            CANOPY_COLORS,
-        )
+        present, label, colors = (STATE_SHADE_VEGETATION, "tree canopy", CANOPY_COLORS)
     else:
         with rasterio.open(directory / LANDCOVER_FILENAME) as src:
             mask = src.read()[0] == Landcover.BUILDING
-        filename, present, label, colors = (
-            BUILDINGS_TILES_FILENAME,
-            STATE_SHADE_BUILDING,
-            "buildings (lidar)",
-            BUILDINGS_COLORS,
-        )
+        present, label, colors = (STATE_SHADE_BUILDING, "buildings (lidar)", BUILDINGS_COLORS)
+    (filename,) = job.filenames
     (summary,) = _write(
         job,
         [(filename, _mask_compose(present), label, colors)],
@@ -779,28 +867,27 @@ def _render_instant(job: RenderJob) -> RenderResult:
     del fields
     state_s = time.monotonic() - start
 
-    instant_id = f"{job.when:%Y%m%dT%H%M}"
-    kinds = ("building", "trees")
+    names = job.filenames
     # Both sets in one pass: they fold the same composed state differently, and
     # warping the city twice to do that is the whole cost of the phase.
     files = _write(
         job,
         [
             (
-                f"shade-{instant_id}-{kind}.pmtiles",
+                name,
                 _cast_shade_compose(kind),
                 f"shade ({kind}) {job.when.isoformat()}",
                 SHADE_COLORS,
             )
-            for kind in kinds
+            for kind, name in zip(CAST_KINDS, names, strict=True)
         ],
         continuous=continuous,
         categorical=categorical,
     )
-    urls = [(kind, f"shade-{instant_id}-{kind}.pmtiles") for kind in kinds]
+    urls = list(zip(CAST_KINDS, names, strict=True))
 
     return RenderResult(
-        label=instant_id,
+        label=job.label,
         files=tuple(files),
         elapsed_s=time.monotonic() - start,
         state_s=state_s,
@@ -840,7 +927,9 @@ def build_tiles(
     min_zoom: int = DEFAULT_MIN_ZOOM,
     max_zoom: int = DEFAULT_MAX_ZOOM,
     workers: int = 1,
+    resume: bool = False,
     progress: Callable[[str], None] | None = None,
+    events: EventSink | None = None,
 ) -> Path:
     """Render two cast-shade PMTiles per instant, a static canopy set, and the manifest.
 
@@ -865,6 +954,14 @@ def build_tiles(
     changes. Output lands under ``<artifact_dir>/tiles/``; the basemap
     referenced by ``basemap_url`` is produced out of band (see
     shade-docs: ops/anadir-ciudad.md).
+
+    ``resume`` skips units whose archives are already on disk, and only when
+    ``render.json`` says they came from these artifacts and this zoom range.
+    It is off by default because that file tracks the *inputs* and not the
+    pipeline code that read them: continuing an interrupted render is exactly
+    what it is for, re-running after editing the renderer is not. A render of
+    83 instants is six hours, and before this the nineteenth failure threw away
+    the eighteen units that had succeeded.
     """
     echo = progress if progress is not None else lambda _message: None
     metadata = load_metadata(artifact_dir)
@@ -904,6 +1001,33 @@ def build_tiles(
             )
         jobs.append(RenderJob(**common, when=when, sun=sun))
 
+    # What this render is about to produce, and what a later one compares
+    # against to decide whether anything on disk can be trusted.
+    state = render_state(min_zoom, max_zoom, metadata.built_at)
+    pending = jobs
+    reused: list[RenderResult] = []
+    if resume:
+        recorded = read_render_state(tiles_dir)
+        if recorded == state:
+            pending = [job for job in jobs if not job.is_rendered()]
+            reused = [_reused_result(job) for job in jobs if job.is_rendered()]
+        elif recorded is None:
+            echo("resume: no render.json in the tiles directory; rendering every unit")
+        else:
+            echo(
+                "resume: the tiles on disk came from other inputs "
+                "(rebuilt artifacts or another zoom range); rendering every unit"
+            )
+    if reused:
+        echo(f"resume: {len(reused)} of {len(jobs)} units already rendered")
+        emit(events, "tiles", "resumed", reused=len(reused), total=len(jobs))
+    # Written now rather than on success, and that is the whole point: an
+    # interrupted render has to leave behind what it was rendering, or the
+    # resume it exists for has nothing to compare against.
+    (tiles_dir / RENDER_STATE_FILENAME).write_text(
+        json.dumps(state, indent=2) + "\n", encoding="utf-8"
+    )
+
     workers = max(1, workers)
     rows, cols = grid_shape(metadata.bbox, metadata.resolution_m)
     per_worker = estimate_tiles_worker_bytes(rows, cols)
@@ -920,19 +1044,24 @@ def build_tiles(
     build_start = time.monotonic()
     total_written = 0
     total_skipped = 0
-    total_bytes = 0
+    total_bytes = sum(result.size for result in reused)
     version = int(time.time())
-    if workers > 1:
-        echo(f"rendering {len(jobs)} units on {workers} workers")
+    if not pending:
+        echo("nothing to render; rewriting the manifest from the tiles already there")
+    elif workers > 1:
+        echo(f"rendering {len(pending)} units on {workers} workers")
     else:
         echo(
-            f"rendering {len(jobs)} units serially "
+            f"rendering {len(pending)} units serially "
             f"({cpu_budget()} cores available; --workers N to parallelise)"
         )
+    emit(events, "tiles", "started", units=len(pending), reused=len(reused), workers=workers)
 
-    results: list[RenderResult] = []
+    results: list[RenderResult] = list(reused)
     producer: Generator[RenderResult] = (
-        (render_unit(job) for job in jobs) if workers == 1 else _render_parallel(jobs, workers)
+        (render_unit(job) for job in pending)
+        if workers == 1
+        else _render_parallel(pending, workers)
     )
     with closing(producer) as finished:
         for done, result in enumerate(finished, start=1):
@@ -942,7 +1071,7 @@ def build_tiles(
             total_bytes += result.size
             for summary in result.files:
                 echo(
-                    f"[{done}/{len(jobs)}] {summary.filename}: {summary.written} tiles written, "
+                    f"[{done}/{len(pending)}] {summary.filename}: {summary.written} tiles written, "
                     f"{summary.skipped} transparent skipped ({format_bytes(summary.size)})"
                 )
             # Reported on completion, not on start: with N units in flight
@@ -950,14 +1079,26 @@ def build_tiles(
             # the first full batch has landed, because until then the elapsed
             # time covers units that have not finished.
             line = (
-                f"[{done}/{len(jobs)}] {result.label} done in "
+                f"[{done}/{len(pending)}] {result.label} done in "
                 f"{format_duration(result.elapsed_s)} "
                 f"(state raster in {format_duration(result.state_s)})"
             )
+            eta_s = None
             if done >= workers:
                 average = (time.monotonic() - build_start) / done
-                line += f", eta {format_duration(average * (len(jobs) - done))}"
+                eta_s = average * (len(pending) - done)
+                line += f", eta {format_duration(eta_s)}"
             echo(line)
+            emit(
+                events,
+                "tiles",
+                "unit",
+                label=result.label,
+                done=done,
+                total=len(pending),
+                elapsed_s=round(result.elapsed_s, 1),
+                eta_s=None if eta_s is None else round(eta_s, 1),
+            )
 
     canopy_url = f"{CANOPY_TILES_FILENAME}?v={version}"
     buildings_url = f"{BUILDINGS_TILES_FILENAME}?v={version}"
@@ -1035,11 +1176,23 @@ def build_tiles(
     (tiles_dir / MANIFEST_FILENAME).write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
+    elapsed = time.monotonic() - build_start
     echo(
-        f"tiles done in {format_duration(time.monotonic() - build_start)} "
+        f"tiles done in {format_duration(elapsed)} "
         f"({len(ordered)} instants, {2 * len(ordered) + 2} pmtiles, "
         f"{format_bytes(total_bytes)}, {total_written} tiles written, "
-        f"{total_skipped} skipped)"
+        f"{total_skipped} skipped" + (f", {len(reused)} units reused" if reused else "") + ")"
+    )
+    emit(
+        events,
+        "tiles",
+        "finished",
+        instants=len(ordered),
+        units=len(pending),
+        reused=len(reused),
+        bytes=total_bytes,
+        elapsed_s=round(elapsed, 1),
+        directory=str(tiles_dir),
     )
     return tiles_dir
 
