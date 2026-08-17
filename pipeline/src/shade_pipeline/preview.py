@@ -16,12 +16,14 @@ production and only the backdrop differs.
 """
 
 import os
+import socket
 import subprocess
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -46,9 +48,45 @@ class Preview:
         return self.web_url or self.api_url
 
 
-def _wait_for(url: str, timeout: float, what: str) -> None:
+def _in_use(port: int) -> bool:
+    """Whether something already holds ``port`` on the loopback."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
+
+
+def _claim_ports(api_port: int, web_port: int) -> None:
+    """Refuse to start on top of a preview that is already running.
+
+    Both halves used to fail quietly and in different ways, which between them
+    produced the worst outcome available: uvicorn exits on a bound port, so the
+    health check was answered by the *previous* API; vite does not exit, it
+    walks forward to 5174, 5175, and the caller went on announcing 5173. What
+    you got was a browser pointed at somebody else's server, showing an older
+    build, with nothing anywhere saying so.
+    """
+    taken = [str(port) for port in (api_port, web_port) if _in_use(port)]
+    if taken:
+        raise PreviewError(
+            f"already listening on 127.0.0.1:{', '.join(taken)} -- a preview does not stop "
+            f"by itself, so this is probably an earlier one. Stop it first, or pass "
+            f"--api-port/--web-port to run beside it."
+        )
+
+
+def _wait_for(
+    url: str, timeout: float, what: str, process: subprocess.Popen[bytes] | None = None
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        # A child that has already exited will never answer, and waiting the
+        # full timeout to say so buries the reason it exited.
+        if process is not None and process.poll() is not None:
+            raise PreviewError(f"{what} exited with {process.returncode} before answering")
         try:
             httpx.get(url, timeout=2.0)
             return
@@ -65,10 +103,18 @@ def preview(
     web_dir: Path | None = DEFAULT_WEB_DIR,
     api_port: int = DEFAULT_API_PORT,
     web_port: int = DEFAULT_WEB_PORT,
+    log: Path | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> Iterator[Preview]:
-    """Run a local API (and the viewer, if it is there) until the block exits."""
+    """Run a local API (and the viewer, if it is there) until the block exits.
+
+    ``log`` collects both servers' own output. They are the two processes here
+    that can fail *after* starting -- a missing artifact, a proxy that 502s, a
+    tile the viewer cannot find -- and without it that goes to whatever stdout
+    the caller had, which for a console launching this detached is nowhere.
+    """
     echo = progress if progress is not None else lambda _message: None
+    _claim_ports(api_port, web_port)
     environment = {
         **os.environ,
         "SHADE_API_CITIES_DIR": str(cities_dir),
@@ -79,6 +125,12 @@ def preview(
     }
     api_url = f"http://127.0.0.1:{api_port}"
     processes: list[subprocess.Popen[bytes]] = []
+    # One file for both servers rather than one each: what you want to read is
+    # a request arriving at the viewer and what the API made of it, in order.
+    sink = log.open("a", encoding="utf-8", buffering=1) if log is not None else None
+    output: dict[str, Any] = (
+        {"stdout": sink, "stderr": subprocess.STDOUT} if sink is not None else {}
+    )
     try:
         echo(f"starting the api on {api_url}")
         processes.append(
@@ -92,25 +144,55 @@ def preview(
                     str(api_port),
                 ],
                 env=environment,
+                **output,
             )
         )
-        _wait_for(f"{api_url}/healthz", 30.0, "the api")
+        _wait_for(f"{api_url}/healthz", 30.0, "the api", processes[-1])
 
         web_url: str | None = None
         if web_dir is not None and (web_dir / "package.json").exists():
             echo(f"starting the viewer from {web_dir}")
+            if not (web_dir / ".env.local").exists():
+                # Which URLs the app calls is the viewer's own configuration,
+                # and without that file it defaults to production: the map would
+                # look right and be somebody else's city.
+                echo(
+                    f"warning: no .env.local in {web_dir}; the viewer will read "
+                    f"production instead of this preview (see its .env.example)"
+                )
             processes.append(
                 subprocess.Popen(
-                    ["pnpm", "vite", "--host", "127.0.0.1", "--port", str(web_port)],
+                    # --strictPort: without it vite walks forward to the next
+                    # free port and says so only in its own output, so the URL
+                    # this function returns stops being true.
+                    [
+                        "pnpm",
+                        "vite",
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        str(web_port),
+                        "--strictPort",
+                    ],
                     cwd=web_dir,
-                    # The viewer's dev server proxies /v1 and /tiles; pointing
-                    # that proxy here is what makes it show the local build
-                    # instead of production.
-                    env={**environment, "SHADE_API_PROXY": api_url},
+                    # Two different mechanisms, and they are easy to confuse.
+                    # The dev server proxies **/v1 only**, to SHADE_API_PROXY.
+                    # Tiles are not proxied at all: they are served off the disk
+                    # by a plugin that only mounts when SHADE_TILES_DIR is set,
+                    # because PMTiles are read with Range requests and vite's
+                    # static server cannot answer 206. Without it every tile URL
+                    # falls through to the SPA fallback and the client parses
+                    # index.html as JSON.
+                    env={
+                        **environment,
+                        "SHADE_API_PROXY": api_url,
+                        "SHADE_TILES_DIR": str(output_root.resolve()),
+                    },
+                    **output,
                 )
             )
             web_url = f"http://127.0.0.1:{web_port}"
-            _wait_for(web_url, 60.0, "the viewer")
+            _wait_for(web_url, 60.0, "the viewer", processes[-1])
         elif web_dir is not None:
             echo(f"no viewer at {web_dir}; serving the api alone")
 
@@ -125,3 +207,5 @@ def preview(
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
+        if sink is not None:
+            sink.close()

@@ -11,6 +11,8 @@ Everything launched from here is detached, so this screen can be closed at any
 moment without touching the work.
 """
 
+import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -39,7 +41,7 @@ from shade_pipeline.console.launch import LaunchScreen, to_argv
 from shade_pipeline.console.utilities import UtilitiesScreen
 from shade_pipeline.console.utilities import to_argv as utility_argv
 from shade_pipeline.runner import CHAIN
-from shade_pipeline.runstate import RunState, StepStatus
+from shade_pipeline.runstate import LOG_STEPS, RunState, StepStatus
 
 if TYPE_CHECKING:
     from shade_pipeline.console.app import ConsoleApp
@@ -284,7 +286,9 @@ class CityScreen(Screen[None]):
     def follow_newest_log(self, state: RunState) -> None:
         candidates = [
             (record.started_at, Path(record.log))
-            for step in CHAIN
+            # LOG_STEPS and not CHAIN: preview writes a log too, and it is the
+            # one you are most likely to be reading while it runs.
+            for step in LOG_STEPS
             if (record := state.record(step)).log and record.started_at
         ]
         if not candidates:
@@ -339,7 +343,24 @@ class CityScreen(Screen[None]):
         self.refresh_steps()
 
     def action_preview(self) -> None:
+        """Start a preview, or stop the one already running.
+
+        A toggle rather than a launcher because a preview does not stop by
+        itself, and pressing this three times used to leave three of them: the
+        second and third could not take port 5173, so vite walked forward to
+        5174 and 5175 while the browser stayed on 5173 showing the first.
+        """
         app = self.console_app
+        state = self.state()
+        running = state.record("preview")
+        if state.status("preview") is StepStatus.RUNNING and running.pid:
+            try:
+                os.kill(running.pid, signal.SIGTERM)
+            except OSError as error:
+                self.notify(f"could not stop pid {running.pid}: {error}", severity="error")
+                return
+            self.notify(f"stopping the preview (pid {running.pid})")
+            return
         pid = launch(
             engine_argv(
                 "preview",
@@ -348,9 +369,11 @@ class CityScreen(Screen[None]):
                 str(app.cities_dir),
                 "--output-root",
                 str(app.output_root),
+                "--data-root",
+                str(app.data_root),
             )
         )
-        self.notify(f"preview on http://127.0.0.1:5173 (pid {pid}); it keeps running until killed")
+        self.notify(f"preview on http://127.0.0.1:5173 (pid {pid}); press v again to stop it")
 
     def action_publish(self) -> None:
         """Show the plan in full, then ask. Publishing is never automatic."""

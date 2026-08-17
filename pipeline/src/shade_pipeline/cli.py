@@ -5,6 +5,7 @@ the individual commands remain, both because they are what ``run`` calls and
 because a single phase is often all you want.
 """
 
+import signal
 import subprocess
 import sys
 import time
@@ -66,7 +67,7 @@ from shade_pipeline.runner import (
     step_scope,
     steps_between,
 )
-from shade_pipeline.runstate import LATEST_DIRNAME, RunState, StepStatus
+from shade_pipeline.runstate import LATEST_DIRNAME, LOG_STEPS, RunState, StepStatus
 from shade_pipeline.sources import CoverageError, LidarSource, LocalDirectory
 from shade_pipeline.tiles import (
     DEFAULT_MAX_ZOOM,
@@ -268,6 +269,7 @@ def preview_command(
         "cities"
     ),
     output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
 ) -> None:
     """Serve the built artifacts locally and open the viewer on them, until Ctrl-C.
 
@@ -275,12 +277,31 @@ def preview_command(
     one that used to be skipped because it meant starting two servers by hand in
     two repositories. A city with no basemap extract previews fine: the client
     falls back to OSM online, so the overlay is what production will show.
+
+    Both servers log to ``data/runs/<city>/preview/``, which is what the console
+    shows and ``shade-engine logs CITY preview`` prints. A preview that is up but
+    wrong -- a tile it cannot find, a proxy answering 502 -- says so only there.
     """
     if city is not None:
         artifact_dir = output_root / city / ARTIFACT_VERSION
         if not (artifact_dir / METADATA_FILENAME).exists():
             typer.echo(f"error: no artifacts under {artifact_dir}", err=True)
             raise typer.Exit(1)
+
+    state = log_path = None
+    if city is not None:
+        state = RunState.open(city, cities_dir=cities_dir, data_root=data_root)
+        log_path, events_path = state.paths_for("preview")
+        state.begin(
+            "preview",
+            params={"api_port": api_port, "web_port": web_port},
+            log=log_path,
+            events=events_path,
+        )
+    # SIGTERM is how the console stops a preview, and the default action would
+    # kill this process without unwinding -- orphaning both servers, which is
+    # exactly the pile-up that makes the next preview land on another port.
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         with preview(
             cities_dir=cities_dir,
@@ -288,9 +309,12 @@ def preview_command(
             web_dir=web_dir,
             api_port=api_port,
             web_port=web_port,
+            log=log_path,
             progress=typer.echo,
         ) as running:
             typer.echo(f"\nopen {running.url}" + (f"  (city: {city})" if city else ""))
+            if log_path is not None:
+                typer.echo(f"both servers log to {log_path}")
             typer.echo("Ctrl-C to stop\n")
             try:
                 while True:
@@ -298,8 +322,12 @@ def preview_command(
             except KeyboardInterrupt:
                 typer.echo("stopping")
     except PreviewError as exc:
+        if state is not None:
+            state.fail("preview", str(exc))
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
+    if state is not None:
+        state.complete("preview")
 
 
 @app.command()
@@ -445,7 +473,7 @@ def unpublish(
 def logs(
     city: Annotated[str, typer.Argument(help="City whose runs to look at")],
     step: Annotated[
-        str | None, typer.Argument(help=f"One of {', '.join(CHAIN)}; omit to list them")
+        str | None, typer.Argument(help=f"One of {', '.join(LOG_STEPS)}; omit to list them")
     ] = None,
     history: Annotated[
         bool, typer.Option("--history", help="Every run this city has had, oldest first")
@@ -493,7 +521,7 @@ def logs(
 
     if step is None:
         typer.echo(f"{city}: {state.directory}")
-        for name in CHAIN:
+        for name in LOG_STEPS:
             link = latest / f"{name}.log"
             if not link.exists():
                 typer.echo(f"  {name:>8}  -")
@@ -504,8 +532,8 @@ def logs(
             typer.echo(f"  {name:>8}  {when}  {size:>9}  {link}")
         return
 
-    if step not in CHAIN:
-        typer.echo(f"error: unknown step {step!r}; the chain is {', '.join(CHAIN)}", err=True)
+    if step not in LOG_STEPS:
+        typer.echo(f"error: unknown step {step!r}; known: {', '.join(LOG_STEPS)}", err=True)
         raise typer.Exit(1)
     link = latest / f"{step}.log"
     if not link.exists():

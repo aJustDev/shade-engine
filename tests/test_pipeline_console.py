@@ -11,9 +11,11 @@ async test in the repository and a helper is cheaper than a dependency.
 
 import asyncio
 import os
+import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -637,3 +639,53 @@ def test_unpublish_asks_before_deleting_anything(workspace: Path) -> None:
     assert isinstance(screen, ConfirmScreen)
     assert "rm -rf /opt/shade/data/cities/cube" in screen.body
     assert "rm -rf /opt/shade/live/cities/cube.yaml" in screen.body
+
+
+def test_preview_is_a_toggle_and_not_a_launcher(workspace: Path) -> None:
+    """Pressing v three times used to leave three previews.
+
+    A preview does not stop by itself, and the second and third could not take
+    port 5173, so vite walked forward to 5174 and 5175 while the browser stayed
+    on 5173 showing the first one.
+    """
+    state = _state(workspace)
+    log, events = state.paths_for("preview")
+    state.begin("preview", log=log, events=events)
+    app = _app(workspace)
+    signalled: list[tuple[int, int]] = []
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("v")
+        await pilot.pause()
+
+    with patch(
+        "shade_pipeline.console.city.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    ):
+        drive(app, scenario)
+
+    # os.kill is also how a record checks its process is alive (signal 0), so
+    # only the real signal is interesting here.
+    assert [call for call in signalled if call[1] != 0] == [(os.getpid(), signal.SIGTERM)]
+
+
+def test_the_log_tab_follows_a_preview_too(workspace: Path) -> None:
+    """It is the log you are most likely to be reading while it runs."""
+    state = _state(workspace)
+    log, events = state.paths_for("preview")
+    state.begin("preview", log=log, events=events)
+    log.write_text("vite ready in 432 ms\n", encoding="utf-8")
+    app = _app(workspace)
+    shown: list[str] = []
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        app.copy_to_clipboard = shown.append  # type: ignore[assignment]
+        await pilot.press("y")
+        await pilot.pause()
+
+    drive(app, scenario)
+
+    assert shown and "vite ready" in shown[0]

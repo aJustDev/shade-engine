@@ -81,6 +81,15 @@ is caught by the digest instead, which applies to every step at once.
 """
 
 
+LOG_STEPS: tuple[str, ...] = (*DEPENDS_ON, "preview")
+"""Everything that writes a log, which is more than the chain.
+
+``preview`` runs two servers and produces no artifact, so it has no place in
+:data:`DEPENDS_ON` and no column in ``status`` -- nothing can be stale because of
+it. It still has plenty to say while it runs, and that has to be findable.
+"""
+
+
 class StepStatus(StrEnum):
     """What a step's own record says. The *effective* status may still be stale."""
 
@@ -314,7 +323,7 @@ class RunState:
         """
         self._migrate_flat()
         self._seed_history()
-        for step in DEPENDS_ON:
+        for step in LOG_STEPS:
             for suffix in (".log", ".jsonl"):
                 newest = self.newest_run(step, suffix)
                 if newest is not None:
@@ -333,7 +342,7 @@ class RunState:
             self.directory.glob("*-*.jsonl")
         ):
             step, _, stamp = path.stem.partition("-")
-            if step not in DEPENDS_ON or not stamp:
+            if step not in LOG_STEPS or not stamp:
                 continue
             target = self.directory / step / f"{stamp}{path.suffix}"
             target.parent.mkdir(parents=True, exist_ok=True)
