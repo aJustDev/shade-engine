@@ -64,7 +64,7 @@ from rasterio.windows import Window
 
 from shade_core.artifacts import CANOPY_FILENAME, LANDCOVER_FILENAME, load_coverage, load_metadata
 from shade_core.config import Bbox, CityConfig
-from shade_core.shade import Landcover
+from shade_core.shade import OPAQUE_CANOPY_CAVEAT, Landcover
 from shade_core.solar import SunPosition, sun_position
 from shade_pipeline.area import read_area, wgs84_geometry
 from shade_pipeline.budget import (
@@ -947,7 +947,8 @@ def build_tiles(
     long-lived immutable caching), bounds, colors, the declination
     ``ladder`` (any calendar date -> its rung) and attribution. It stays
     ``schema_version`` 2 with additive fields: ``urls.{building,trees}``,
-    ``canopy_url`` and ``ladder`` are the current contract, while the
+    ``canopy_url``, ``ladder`` and ``model_caveats`` are the current contract,
+    while the
     legacy ``url``/``urls.building`` (cast building shade, same semantics
     as the original split) and ``urls.vegetation`` (pointing at the static
     canopy) keep a deployed schema-2 client rendering sensibly without
@@ -1176,6 +1177,11 @@ def build_tiles(
         **({"basemap_url": BASEMAP_FILENAME} if (tiles_dir / BASEMAP_FILENAME).exists() else {}),
         "instants": entries,
         "generated_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
+        # Additive, and always present: a client painting these tiles has no
+        # other way to learn what the colours assume. Sibling of attribution
+        # because it is the same kind of obligation -- what has to travel with
+        # the picture for it to be honest.
+        "model_caveats": [OPAQUE_CANOPY_CAVEAT],
         "attribution": metadata.attribution,
     }
     (tiles_dir / MANIFEST_FILENAME).write_text(

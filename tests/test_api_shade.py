@@ -39,6 +39,19 @@ def test_winter_noon_is_building_shade(client: TestClient) -> None:
     assert body["attribution"] == ["Synthetic LiDAR (test fixture)"]
 
 
+def test_a_building_shade_carries_no_caveat(client: TestClient) -> None:
+    """The field is empty unless the answer actually depends on the assumption.
+
+    The cube fixture has no vegetation, so this is the half of the contract the
+    API can prove end to end; that the caveat DOES ride on vegetal shade is
+    pinned at the domain level, where a crown can be built in three lines
+    (test_shade_classes.py).
+    """
+    assert _shade(client, at="2026-12-21T13:20:00+01:00").json()["caveats"] == []
+    assert _shade(client, at="2026-06-21T14:20:00+02:00").json()["caveats"] == []
+    assert _shade(client, at="2026-12-21T03:00:00").json()["caveats"] == []
+
+
 def test_summer_noon_is_sun(client: TestClient) -> None:
     response = _shade(client, at="2026-06-21T14:20:00+02:00")
     body = response.json()

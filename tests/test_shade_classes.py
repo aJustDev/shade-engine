@@ -13,7 +13,15 @@ import pytest
 
 import synthetic
 from shade_core.horizon import HorizonGrid
-from shade_core.shade import Landcover, ShadeScene, ShadeState, ShadeType, is_shaded
+from shade_core.shade import (
+    OPAQUE_CANOPY_CAVEAT,
+    Landcover,
+    ShadeScene,
+    ShadeState,
+    ShadeType,
+    caveats_for,
+    is_shaded,
+)
 from shade_core.solar import SunPosition, sun_positions_for_day
 from shade_pipeline.horizon import HorizonParams, compute_horizon_tiled
 
@@ -79,6 +87,29 @@ def test_under_canopy_inside_a_shadow_is_both() -> None:
 def test_under_canopy_in_the_open_is_vegetation() -> None:
     result = is_shaded(_crown_scene(0.0, 0.0, canopy=True), *POINT, MIDDAY)
     assert result.shade_type is ShadeType.VEGETATION
+
+
+def test_the_opaque_canopy_caveat_rides_on_vegetation_shade() -> None:
+    """Where the crowns are the whole reason, the caller hears about winter."""
+    assert caveats_for([ShadeType.VEGETATION]) == [OPAQUE_CANOPY_CAVEAT]
+
+
+def test_a_shade_the_skyline_would_hold_carries_no_caveat() -> None:
+    """BOTH means a wall closes the sky anyway, so bare branches change nothing.
+
+    This is the case that decides whether the field is worth reading: a caveat
+    attached to verdicts it cannot alter is a caveat nobody reads.
+    """
+    assert caveats_for([ShadeType.BOTH]) == []
+    assert caveats_for([ShadeType.BUILDING]) == []
+    assert caveats_for([None]) == []
+
+
+def test_one_vegetal_interval_is_enough_for_a_whole_day() -> None:
+    """A day is caveated if any of its hours is, which is what a timeline asks."""
+    day = [ShadeType.BUILDING, None, ShadeType.VEGETATION, ShadeType.BOTH]
+    assert caveats_for(day) == [OPAQUE_CANOPY_CAVEAT]
+    assert caveats_for([]) == []
 
 
 @pytest.fixture(scope="module")

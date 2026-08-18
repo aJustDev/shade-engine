@@ -22,7 +22,14 @@ from shade_api.schemas import (
     TimelineIntervalOut,
     TimelineOut,
 )
-from shade_core.shade import ShadeInterval, ShadeState, is_shaded, shade_timeline
+from shade_core.shade import (
+    OPAQUE_CANOPY_CAVEAT,
+    ShadeInterval,
+    ShadeState,
+    caveats_for,
+    is_shaded,
+    shade_timeline,
+)
 from shade_core.solar import sun_position
 
 router = APIRouter(prefix="/v1")
@@ -79,6 +86,8 @@ def city_detail(city_id: str, registry: Registry, response: Response) -> CityDet
     return CityDetail(
         **_city_out(runtime).model_dump(),
         artifacts=runtime.metadata,
+        # Always, here: this describes the engine, not any one verdict.
+        caveats=[OPAQUE_CANOPY_CAVEAT],
     )
 
 
@@ -155,6 +164,7 @@ def shade(
         in_shade=result.state is ShadeState.SHADE,
         shade_type=result.shade_type,
         sun=SunOut(azimuth_deg=sun.azimuth_deg, elevation_deg=sun.elevation_deg),
+        caveats=caveats_for([result.shade_type]),
         attribution=runtime.metadata.attribution,
     )
 
@@ -198,6 +208,7 @@ def timeline(
             for interval in intervals
         ],
         shaded_until=shaded_until(intervals, now) if is_today else None,
+        caveats=caveats_for(interval.shade_type for interval in intervals),
         attribution=runtime.metadata.attribution,
     )
 

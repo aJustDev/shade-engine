@@ -24,6 +24,15 @@ class CityDetail(CityOut):
     """A city plus the build metadata of its loaded artifacts."""
 
     artifacts: BuildMetadata
+    caveats: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Modelling assumptions that limit what this city's answers mean. "
+            "Always present here, because they describe the engine and not any "
+            "one verdict; the shade endpoints return them only when they bear "
+            "on the answer given"
+        ),
+    )
 
 
 class SunOut(BaseModel):
@@ -53,6 +62,15 @@ class ShadeOut(BaseModel):
         )
     )
     sun: SunOut
+    caveats: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Modelling assumptions that bear on THIS verdict. Present when "
+            "shade_type is 'vegetation', because crowns are modelled as opaque "
+            "all year and a leafless winter tree would not shade this point. "
+            "Empty under 'both', where the skyline shades it anyway"
+        ),
+    )
     attribution: list[str]
 
 
@@ -78,6 +96,14 @@ class TimelineOut(BaseModel):
             "Only when the requested date is today and the point is currently "
             "shaded: the instant the current shaded run ends"
         )
+    )
+    caveats: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Modelling assumptions that bear on this day. Present when any "
+            "interval is held by vegetation alone: those hours are the ones a "
+            "leafless winter tree would not deliver"
+        ),
     )
     attribution: list[str]
 

@@ -42,6 +42,8 @@ def test_winter_timeline_matches_engine(client: TestClient, built_city: Path) ->
     ]
     states = {interval["state"] for interval in body["intervals"]}
     assert states == {"sun", "shade"}  # the cube shades NEAR at winter midday
+    # Every hour of shade here is the cube's, so the day carries no caveat.
+    assert body["caveats"] == []
 
 
 def test_omitted_date_means_today(client: TestClient) -> None:

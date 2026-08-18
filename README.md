@@ -26,9 +26,9 @@ One precomputation per city, millisecond queries, valid for **any** instant,
 not just precomputed ones.
 
 The observer sits at street level (terrain elevation + 1.6 m) with obstacles
-taken from the surface model, so points under tree canopies and next to
-buildings behave correctly. Placing the observer on the surface model instead
-would put them on top of the tree, or on the roof.
+taken from the surface model, so a point under a tree canopy is judged from
+under it and not from above it. Placing the observer on the surface model
+instead would put them on top of the tree, or on the roof.
 
 **What casts the shade** comes for free: the sweep already knows which cell
 blocks each sector, so its land-cover class is stored alongside the angle. A
@@ -129,6 +129,26 @@ routing needs no raster reads at query time.
 
 Cordoba and Montilla in production. Shade queries, timelines, parking and
 routing all live. Field validation against photographs is still pending.
+
+## Known limitations
+
+**Crowns are modelled as opaque all year round.** A pixel under the canopy mask
+is reported as shaded whenever the sun is up, and the horizon cube stores the
+crown as a solid column. Under a deciduous tree in winter both are wrong in the
+same direction: the engine promises shade that the bare branches do not cast.
+
+Measured on the Montilla test crop: on the winter solstice a point under a crown
+is reported shaded for all 9.5 hours of daylight, where the same skyline with
+the vegetation removed would give 2.7. How much of that gap is real error
+depends on the deciduous fraction of a city's canopy, which the engine does not
+know -- so this is declared and not corrected. Fixing it needs a second horizon
+cube built over a winter surface, and that needs per-tree species attribution
+the artifacts do not carry today.
+
+The API says so where it matters: `/v1/shade` and `/v1/shade/timeline` return a
+`caveats` field, populated exactly when the vegetation is the only thing holding
+the shade (`shade_type: "vegetation"`), and `GET /v1/cities/{id}` always carries
+it. Tile clients get the same string in the manifest's `model_caveats`.
 
 ## Data sources and attribution
 

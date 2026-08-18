@@ -2,6 +2,8 @@
 
 from fastapi.testclient import TestClient
 
+from shade_core.shade import OPAQUE_CANOPY_CAVEAT
+
 
 def test_lists_only_built_cities(client: TestClient) -> None:
     response = client.get("/v1/cities")
@@ -26,6 +28,17 @@ def test_city_detail_exposes_build_metadata(client: TestClient) -> None:
     assert body["artifacts"]["artifact_version"] == "v1"
     assert body["artifacts"]["horizon"]["sectors"] == 64
     assert body["artifacts"]["crs"] == "EPSG:25830"
+
+
+def test_city_detail_always_declares_the_model_caveats(client: TestClient) -> None:
+    """Unconditional here, because it describes the engine and not a verdict.
+
+    Somebody deciding whether to build on this API reads /cities, not a shade
+    query that happened to land under a tree.
+    """
+    body = client.get("/v1/cities/cube").json()
+    assert body["caveats"] == [OPAQUE_CANOPY_CAVEAT]
+    assert "opaque" in OPAQUE_CANOPY_CAVEAT
 
 
 def test_unknown_city_is_404(client: TestClient) -> None:

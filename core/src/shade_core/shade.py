@@ -12,7 +12,8 @@ Two refinements around it:
   this pixel's *local* skyline" (shade).
 - **Under a canopy the horizon lies**: the horizon is computed from street
   level, but a pixel whose landcover says "vegetation overhead" is shaded by
-  that very canopy whenever the sun is up (opaque-canopy MVP assumption).
+  that very canopy whenever the sun is up (opaque-canopy MVP assumption; what
+  it costs is measured and worded in :data:`OPAQUE_CANOPY_CAVEAT`).
 
 Shade *type* asks which obstacle blocks the sun. The reference answer
 ray-marches from the observer toward the sun's azimuth until the first pixel
@@ -28,6 +29,7 @@ closed by a building anyway comes back as :attr:`ShadeType.BOTH`.
 """
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 from enum import IntEnum, StrEnum
@@ -51,6 +53,27 @@ class Landcover(IntEnum):
 
 NO_BLOCKER: Final = 255
 """Sector-class value meaning open sky: nothing raises this sector's horizon."""
+
+OPAQUE_CANOPY_CAVEAT: Final = (
+    "Crowns are modelled as opaque all year round: under a deciduous tree in "
+    "winter this point is likely in the sun, not in the shade."
+)
+"""What the opaque-canopy assumption costs, in words, for callers to pass on.
+
+The assumption belongs to the model and not to any city, so it lives here next
+to the rule that produces it -- :func:`is_shaded` returns SHADE under ``canopy``
+without consulting the horizon at all.
+
+Measured on montilla-test (shade-docs: learning/la-copa-entra-dos-veces.md): on
+the winter solstice, under a crown, the engine promises shade for all 9.5 hours
+of daylight where the vegetation-free skyline would give 2.7. How much of that
+is wrong depends on the deciduous fraction of the city's canopy, which the
+engine does not know -- hence a caveat and not a correction.
+
+It applies exactly where the vegetation is the only thing holding the shade,
+i.e. :attr:`ShadeType.VEGETATION`. Under :attr:`ShadeType.BOTH` the skyline
+shades the point anyway and saying this would be noise.
+"""
 
 
 class ShadeState(StrEnum):
@@ -142,6 +165,22 @@ def holds_without_trees(scene: ShadeScene, x: float, y: float, sun: SunPosition)
     if scene.horizon_noveg is None:
         return False
     return sun.elevation_deg < scene.horizon_noveg.horizon_at(x, y, sun.azimuth_deg)
+
+
+def caveats_for(shade_types: Iterable[ShadeType | None]) -> list[str]:
+    """Model caveats that bear on these verdicts, ready to hand to a caller.
+
+    Only :data:`OPAQUE_CANOPY_CAVEAT` today, and only when the vegetation is
+    the whole reason for the shade. Under :attr:`ShadeType.BOTH` the skyline
+    closes the sky anyway, so the caveat cannot change the verdict and saying
+    it would train readers to skip the field.
+
+    Takes an iterable so a whole day's intervals ask the same question a single
+    instant does.
+    """
+    if any(shade_type is ShadeType.VEGETATION for shade_type in shade_types):
+        return [OPAQUE_CANOPY_CAVEAT]
+    return []
 
 
 def classify_shade(scene: ShadeScene, x: float, y: float, sun: SunPosition) -> ShadeType | None:

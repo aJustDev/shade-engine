@@ -23,7 +23,14 @@ from typer.testing import CliRunner
 import synthetic
 from conftest import CUBE_CITY
 from shade_core import artifacts
-from shade_core.shade import Landcover, ShadeResult, ShadeState, ShadeType, is_shaded
+from shade_core.shade import (
+    OPAQUE_CANOPY_CAVEAT,
+    Landcover,
+    ShadeResult,
+    ShadeState,
+    ShadeType,
+    is_shaded,
+)
 from shade_core.solar import SunPosition, sun_position
 from shade_pipeline import budget
 from shade_pipeline.budget import MemoryBudgetError
@@ -374,6 +381,9 @@ def test_build_tiles_manifest(built_city: Path, tmp_path: Path) -> None:
     assert manifest["city"] == "cube"
     assert manifest["timezone"] == "Europe/Madrid"
     assert manifest["attribution"] == ["Synthetic LiDAR (test fixture)"]
+    # A tile client has no other channel: the colours alone cannot say what
+    # they assume, and it never calls the API.
+    assert manifest["model_caveats"] == [OPAQUE_CANOPY_CAVEAT]
     west, south, east, north = manifest["bounds_wgs84"]
     assert -4.9 < west < east < -4.7
     assert 37.8 < south < north < 38.0
