@@ -67,6 +67,7 @@ from shade_pipeline.publish import (
     plan_unpublish,
     unpublish_notes,
 )
+from shade_pipeline.purge import execute_purge, plan_purge
 from shade_pipeline.recolor import PALETTES, recolor_city
 from shade_pipeline.runner import (
     ChainError,
@@ -531,6 +532,48 @@ def unpublish(
         raise typer.Exit(1) from exc
     state.undo("publish")
     typer.echo(f"{city} is off {base_url}; publish it again when you want it back")
+
+
+@app.command()
+def purge(
+    city: str,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print what would go and delete nothing")
+    ] = False,
+    cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
+        "cities"
+    ),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+    lidar_root: Annotated[Path, typer.Option(help="Where the LiDAR cache lives")] = Path(
+        "data/lidar"
+    ),
+) -> None:
+    """Delete CITY's local artifacts, keeping the LiDAR cache and the run history.
+
+    The local counterpart of ``unpublish``, and what "rebuild from scratch"
+    needs: a build overwrites what it writes and leaves everything else, so a
+    file the current configuration no longer produces -- ``coverage.tif`` after
+    an area is withdrawn -- survives every rebuild and goes on being read.
+
+    Nothing is sent anywhere and nothing on the server changes; ``publish``
+    keeps its status because the server keeps its copy.
+
+    ``--dry-run`` prints the inventory and stops. Worth doing first: this is an
+    ``rm -rf`` over hours of computation.
+    """
+    state = RunState.open(city, cities_dir=cities_dir, data_root=data_root)
+    plan = plan_purge(
+        city, output_root=output_root, data_root=data_root, lidar_root=lidar_root, state=state
+    )
+    typer.echo(plan.render())
+    if dry_run:
+        typer.echo("\nnothing deleted; drop --dry-run to do it")
+        return
+    if not plan.removed:
+        return
+    execute_purge(plan, state)
+    typer.echo(f"\n{city}: {format_bytes(plan.freed)} deleted")
 
 
 @app.command()

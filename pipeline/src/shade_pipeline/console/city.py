@@ -47,6 +47,8 @@ from shade_pipeline.console.jobs import (
 from shade_pipeline.console.utilities import UtilitiesScreen
 from shade_pipeline.console.utilities import to_argv as utility_argv
 from shade_pipeline.preview import DEFAULT_WEB_PORT
+from shade_pipeline.progress import format_bytes
+from shade_pipeline.purge import PurgePlan, execute_purge, plan_purge
 from shade_pipeline.runstate import LOG_STEPS, RunState, StepStatus
 
 if TYPE_CHECKING:
@@ -127,6 +129,10 @@ class CityScreen(Screen[None]):
         # Both are still listed by `?`.
         Binding("U", "unpublish", "Unpublish", show=False),
         Binding("u", "utilities", "Utilities"),
+        # Shifted and off the footer, like `U`: these two delete hours of
+        # computation, and a mistyped `r` must not reach them.
+        Binding("R", "rebuild", "Rebuild from scratch", show=False),
+        Binding("D", "delete_local", "Delete local data", show=False),
         # Off the footer with the other two: eight shortcuts do not fit in 80
         # columns, and the Server tab says out loud which key fills it.
         Binding("s", "check_server", "Check server", show=False),
@@ -472,6 +478,84 @@ class CityScreen(Screen[None]):
         )
         self.notify(f"{self.city}: building as pid {pid}")
         self.refresh_steps()
+
+    # --------------------------------------------------------------- purging
+
+    def purge_plan(self) -> PurgePlan:
+        app = self.console_app
+        return plan_purge(
+            self.city,
+            output_root=app.output_root,
+            data_root=app.data_root,
+            state=self.state(),
+        )
+
+    def action_rebuild(self) -> None:
+        """Delete what is here and build it again: one act, one name.
+
+        It used to be two switches (`force` and `no-resume`) that nobody could
+        have known were the pair, and they were not: the tile render already
+        refuses to reuse a pyramid whose artifacts moved. What a rebuild from
+        scratch really needs is removing what the next build will *not*
+        overwrite, and that is a deletion, not a flag.
+
+        The order is deliberate: how to build it, then what disappears, then
+        yes. The destructive question is the last one asked.
+        """
+        from shade_pipeline.console.launch import LaunchScreen
+
+        app = self.console_app
+        if app.is_busy(self.city):
+            self.notify(f"{self.city} already has a step running", severity="warning")
+            return
+        self.app.push_screen(
+            LaunchScreen(self.city, self.config(), self.state().preferences), self.confirm_rebuild
+        )
+
+    def confirm_rebuild(self, options: dict[str, Any] | None) -> None:
+        if options is None:
+            return
+        plan = self.purge_plan()
+        chosen = dict(options, force=True)
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Rebuild {self.city} from scratch",
+                f"{plan.render()}\n\nthen: build it again from step one, --force",
+                "Delete and rebuild",
+            ),
+            lambda confirmed: self.do_purge(confirmed, plan, chosen),
+        )
+
+    def action_delete_local(self) -> None:
+        """The same deletion without the rebuild: give the disk back, keep the record."""
+        app = self.console_app
+        if app.is_busy(self.city):
+            self.notify(f"{self.city} has a step running", severity="warning")
+            return
+        plan = self.purge_plan()
+        self.app.push_screen(
+            ConfirmScreen(f"Delete {self.city}'s local data", plan.render(), "Delete"),
+            lambda confirmed: self.do_purge(confirmed, plan, None),
+        )
+
+    def do_purge(
+        self, confirmed: bool | None, plan: PurgePlan, options: dict[str, Any] | None
+    ) -> None:
+        if not confirmed:
+            return
+        if not plan.removed and options is None:
+            self.notify("nothing to delete")
+            return
+        self.purge_now(plan, options)
+
+    @work(thread=True, group="purge", exclusive=True)
+    def purge_now(self, plan: PurgePlan, options: dict[str, Any] | None) -> None:
+        """In a thread: removing a rebuilt city is gigabytes of unlink()."""
+        execute_purge(plan, self.state())
+        self.app.call_from_thread(self.notify, f"{self.city}: {format_bytes(plan.freed)} deleted")
+        if options is not None:
+            self.app.call_from_thread(self.start_chain, options)
+        self.app.call_from_thread(self.refresh_steps)
 
     def action_preview(self) -> None:
         """Start a preview, or stop the one already running.

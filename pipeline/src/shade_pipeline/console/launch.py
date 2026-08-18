@@ -25,6 +25,18 @@ from shade_pipeline.tiles import DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM
 
 NUMBERS = ("workers", "tile_size", "min_zoom", "max_zoom")
 FLAGS = ("resume", "force")
+"""The two switches, and neither of them is "start over".
+
+``force`` redoes steps whose state already says done; ``resume`` keeps tile
+units already rendered. They were read as a pair for a while, and they are not:
+``build_tiles`` already refuses to reuse a pyramid whose ``artifact_built_at``
+has moved, so after a rebuild ``--no-resume`` buys nothing. It earns its keep in
+the other case only -- the render code changed and the rasters did not, which
+:func:`shade_pipeline.tiles.render_state` deliberately does not fingerprint.
+
+Starting a city over is a third thing and it is a deletion, not a flag: `R` on
+the city screen, or ``shade-engine purge``.
+"""
 
 
 def suggested_workers(config: CityConfig) -> int:

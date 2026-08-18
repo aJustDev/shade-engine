@@ -1089,6 +1089,111 @@ def test_unpublish_asks_before_deleting_anything(workspace: Path) -> None:
     assert "rm -rf /opt/shade/live/cities/cube.yaml" in screen.body
 
 
+def _with_artifacts(workspace: Path) -> Path:
+    """A built city on disk: three files under out/cube/v1 and four done steps."""
+    artifacts = workspace / "out" / "cube" / "v1"
+    (artifacts / "tiles").mkdir(parents=True)
+    (artifacts / "horizon.tif").write_bytes(b"x" * 4096)
+    (artifacts / "tiles" / "0.pmtiles").write_bytes(b"x" * 1024)
+    state = _state(workspace)
+    for step in ("basemap", "build", "graph", "tiles"):
+        log, events = state.paths_for(step)
+        state.begin(step, log=log, events=events)
+        state.complete(step)
+    return artifacts
+
+
+def test_deleting_local_data_asks_first_and_prices_it(workspace: Path) -> None:
+    """`D` reaches a confirmation showing the inventory, and nothing else."""
+    _with_artifacts(workspace)
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        seen["screen"] = app.screen
+
+    drive(app, scenario)
+
+    screen = seen["screen"]
+    assert isinstance(screen, ConfirmScreen)
+    assert "horizon.tif" in screen.body
+    assert "kept:" in screen.body
+    assert (workspace / "out" / "cube" / "v1" / "horizon.tif").exists(), "asked, not done"
+
+
+def test_cancelling_the_deletion_leaves_everything(workspace: Path) -> None:
+    artifacts = _with_artifacts(workspace)
+    app = _app(workspace)
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        await pilot.press("escape")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    drive(app, scenario)
+
+    assert (artifacts / "horizon.tif").exists()
+    assert _state(workspace).status("build") is StepStatus.DONE
+
+
+def test_confirming_the_deletion_removes_the_artifacts_and_pends_the_steps(
+    workspace: Path,
+) -> None:
+    artifacts = _with_artifacts(workspace)
+    app = _app(workspace)
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        app.screen.dismiss(True)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    drive(app, scenario)
+
+    assert not artifacts.exists()
+    state = _state(workspace)
+    assert state.status("build") is StepStatus.PENDING
+    assert (workspace / "data" / "runs" / "cube" / "history.jsonl").exists()
+
+
+def test_rebuilding_from_scratch_asks_how_first_and_then_what_goes(workspace: Path) -> None:
+    """The order is deliberate: options, then the deletion, then yes."""
+    _with_artifacts(workspace)
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("R")
+        await pilot.pause()
+        seen["first"] = type(app.screen).__name__
+        assert isinstance(app.screen, LaunchScreen)
+        app.screen.action_launch()
+        await pilot.pause()
+        seen["second"] = app.screen
+
+    drive(app, scenario)
+
+    assert seen["first"] == "LaunchScreen"
+    screen = seen["second"]
+    assert isinstance(screen, ConfirmScreen)
+    assert "horizon.tif" in screen.body
+    assert "--force" in screen.body
+
+
 def test_preview_is_a_toggle_and_not_a_launcher(workspace: Path) -> None:
     """Pressing v three times used to leave three previews.
 
