@@ -141,7 +141,7 @@ def test_the_window_grid_leaves_no_gap() -> None:
     assert max(y1 for _x0, _y0, _x1, y1 in windows) == 1954.0
 
 
-def test_a_building_on_the_seam_is_fetched_twice_and_drawn_once() -> None:
+def test_a_building_on_the_seam_is_fetched_twice_and_drawn_once(tmp_path: Path) -> None:
     """Which is the whole reason the join is by ``gml:id`` and not by count.
 
     A WFS bbox filter returns what *intersects*, so the two windows either side
@@ -150,16 +150,14 @@ def test_a_building_on_the_seam_is_fetched_twice_and_drawn_once() -> None:
     """
     seam = _collection(_square("ES.SDGC.BU.SEAM", 495.0, 10.0))
     transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=seam))
-    source = CadastreSource(
-        cache_dir=Path("/nonexistent"), client=httpx.Client(transport=transport)
-    )
+    source = CadastreSource(cache_dir=tmp_path, client=httpx.Client(transport=transport))
 
     footprints = source.fetch((0.0, 0.0, 1000.0, 500.0), "EPSG:25830")
 
     assert len(footprints) == 1
 
 
-def test_a_window_the_service_refuses_costs_only_that_window() -> None:
+def test_a_window_the_service_refuses_costs_only_that_window(tmp_path: Path) -> None:
     """Half a city drawn beats none: this layer is an aid, not an ingredient."""
     good = _collection(_square("ES.SDGC.BU.A", 10.0, 10.0))
 
@@ -169,20 +167,46 @@ def test_a_window_the_service_refuses_costs_only_that_window() -> None:
         return httpx.Response(200, content=good)
 
     source = CadastreSource(
-        cache_dir=Path("/nonexistent"), client=httpx.Client(transport=httpx.MockTransport(answer))
+        cache_dir=tmp_path, client=httpx.Client(transport=httpx.MockTransport(answer))
     )
 
     assert source.fetch((0.0, 0.0, 1000.0, 500.0), "EPSG:25830") != []
 
 
-def test_the_service_being_down_is_an_empty_layer_and_not_a_failed_build() -> None:
+def test_an_exception_answer_is_never_written_to_the_cache(tmp_path: Path) -> None:
+    """Or the block it covers goes missing for ever, and nothing ever fails.
+
+    The service answers its bbox refusal with **HTTP 200** and an XML body, so a
+    cache that writes first and parses after would keep replaying it as this
+    window's answer on every later build.
+    """
+    calls = {"n": 0}
+
+    def answer(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, content=BBOX_EXCEEDED)
+
+    source = CadastreSource(
+        cache_dir=tmp_path, client=httpx.Client(transport=httpx.MockTransport(answer))
+    )
+
+    assert source.fetch((0.0, 0.0, 400.0, 400.0), "EPSG:25830") == []
+    assert list(tmp_path.iterdir()) == []
+    # And the next run asks again instead of believing the file.
+    source.fetch((0.0, 0.0, 400.0, 400.0), "EPSG:25830")
+    assert calls["n"] == 2
+
+
+def test_the_service_being_down_is_an_empty_layer_and_not_a_failed_build(
+    tmp_path: Path,
+) -> None:
     """A cadastre outage must never stop a city from being rendered."""
 
     def refuse(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
     source = CadastreSource(
-        cache_dir=Path("/nonexistent"), client=httpx.Client(transport=httpx.MockTransport(refuse))
+        cache_dir=tmp_path, client=httpx.Client(transport=httpx.MockTransport(refuse))
     )
 
     assert source.fetch((0.0, 0.0, 400.0, 400.0), "EPSG:25830") == []
@@ -213,8 +237,8 @@ def test_a_warm_cache_needs_no_network(tmp_path: Path) -> None:
     assert isinstance(footprints[0], Polygon)
 
 
-def test_a_crs_the_service_cannot_be_asked_for_says_so() -> None:
-    source = CadastreSource(cache_dir=Path("/nonexistent"))
+def test_a_crs_the_service_cannot_be_asked_for_says_so(tmp_path: Path) -> None:
+    source = CadastreSource(cache_dir=tmp_path)
 
     with pytest.raises(CadastreError, match="not an EPSG code"):
         source._download((0.0, 0.0, 10.0, 10.0), "ETRS89 / UTM 30N")

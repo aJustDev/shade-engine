@@ -89,25 +89,26 @@ class CadastreSource:
 
         A window that fails -- the service is down, or refuses that particular
         rectangle -- takes its own window with it and not the layer: this is an
-        aid, and half a city drawn is better than none. What is *not* tolerated
-        is a malformed answer parsed into silence, so a body that is neither a
-        feature collection nor a recognisable exception still raises.
+        aid, and half a city drawn is better than none.
+
+        **Only what parsed gets cached**, and the ordering is the whole point:
+        an ``Area of extension out of limits`` written to disk would be replayed
+        as this window's answer on every later run, and the city would go on
+        missing the same block for ever without anything ever failing.
         """
         found: dict[str, Polygon] = {}
         for window in _windows(bbox, self.window_m):
+            path = self.cache_dir / _cache_name(window, crs)
+            cached = path.exists()
             try:
-                payload = self._payload(window, crs)
-            except httpx.HTTPError, CadastreError:
+                payload = path.read_bytes() if cached else self._download(window, crs)
+                found.update(_buildings(payload))
+            except httpx.HTTPError, CadastreError, OSError:
                 continue
-            found.update(_buildings(payload))
+            if not cached:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
         return [polygon for polygon in found.values() if polygon.area >= MIN_AREA_M2]
-
-    def _payload(self, window: Bbox, crs: str) -> bytes:
-        path = self.cache_dir / _cache_name(window, crs)
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(self._download(window, crs))
-        return path.read_bytes()
 
     def _download(self, window: Bbox, crs: str) -> bytes:
         urn = _urn(crs)
