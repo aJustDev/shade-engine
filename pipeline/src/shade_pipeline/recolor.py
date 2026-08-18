@@ -24,7 +24,7 @@ too. Either the colours ship in the file or they do not exist.
 import json
 import shutil
 import zlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -46,6 +46,9 @@ from shade_pipeline.tiles import (
     CANOPY_TILES_FILENAME,
     MANIFEST_FILENAME,
     PALETTE_STATES,
+    RELIEF_NONE,
+    RELIEF_STATES,
+    RELIEF_TILES_FILENAME,
     TILES_DIRNAME,
     palette_bytes,
 )
@@ -75,6 +78,32 @@ LIGHT_SHADE_COLOR: Final[RGBA] = (94, 112, 138, LIGHT_SHADE_ALPHA)  # 215 deg, c
 LIGHT_CANOPY_COLOR: Final[RGBA] = (44, 142, 76, LIGHT_CANOPY_ALPHA)  # 140 deg, foliage green
 LIGHT_BUILDINGS_COLOR: Final[RGBA] = (124, 130, 142, LIGHT_SHADE_ALPHA)
 
+LIGHT_RELIEF_ALPHA: Final = 170
+"""Heavier than the shade's 120, and it took a look at the map to accept it.
+
+The first attempt reused ``LIGHT_SHADE_ALPHA`` out of symmetry and the layer
+disappeared: at 47% over a near-white basemap the four tones compress into four
+greys nobody can tell apart, so the shape -- the entire point -- was gone, and
+what survived was close enough to the light shade colour to be confused with it.
+The relief is not competing with the shade for the same question; it is drawn
+*under* it, so weight here buys legibility and costs nothing.
+"""
+
+LIGHT_RELIEF_COLORS: Final[dict[int, RGBA]] = {
+    RELIEF_NONE: (0, 0, 0, 0),
+    1: (86, 92, 104, LIGHT_RELIEF_ALPHA),
+    2: (118, 124, 136, LIGHT_RELIEF_ALPHA),
+    3: (150, 156, 166, LIGHT_RELIEF_ALPHA),
+    4: (188, 193, 200, LIGHT_RELIEF_ALPHA),
+}
+"""The relief's four tones over a pale basemap: a darkening, like the shade.
+
+Every tone lands below the background, and the *lit* faces are the ones closest
+to it -- which is what makes a light map read as lit from above rather than as a
+photographic negative. The order is the dark theme's, 1 being the face turned
+away from the light, so a tile keeps meaning the same thing after the rewrite.
+"""
+
 _TRANSPARENT: Final[RGBA] = (0, 0, 0, 0)
 
 
@@ -101,6 +130,7 @@ class Palette:
     shade: dict[int, RGBA]
     canopy: dict[int, RGBA]
     buildings: dict[int, RGBA]
+    relief: dict[int, RGBA]
     # Los colores van como hex y el alfa como fraccion, igual que en el
     # manifiesto que escribe `tiles.py`.
     manifest_colors: dict[str, str | float]
@@ -115,10 +145,12 @@ LIGHT: Final = Palette(
     shade=_shade_palette(LIGHT_SHADE_COLOR),
     canopy=_single_state_palette(STATE_SHADE_VEGETATION, LIGHT_CANOPY_COLOR),
     buildings=_single_state_palette(STATE_SHADE_BUILDING, LIGHT_BUILDINGS_COLOR),
+    relief=LIGHT_RELIEF_COLORS,
     manifest_colors={
         "shade": _hex(LIGHT_SHADE_COLOR),
         "canopy": _hex(LIGHT_CANOPY_COLOR),
         "buildings": _hex(LIGHT_BUILDINGS_COLOR),
+        "relief": _hex(LIGHT_RELIEF_COLORS[4]),
         # El alfa TAMBIEN cambia con la paleta, y olvidarlo dejaba el manifiesto
         # claro anunciando el 0.78 del tema oscuro. Hoy no lo lee nadie en el
         # cliente, pero un manifiesto que miente sobre sus propios tiles es
@@ -181,9 +213,14 @@ def rewrite_png_palette(png: bytes, rgb: bytes, trns: bytes) -> bytes:
     return bytes(out)
 
 
-def recolor_archive(source: Path, destination: Path, colors: Mapping[int, RGBA]) -> int:
+def recolor_archive(
+    source: Path,
+    destination: Path,
+    colors: Mapping[int, RGBA],
+    states: Sequence[int] = PALETTE_STATES,
+) -> int:
     """Rewrite every tile of one PMTiles archive with a new palette."""
-    rgb, trns = palette_bytes(colors)
+    rgb, trns = palette_bytes(colors, states)
     written = 0
 
     with open(source, "rb") as handle:
@@ -216,14 +253,22 @@ class RecolorReport:
     destination: Path
 
 
-def _colors_for(filename: str, palette: Palette) -> Mapping[int, RGBA] | None:
-    """Which palette a file gets, or None when it is not a shade raster."""
+def _colors_for(filename: str, palette: Palette) -> tuple[Mapping[int, RGBA], Sequence[int]] | None:
+    """Which palette a file gets and in which order, or None if it is not ours.
+
+    The order travels with the colours because it *is* the format: the byte in
+    every pixel is a position in that tuple, so recolouring with a different one
+    would silently repaint every tile wrong. The relief is the first file with
+    a vocabulary of its own.
+    """
     if filename.startswith("shade-"):
-        return palette.shade
+        return palette.shade, PALETTE_STATES
     if filename == CANOPY_TILES_FILENAME:
-        return palette.canopy
+        return palette.canopy, PALETTE_STATES
     if filename == BUILDINGS_TILES_FILENAME:
-        return palette.buildings
+        return palette.buildings, PALETTE_STATES
+    if filename == RELIEF_TILES_FILENAME:
+        return palette.relief, RELIEF_STATES
     return None
 
 
@@ -255,9 +300,10 @@ def recolor_city(
     for path in sorted(source_dir.iterdir()):
         if not path.is_file():
             continue
-        colors = _colors_for(path.name, palette)
-        if colors is not None:
-            tiles += recolor_archive(path, destination_dir / path.name, colors)
+        recipe = _colors_for(path.name, palette)
+        if recipe is not None:
+            colors, states = recipe
+            tiles += recolor_archive(path, destination_dir / path.name, colors, states)
             archives += 1
             if progress is not None:
                 progress(f"  recoloured {path.name}")

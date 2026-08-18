@@ -54,10 +54,17 @@ from shade_pipeline.tiles import (
     CANOPY_TILES_FILENAME,
     MANIFEST_FILENAME,
     PALETTE_STATES,
+    RELIEF_COLORS,
+    RELIEF_NONE,
+    RELIEF_STATES,
+    RELIEF_TILES_FILENAME,
+    RELIEF_TONES,
     SHADE_COLORS,
     bounds_wgs84,
     build_tiles,
+    palette_bytes,
     season_preset_instants,
+    transparent_states,
     write_instant_pmtiles,
 )
 
@@ -272,6 +279,97 @@ def test_shade_that_holds_without_trees_goes_to_the_building_set(
         # holds only its blank overview tiles.
         reader = Reader(MmapSource(handle))
         assert _rgba_at(reader, metadata.crs, *point, 14)[3] == 0
+
+
+# ------------------------------------------------------------------- relief
+
+
+def _relief_state_at(reader: Reader, crs: str, x: float, y: float, zoom: int) -> int:
+    """The relief's own palette code, which is not a shade verdict."""
+    image, px, py = _decode_tile(reader, crs, x, y, zoom)
+    assert image.mode == "P"
+    index = image.getpixel((px, py))
+    assert isinstance(index, int)
+    return RELIEF_STATES[index]
+
+
+def test_the_relief_is_rendered_and_announced(built_city: Path, tmp_path: Path) -> None:
+    # Into a copy, never into the session fixture: `build_tiles` writes a
+    # `tiles/` directory next to the rasters, and the next test to copytree
+    # that fixture inherits it.
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+
+    tiles_dir = build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=18)
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+    assert (tiles_dir / RELIEF_TILES_FILENAME).exists()
+    assert str(manifest["relief_url"]).startswith(RELIEF_TILES_FILENAME)
+    # Additive, like every field before it.
+    assert manifest["schema_version"] == 2
+
+
+def test_the_relief_shades_the_roof_and_leaves_the_street_alone(
+    built_city: Path, tmp_path: Path
+) -> None:
+    """What the flat footprint cannot do: tell one part of a building from another.
+
+    The synthetic city is a single box, so its roof is flat and its walls are a
+    step. That is enough to need more than one tone -- and the ground around it
+    still has to paint nothing at all.
+    """
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    metadata = artifacts.load_metadata(target)
+    with rasterio.open(target / artifacts.LANDCOVER_FILENAME) as src:
+        landcover = src.read(1)
+    rows, cols = np.nonzero(landcover == Landcover.BUILDING)
+    min_x, _, _, max_y = metadata.bbox
+    resolution = metadata.resolution_m
+
+    def point(row: int, col: int) -> tuple[float, float]:
+        return (min_x + (col + 0.5) * resolution, max_y - (row + 0.5) * resolution)
+
+    tiles_dir = build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=18)
+    with open(tiles_dir / RELIEF_TILES_FILENAME, "rb") as handle:
+        reader = Reader(MmapSource(handle))
+        tones = {
+            _relief_state_at(reader, metadata.crs, *point(int(row), int(col)), 18)
+            for row, col in zip(rows, cols, strict=True)
+        }
+        ground = _relief_state_at(reader, metadata.crs, *NEAR, 18)
+
+    assert tones - {RELIEF_NONE}, "the building has to paint something"
+    assert len(tones & set(RELIEF_TONES)) > 1, f"one tone is a flat fill, not a relief: {tones}"
+    assert ground == RELIEF_NONE
+
+
+def test_a_set_carries_its_own_palette_vocabulary() -> None:
+    """Five entries either way, and the order is the file format.
+
+    The relief needed four tones plus nothing, which does not fit the five
+    shade verdicts -- hence the palette moving from a module constant to a
+    property of each output.
+    """
+    rgb, trns = palette_bytes(RELIEF_COLORS, RELIEF_STATES)
+
+    assert len(rgb) == 3 * len(RELIEF_STATES)
+    assert len(trns) == len(RELIEF_STATES)
+    assert trns[0] == 0, "the first slot paints nothing"
+    assert all(alpha > 0 for alpha in trns[1:])
+
+
+def test_an_empty_tile_is_judged_by_its_own_colours() -> None:
+    """Not by the two states that happen to be transparent in the shade sets.
+
+    In the canopy palette, building shade is transparent too -- so a tile full
+    of it paints nothing and used to be written out in full anyway.
+    """
+    invisible = transparent_states(CANOPY_COLORS)
+
+    assert invisible[STATE_SHADE_BUILDING]
+    assert invisible[STATE_SUN]
+    assert not invisible[STATE_SHADE_VEGETATION]
 
 
 def test_pmtiles_roundtrip(built_city: Path, tmp_path: Path) -> None:

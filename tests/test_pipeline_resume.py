@@ -114,7 +114,7 @@ def test_resume_keeps_finished_units_and_still_publishes_the_whole_timeline(
     )
 
     assert _stamps(tiles_dir) == before, "resume rewrote archives it should have kept"
-    assert any("4 of 4 units already rendered" in line for line in lines)
+    assert any("5 of 5 units already rendered" in line for line in lines)
     manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
     assert [entry["id"] for entry in manifest["instants"]] == ["20260621T0900", "20260621T1300"]
 

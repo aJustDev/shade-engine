@@ -161,13 +161,16 @@ def estimate_sweep_worker_bytes(sectors: int, tile_size: int, pad_px: int) -> in
     return cubes + surfaces + working + in_flight
 
 
-TILES_BYTES_PER_PIXEL: Final = 26
-"""Peak bytes per raster pixel while one instant renders.
+TILES_BYTES_PER_PIXEL: Final = 34
+"""Peak bytes per raster pixel while one unit renders.
 
 Four float32 fields (the two horizon margins and the two signed distances)
-plus two uint8 labels is 18 bytes; the rest is the float64 that
-``distance_transform_edt`` insists on, held one at a time. Nothing here scales
-with zoom: the tile grid never exists as an array, only 256 px windows do.
+plus two uint8 labels is 18 bytes; then the float64 that
+``distance_transform_edt`` insists on, held one at a time. The last 8 belong to
+the relief unit, which is not an instant and holds a different pair: the DSM it
+reads and the illumination it computes from it, both float32 and both
+city-sized. Nothing here scales with zoom -- the tile grid never exists as an
+array, only 256 px windows do.
 """
 TILES_BASE_BYTES: Final = 360 * 1024 * 1024
 """What one render worker costs before any city-sized array exists.

@@ -62,7 +62,13 @@ from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window
 
-from shade_core.artifacts import CANOPY_FILENAME, LANDCOVER_FILENAME, load_coverage, load_metadata
+from shade_core.artifacts import (
+    CANOPY_FILENAME,
+    DSM_FILENAME,
+    LANDCOVER_FILENAME,
+    load_coverage,
+    load_metadata,
+)
 from shade_core.config import Bbox, CityConfig
 from shade_core.shade import OPAQUE_CANOPY_CAVEAT, Landcover
 from shade_core.solar import SunPosition, sun_position
@@ -76,6 +82,7 @@ from shade_pipeline.budget import (
 from shade_pipeline.events import EventSink, emit
 from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.progress import format_bytes, format_duration
+from shade_pipeline.relief import hillshade
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
     STATE_SHADE_BOTH,
@@ -168,6 +175,54 @@ BUILDINGS_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
     STATE_OUTSIDE: (0, 0, 0, 0),
 }
 BUILDINGS_TILES_FILENAME: Final = "buildings.pmtiles"
+
+RELIEF_NONE: Final = 0
+RELIEF_TONES: Final = (1, 2, 3, 4)
+RELIEF_STATES: Final = (RELIEF_NONE, *RELIEF_TONES)
+"""The relief's own palette vocabulary: nothing, then four tones dark to light.
+
+Plain slot numbers and not shade verdicts. They collide with ``STATE_SUN`` and
+friends by value and mean nothing of the sort -- which is exactly why the
+palette became a property of each output instead of a module constant.
+"""
+
+RELIEF_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
+    RELIEF_NONE: (0, 0, 0, 0),
+    1: (22, 24, 30, OVERLAY_ALPHA),
+    2: (39, 42, 51, OVERLAY_ALPHA),
+    3: (58, 63, 75, OVERLAY_ALPHA),
+    4: (90, 97, 116, OVERLAY_ALPHA),
+}
+"""Four steps below the slate grey of the flat footprint, shadow to highlight.
+
+Four and not a continuous ramp because the tiles are paletted PNGs and the
+whole recolouring machinery depends on that. Compared side by side against a
+continuous hillshade of Montalban the difference at map scale is small, and it
+falls on the right side: the quantized version is flatter, which is what a layer
+that sits *under* the shade overlay wants.
+
+And *below* it, deliberately. Rendered at the brightness of the flat footprint
+and composited under the winter shade of Montalban, the roofs won the picture:
+the eye went to the texture and the indigo in the streets became the quiet part,
+which is backwards for a map about shade. These are that first set at 75%, which
+keeps every party wall legible and gives the streets back.
+"""
+
+RELIEF_EDGES: Final = (0.45, 0.62, 0.78)
+"""Illumination cuts between the four tones, on the [0, 1] the hillshade gives.
+
+Not evenly spaced: flat roofs sit at ``sin(45 deg) = 0.707`` and would otherwise
+all land in one bucket, taking the roofscape with them.
+"""
+
+RELIEF_TILES_FILENAME: Final = "relief.pmtiles"
+STATIC_FILENAMES: Final = {
+    "canopy": CANOPY_TILES_FILENAME,
+    "buildings": BUILDINGS_TILES_FILENAME,
+    "relief": RELIEF_TILES_FILENAME,
+}
+"""The hour-independent sets, and the file each one writes."""
+
 CAST_KINDS: Final = ("building", "trees")
 """The two disjoint cast-shade sets every instant writes, in filename order."""
 
@@ -205,21 +260,56 @@ PALETTE_STATES: Final = (
 )
 
 
-def palette_bytes(colors: Mapping[int, tuple[int, int, int, int]]) -> tuple[bytes, bytes]:
-    """(RGB palette, per-index alpha) PNG chunks for a state->RGBA mapping."""
-    rgb = bytes(channel for state in PALETTE_STATES for channel in colors[state][:3])
-    trns = bytes(colors[state][3] for state in PALETTE_STATES)
+def palette_bytes(
+    colors: Mapping[int, tuple[int, int, int, int]],
+    states: Sequence[int] = PALETTE_STATES,
+) -> tuple[bytes, bytes]:
+    """(RGB palette, per-index alpha) PNG chunks for a state->RGBA mapping.
+
+    ``states`` fixes the order, because the order *is* the file format: the
+    index written into every pixel is a position in this tuple. A set with its
+    own vocabulary passes its own -- the relief has four tones and no verdict
+    -- and everything that reads those tiles back has to be told the same
+    tuple. Defaulted, so the three shade sets are unchanged byte for byte.
+    """
+    rgb = bytes(channel for state in states for channel in colors[state][:3])
+    trns = bytes(colors[state][3] for state in states)
     return rgb, trns
 
 
-def _palette_index() -> npt.NDArray[np.uint8]:
+def palette_index(states: Sequence[int] = PALETTE_STATES) -> npt.NDArray[np.uint8]:
+    """state code -> palette position, as a 256-entry lookup."""
     index = np.zeros(256, dtype=np.uint8)
-    for position, state in enumerate(PALETTE_STATES):
+    for position, state in enumerate(states):
         index[state] = position
     return index
 
 
-_INDEX_OF_STATE: Final = _palette_index()
+def transparent_states(
+    colors: Mapping[int, tuple[int, int, int, int]],
+    states: Sequence[int] = PALETTE_STATES,
+) -> npt.NDArray[np.bool_]:
+    """Which state codes paint nothing, as a 256-entry lookup.
+
+    Read from the palette rather than named: a tile is empty when everything in
+    it is invisible *in this file's colours*, which is not the same question as
+    "is it sunlit".
+
+    It changes nothing for the sets that existed before it -- verified on
+    Montalban, byte for byte -- and that is not luck: the canopy palette does
+    declare building shade transparent, but its composer never emits that state,
+    so the old test on ``STATE_SUN | STATE_OUTSIDE`` was exactly right for
+    everything then being written. What it buys is the relief, whose "nothing
+    here" is its own code and would otherwise have been skipped correctly only
+    by the coincidence of numbering it zero.
+    """
+    lookup = np.zeros(256, dtype=np.bool_)
+    for state in states:
+        lookup[state] = colors[state][3] == 0
+    return lookup
+
+
+_INDEX_OF_STATE: Final = palette_index()
 
 
 def season_preset_instants(tz: tzinfo) -> list[datetime]:
@@ -284,9 +374,13 @@ def bounds_wgs84(crs: str, bbox: Bbox) -> Bbox:
     return (min(lons), min(lats), max(lons), max(lats))
 
 
-def _encode_png(state_tile: npt.NDArray[np.uint8], palette: tuple[bytes, bytes]) -> bytes:
+def _encode_png(
+    state_tile: npt.NDArray[np.uint8],
+    palette: tuple[bytes, bytes],
+    index: npt.NDArray[np.uint8] = _INDEX_OF_STATE,
+) -> bytes:
     rgb, trns = palette
-    image = Image.fromarray(_INDEX_OF_STATE[state_tile], mode="P")
+    image = Image.fromarray(index[state_tile], mode="P")
     image.putpalette(rgb)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True, transparency=trns)
@@ -334,6 +428,8 @@ class PyramidOutput:
     compose: Callable[[npt.NDArray[np.float32] | None, npt.NDArray[np.uint8] | None], TileState]
     colors: Mapping[int, tuple[int, int, int, int]]
     metadata: dict[str, object] | None = None
+    states: tuple[int, ...] = PALETTE_STATES
+    """The palette's vocabulary and its order; see :func:`palette_bytes`."""
 
 
 def write_pyramids(
@@ -380,7 +476,9 @@ def write_pyramids(
     PNG only once.
     """
     west, south, east, north = bounds
-    palettes = [palette_bytes(output.colors) for output in outputs]
+    palettes = [palette_bytes(output.colors, output.states) for output in outputs]
+    indexes = [palette_index(output.states) for output in outputs]
+    invisible = [transparent_states(output.colors, output.states) for output in outputs]
     counts = [[0, 0] for _ in outputs]
     source_resolution = abs(transform.a)
     # GDAL's block cache defaults to 5% of physical RAM *per process*, which on
@@ -470,11 +568,13 @@ def write_pyramids(
                     tileid = int(zxy_to_tileid(tile.z, tile.x, tile.y))
                     for index, output in enumerate(outputs):
                         data = output.compose(read_fields, read_labels)
-                        blank = bool(np.all((data == STATE_SUN) | (data == STATE_OUTSIDE)))
+                        blank = bool(invisible[index][data].all())
                         if blank and zoom > min_zoom:
                             counts[index][1] += 1
                             continue
-                        writers[index].write_tile(tileid, _encode_png(data, palettes[index]))
+                        writers[index].write_tile(
+                            tileid, _encode_png(data, palettes[index], indexes[index])
+                        )
                         counts[index][0] += 1
         header = {
             "tile_type": TileType.PNG,
@@ -576,7 +676,7 @@ class RenderJob:
         outputs from here too.
         """
         if self.static is not None:
-            return (CANOPY_TILES_FILENAME if self.static == "canopy" else BUILDINGS_TILES_FILENAME,)
+            return (STATIC_FILENAMES[self.static],)
         return tuple(f"shade-{self.label}-{kind}.pmtiles" for kind in CAST_KINDS)
 
     def is_rendered(self) -> bool:
@@ -702,6 +802,7 @@ def _write(
     *,
     continuous: npt.NDArray[np.float32],
     categorical: npt.NDArray[np.uint8],
+    states: tuple[int, ...] = PALETTE_STATES,
 ) -> list[FileSummary]:
     """Write every plan (filename, compose, label, colors) in a single warp pass."""
     results = write_pyramids(
@@ -714,6 +815,7 @@ def _write(
                     "name": f"{job.city_name} {label}",
                     "attribution": " / ".join(job.attribution),
                 },
+                states=states,
             )
             for filename, compose, label, colors in plans
         ],
@@ -774,12 +876,14 @@ def _mask_compose(
 
 
 def _render_static(job: RenderJob) -> RenderResult:
-    """The two hour-independent sets: the crowns and the LiDAR footprint.
+    """The three hour-independent sets: crowns, LiDAR footprint and relief.
 
     No roof mask on the canopy: a crown overhanging a roof is still a tree.
     """
     start = time.monotonic()
     directory = Path(job.artifact_dir)
+    if job.static == "relief":
+        return _render_relief(job, directory, start)
     if job.static == "canopy":
         with rasterio.open(directory / CANOPY_FILENAME) as src:
             mask = src.read()[0] != 0
@@ -801,6 +905,66 @@ def _render_static(job: RenderJob) -> RenderResult:
         elapsed_s=time.monotonic() - start,
         state_s=0.0,
     )
+
+
+def _render_relief(job: RenderJob, directory: Path, start: float) -> RenderResult:
+    """The buildings again, shaded by their own height instead of filled flat.
+
+    The flat footprint answers "is this a building", and two neighbours sharing
+    a party wall are one blob in it because a mask has no interior. This one
+    answers "what shape", out of data the sweep already reads: the DSM.
+
+    The illumination is computed **here**, on the artifact's own grid in the
+    city's projected CRS, and travels as a continuous field for the warp to
+    resample -- exactly like the signed distance beside it. Computing it after
+    the reprojection would measure slopes against a Web Mercator metre, which
+    is not one. See :mod:`shade_pipeline.relief`.
+    """
+    (filename,) = job.filenames
+    with rasterio.open(directory / LANDCOVER_FILENAME) as src:
+        mask = src.read()[0] == Landcover.BUILDING
+    with rasterio.open(directory / DSM_FILENAME) as src:
+        surface = src.read()[0]
+        resolution_m = abs(src.transform.a)
+    fields = np.stack([hillshade(surface, resolution_m), signed_distance(mask)]).astype(np.float32)
+    del surface
+    (summary,) = _write(
+        job,
+        [(filename, _relief_compose(), "building relief", RELIEF_COLORS)],
+        continuous=fields,
+        categorical=_uncovered_band(directory, mask.shape)[np.newaxis, ...],
+        states=RELIEF_STATES,
+    )
+    return RenderResult(
+        label=summary.filename,
+        files=(summary,),
+        elapsed_s=time.monotonic() - start,
+        state_s=0.0,
+    )
+
+
+def _relief_compose() -> Callable[
+    [npt.NDArray[np.float32] | None, npt.NDArray[np.uint8] | None], TileState
+]:
+    """One tile of the relief: four tones inside the footprint, nothing outside.
+
+    The illumination is cut into tones *after* resampling, for the reason every
+    verdict here is composed per tile: thresholding first and resampling the
+    result would average tone numbers, and a tone halfway between two others
+    means nothing.
+    """
+
+    def compose(
+        fields: npt.NDArray[np.float32] | None, labels: npt.NDArray[np.uint8] | None
+    ) -> TileState:
+        assert fields is not None and labels is not None
+        illumination, distance = fields
+        tone = np.digitize(illumination, RELIEF_EDGES).astype(np.uint8) + np.uint8(1)
+        inside = (distance > 0.0) & np.isfinite(illumination) & (labels[0] == 0)
+        state: TileState = np.where(inside, tone, np.uint8(RELIEF_NONE)).astype(np.uint8)
+        return state
+
+    return compose
 
 
 def _cast_shade_compose(
@@ -947,7 +1111,8 @@ def build_tiles(
     long-lived immutable caching), bounds, colors, the declination
     ``ladder`` (any calendar date -> its rung) and attribution. It stays
     ``schema_version`` 2 with additive fields: ``urls.{building,trees}``,
-    ``canopy_url``, ``ladder`` and ``model_caveats`` are the current contract,
+    ``canopy_url``, ``relief_url``, ``ladder`` and ``model_caveats`` are the
+    current contract,
     while the
     legacy ``url``/``urls.building`` (cast building shade, same semantics
     as the original split) and ``urls.vegetation`` (pointing at the static
@@ -988,7 +1153,7 @@ def build_tiles(
 
     # Validate every instant in the parent, before a single worker exists: a
     # naive datetime or a night sun should cost nothing, not a phase.
-    jobs = [RenderJob(**common, static=name) for name in ("canopy", "buildings")]
+    jobs = [RenderJob(**common, static=name) for name in STATIC_FILENAMES]
     for when in ordered:
         if when.tzinfo is None:
             raise ValueError(f"naive instant {when.isoformat()}; attach the city timezone")
@@ -1103,6 +1268,7 @@ def build_tiles(
 
     canopy_url = f"{CANOPY_TILES_FILENAME}?v={version}"
     buildings_url = f"{BUILDINGS_TILES_FILENAME}?v={version}"
+    relief_url = f"{RELIEF_TILES_FILENAME}?v={version}"
 
     # Chronological, not order of arrival: workers finish out of order and the
     # client reads this list as a timeline.
@@ -1150,6 +1316,7 @@ def build_tiles(
             "shade": _hex(SHADE_COLOR),
             "canopy": _hex(CANOPY_COLOR),
             "buildings": _hex(BUILDINGS_COLOR),
+            "relief": _hex(RELIEF_COLORS[RELIEF_TONES[-1]]),
             # Legacy keys for schema-2 clients: building/other equal the
             # unified shade color; shade_vegetation is the color of the file
             # their vegetation toggle now points at (the static canopy).
@@ -1160,6 +1327,11 @@ def build_tiles(
         },
         "canopy_url": canopy_url,
         "buildings_url": buildings_url,
+        # Additive like the two above, and the reason the client can prefer the
+        # relief without asking anything: a city rendered before this existed
+        # simply does not offer the key, and the flat footprint stays the
+        # answer for it.
+        "relief_url": relief_url,
         # Additive, and absent for a city without an area. bounds_wgs84 is the
         # rectangle the rasters cover; this is the part of it that was actually
         # computed, which is what a client should veil.

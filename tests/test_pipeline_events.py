@@ -116,6 +116,6 @@ def test_the_tile_render_reports_its_units(built_city: Path, tmp_path: Path) -> 
     assert kinds[0] == "started"
     assert kinds[-1] == "finished"
     units = [event for event in seen if event.kind == "unit"]
-    assert len(units) == 3, "two static sets and one instant"
+    assert len(units) == 4, "three static sets and one instant"
     assert units[-1].payload["done"] == units[-1].payload["total"]
     assert all(event.step == "tiles" for event in seen)
