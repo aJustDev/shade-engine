@@ -368,7 +368,7 @@ def build_city(
             max_distance_m=params.max_distance_m,
             observer_height_m=params.observer_height_m,
             angle_max_deg=ANGLE_MAX_DEG,
-            step_mode=params.step_mode,
+            step_mode="exact",
             tile_size=params.tile_size,
             height_datum_m=height_datum_m,
         ),

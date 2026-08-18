@@ -1,5 +1,6 @@
 """The production horizon sweep against the brute-force oracle from core."""
 
+import math
 import os
 from pathlib import Path
 
@@ -451,30 +452,38 @@ def test_quantization_roundtrip() -> None:
     assert np.abs(dequantized - angles).max() <= 90.0 / 255.0 / 2.0 + 1e-4
 
 
-def test_geometric_mode_agrees_in_the_bulk_and_not_in_the_tail(
-    cube_grid: HorizonGrid,
-) -> None:
-    """What thinning the far field really costs, now that the oracle can see it.
+def test_a_shorter_radius_cannot_cost_more_than_the_geometry_allows() -> None:
+    """The bound behind [[ADR-028]], made executable.
 
-    This used to demand the 99.9th percentile stay under half a degree, and it
-    passed -- because the oracle sampled a rounded schedule too and shared part
-    of the blind spot. Since ADR-027 the oracle walks every cell the ray
-    crosses, so the cells ``geometric`` drops are visible for the first time,
-    and the honest shape of its error is: the bulk agrees exactly and the tail
-    is brutal, which is what skipping cells does. Measured here, 921,600 cells
-    of the cube fixture:
+    An obstacle of height h left outside radius R can raise the horizon by at
+    most ``atan(h / R)``, because that is the steepest line from an eye to
+    anything at least R away. So shortening the radius has an error ceiling that
+    can be written down before running anything, and it can only bite with the
+    sun below that angle.
 
-        p90 = 0.000 deg, p99 = 1.4, p99.9 = 16.0, 0.134% above 5 degrees
-
-    Pinned as-is rather than relaxed to a number that hides it: S4 decides
-    whether the mode survives, with its own measurement against the arbiter.
+    This is what makes the radius the safe speed lever and thinning the step an
+    unsafe one: a schedule that skips cells has no such ceiling, its error being
+    set by wherever the tall thin things happen to fall relative to it. Measured
+    on montilla-test, 500 -> 250 m: worst drop 6.353 deg against a bound of
+    20.139.
     """
     dsm, dtm = synthetic.cube_scene()
-    params = HorizonParams(max_distance_m=80.0, step_mode="geometric")
-    angles, _, _ = compute_horizon_block(
-        dsm, dtm, synthetic.cube_landcover(), 1.0, params, _full_window(dsm)
+    landcover = synthetic.cube_landcover()
+    window = _full_window(dsm)
+    short_radius = 30.0
+
+    far, _, _ = compute_horizon_block(
+        dsm, dtm, landcover, 1.0, HorizonParams(max_distance_m=80.0), window
     )
-    difference = np.abs(angles - cube_grid.angles_deg)
-    assert np.quantile(difference, 0.90) <= 0.01, "the bulk must still agree"
-    assert np.quantile(difference, 0.99) <= 3.0
-    assert float((difference > 5.0).mean()) <= 0.003, "the tail must not grow"
+    near, _, _ = compute_horizon_block(
+        dsm, dtm, landcover, 1.0, HorizonParams(max_distance_m=short_radius), window
+    )
+
+    # The tallest thing any observer here can see above its own eye.
+    tallest = float(dsm.max() - (dtm.min() + 1.6))
+    bound_deg = math.degrees(math.atan(tallest / short_radius))
+    lost = far - near
+
+    assert lost.min() >= -1e-4, "a shorter radius can only lower the horizon"
+    assert lost.max() <= bound_deg, f"lost {lost.max():.3f} deg, bound is {bound_deg:.3f}"
+    assert lost.max() > 0.0, "this fixture must lose something, or the test proves nothing"

@@ -54,6 +54,13 @@ class HorizonBuildParams(BaseModel):
     in float32. Nothing reads it at runtime -- the cubes are angles -- but
     without it a cube cannot be reproduced, so it travels with the artifact.
     Optional because artifacts built before the datum existed do not carry it.
+
+    ``step_mode`` now only ever says ``"exact"``: [[ADR-028]] withdrew the
+    ``geometric`` schedule from the engine. The field stays because metadata is
+    the record of what was done, not a mirror of what the current code can do --
+    the cities already on disk were built by a version where the mode was a
+    choice, and dropping the field would leave them unable to say how they were
+    made.
     """
 
     sectors: int

@@ -1,8 +1,8 @@
 """Production horizon sweep: tiled, vectorized, and true to the oracle.
 
 This reimplements ``shade_core.horizon.compute_horizon_reference`` for real
-city rasters. In ``exact`` step mode both walk the same cells the same way ---
-the ray traversal of :func:`shade_core.raycast.ray_cells`, which since
+city rasters. Both walk the same cells the same way --- the ray traversal of
+:func:`shade_core.raycast.ray_cells`, which since
 [[ADR-027]] is what "the sample is at distance d" means here: a DSM cell is a
 1x1 m column and it starts blocking at the distance the ray enters it. That
 convention took the engine's verdict from 2.263% wrong against exact traversal
@@ -45,10 +45,11 @@ The sweep also records *what* blocks each sector: whenever a sample raises a
 pixel's max angle, its landcover class is kept. Strict ``>`` with ascending
 distances means the nearest blocker wins ties, matching core's ray-march
 intuition -- except at an exact corner crossing, where the two cells genuinely
-share a distance and the tie goes to whichever :func:`~shade_core.raycast.ray_cells`
-emitted first, which is decided by an ulp of sin against cos (measured on
-montilla-test: 246 classes across the four diagonal sectors, and not one angle).
-Sectors whose final angle is 0 (open sky) get ``NO_BLOCKER``.
+share a distance and the tie goes to whichever
+:func:`~shade_core.raycast.ray_cells` emitted first, which is a fixed rule and
+not an accident of libm (measured on montilla-test: 246 classes across the four
+diagonal sectors, and not one angle). Sectors whose final angle is 0 (open sky)
+get ``NO_BLOCKER``.
 
 A single class per sector cannot answer "would this pixel be shaded anyway
 without the trees": the class only names whichever obstacle won the argmax,
@@ -59,14 +60,13 @@ cube costs +9% of sweep time because it accumulates the tangent; a second
 ``arctan2`` per sample would have been +109%. That measurement is what
 eventually sent the first cube down the same road.
 
-``geometric`` step mode thins that traversal in the far field, keeping one cell
-per multiplicatively growing window (154 per sector against 636 at 500 m). It
-is the same cells and the same distances, minus the ones it drops --- and
-dropping cells is exactly the coverage hole ADR-027 closes, reopened on purpose
-where a thin obstacle rarely wins. Measured cost, now that the oracle can see
-what it skips: the bulk agrees exactly (p90 = 0) and the tail does not
-(p99.9 = 16 deg on the cube fixture). Whether that trade is worth taking is
-S4's call, with its own measurement against ``shade_pipeline.arbiter``.
+The one knob for how much a sweep costs is ``max_distance_m``, and it is a knob
+with a proof attached: an obstacle of height h left outside radius R can raise
+the horizon by at most ``atan(h / R)``, so shortening the radius can only ever
+matter with the sun below that angle. A ``geometric`` step mode used to offer
+the same speed by thinning the far field instead, and it was withdrawn in
+[[ADR-028]] -- it bounded its error by where the tall thin things happened to
+fall relative to its schedule, which is not a bound at all.
 
 Because tiles are independent by construction, the sweep parallelizes by tile
 (``workers``). Two properties keep the output bit-identical to a serial run:
@@ -76,7 +76,6 @@ memmaps exactly as the serial loop does, leaving the hardened
 scratch -> flush -> COG -> verify path untouched.
 """
 
-import math
 import multiprocessing
 import time
 from collections.abc import Callable, Generator, Iterator
@@ -85,7 +84,7 @@ from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 
 import numpy as np
 import numpy.typing as npt
@@ -139,8 +138,6 @@ class HorizonParams:
     max_distance_m: float = 500.0
     observer_height_m: float = 1.6
     tile_size: int = 512
-    step_mode: Literal["exact", "geometric"] = "exact"
-    geometric_growth: float = 1.02
     workers: int = 1
 
 
@@ -196,47 +193,25 @@ def sector_offsets(
 ) -> list[tuple[int, int, float]]:
     """(d_row, d_col, distance) samples for one sector, ascending distance.
 
-    In ``exact`` mode these are the cells the ray really crosses, each at the
-    distance it is entered (:func:`shade_core.raycast.ray_cells`), which is the
-    convention of [[ADR-027]]: a DSM cell is a 1x1 m column and it starts
-    blocking at its nearest face. Same convention in the oracle and in the
-    API's ray-march, or none of them can check the others.
+    These are the cells the ray really crosses, each at the distance it is
+    entered (:func:`shade_core.raycast.ray_cells`), which is the convention of
+    [[ADR-027]]: a DSM cell is a 1x1 m column and it starts blocking at its
+    nearest face. Same convention in the oracle and in the API's ray-march, or
+    none of them can check the others.
 
-    ``geometric`` walks the same cells and keeps the same distances, and then
-    **drops** the ones that fall inside a multiplicatively growing window:
-    dense near the observer, sparse far away. It had to move with ``exact``,
-    because a mode that rounded its own schedule would no longer be measurable
-    against the oracle at all -- and that is not the same as deciding whether
-    it is worth using, which is S4's job with its own numbers. What it does
-    remains what it always did: skip distant cells on purpose, which is exactly
-    the coverage hole ADR-027 closes, reopened in the far field where a thin
-    obstacle rarely wins the argmax. Its published figures were measured
-    against the old ``exact`` and have to be taken again.
+    There is no thinning mode any more. A ``geometric`` schedule used to drop
+    the cells that fell inside a multiplicatively growing window -- dense near,
+    sparse far -- on the premise that what matters is *relative* distance error.
+    That premise is about resolution along a ray and it is sound on an axis; off
+    an axis the dropped cells are not finer samples of the same line, they are
+    different cells of the plane, and dropping them is the coverage hole
+    ADR-027 closed, reopened on purpose. Measured, it cost 0.485 points of
+    verdict for 3.1x, and cutting ``max_distance_m`` buys speed more cheaply and
+    with an error bounded by geometry rather than by the data ([[ADR-028]]).
     """
     azimuth_deg = sector * 360.0 / params.sectors
     cells = ray_cells(azimuth_deg, params.max_distance_m, resolution_m)
-    if params.step_mode == "exact":
-        return [(d_row, d_col, entry) for d_row, d_col, entry, _ in cells]
-
-    kept: list[tuple[int, int, float]] = []
-    threshold = 0.0
-    last_entry = math.nan
-    for d_row, d_col, entry, _ in cells:
-        # Cells sharing an entry distance are one stop of the ray, not two: on
-        # a diagonal every step clips a corner and produces a pair. Thinning
-        # them apart would drop one of the two cells that share the corner --
-        # sometimes the one holding the wall (measured on the cube fixture: a
-        # pixel went from 87.8 degrees of horizon to 0). Compared with a
-        # tolerance because the pair's two distances are computed from sin and
-        # cos, which differ by an ulp at 45 degrees.
-        same_stop = math.isclose(entry, last_entry, rel_tol=1e-9)
-        if entry < threshold and not same_stop:
-            continue
-        kept.append((d_row, d_col, entry))
-        if not same_stop:
-            threshold = max(entry + resolution_m / 2.0, entry * params.geometric_growth)
-            last_entry = entry
-    return kept
+    return [(d_row, d_col, entry) for d_row, d_col, entry, _ in cells]
 
 
 def iter_horizon_sectors(

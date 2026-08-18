@@ -11,7 +11,6 @@ import sys
 import time
 from collections.abc import Callable
 from datetime import date, datetime
-from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
@@ -123,13 +122,6 @@ def _make_source(
         )
     typer.echo("error: no lidar driver configured for this city; pass --lidar-dir", err=True)
     raise typer.Exit(1)
-
-
-class StepMode(StrEnum):
-    """CLI mirror of ``HorizonParams.step_mode`` (typer needs an Enum, not a Literal)."""
-
-    exact = "exact"
-    geometric = "geometric"
 
 
 @app.callback()
@@ -758,10 +750,6 @@ def build(
             "output is identical whatever the count",
         ),
     ] = 1,
-    step_mode: Annotated[
-        StepMode,
-        typer.Option(help="Horizon distance schedule: exact (half-pixel) or geometric (growing)"),
-    ] = StepMode.exact,
     footprints: Annotated[
         bool,
         typer.Option(
@@ -797,7 +785,6 @@ def build(
         max_distance_m=config.horizon_max_distance_m,
         observer_height_m=config.observer_height_m,
         tile_size=tile_size,
-        step_mode="exact" if step_mode is StepMode.exact else "geometric",
         workers=workers,
     )
     try:
