@@ -26,6 +26,29 @@ Conventions under test, all from [[ADR-027]]:
 - the ray is **traversed**, so a cell a rounded half-pixel schedule used to skip
   is seen;
 - the observer's eye is at DTM + 1.6 m, the obstacle's top is its DSM value.
+
+**Which of these go red, and which cannot.** Injecting the two conventions this
+file exists to catch turns 6 of the 10 red for cell-centre distances and 5 for
+the old rounded schedule. The rest are insensitive by construction, and that is
+worth writing down before someone reads it as a gap:
+
+- ``test_the_hand_arithmetic_matches_its_own_literals`` and
+  ``test_the_quantum_is_what_the_docstrings_claim`` never touch the engine --
+  they check that the literals below really are ``atan(dz / d)``, which is what
+  makes the rest of the file evidence rather than a recording;
+- ``test_sectors_with_nothing_in_them_are_open_sky`` asks whether an empty
+  sector stays empty, which no distance convention changes;
+- ``test_blocker_classes_are_pinned`` survives the centre convention because the
+  same obstacle still wins the same sector -- only its angle moves;
+- ``test_the_same_scene_at_sea_level_gives_the_same_integers`` compares two runs
+  of *the same* convention, so it is invariant to which one is in force.
+
+And one that looks like a hole and is a finding: with the old rounded schedule
+``test_south_tower_blocks_from_its_near_face`` passes, because the south tower
+sits at an **even** cell and ``round()`` is half-to-even -- exactly the
+alternating bias ADR-027 removed, which was right on the even cells and half a
+pixel long on the odd ones. The east tower is at an odd cell and does go red,
+which is why both are here.
 """
 
 import math
