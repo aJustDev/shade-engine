@@ -82,7 +82,7 @@ from shade_pipeline.budget import (
 from shade_pipeline.events import EventSink, emit
 from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.progress import format_bytes, format_duration
-from shade_pipeline.relief import DEFAULT_SMOOTH_SIGMA_PX, hillshade
+from shade_pipeline.relief import hillshade
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
     STATE_SHADE_BOTH,
@@ -177,7 +177,7 @@ BUILDINGS_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
 BUILDINGS_TILES_FILENAME: Final = "buildings.pmtiles"
 
 RELIEF_NONE: Final = 0
-RELIEF_TONES: Final = (1, 2, 3, 4, 5, 6)
+RELIEF_TONES: Final = (1, 2, 3, 4)
 RELIEF_STATES: Final = (RELIEF_NONE, *RELIEF_TONES)
 """The relief's own palette vocabulary: nothing, then four tones dark to light.
 
@@ -189,37 +189,31 @@ palette became a property of each output instead of a module constant.
 RELIEF_COLORS: Final[dict[int, tuple[int, int, int, int]]] = {
     RELIEF_NONE: (0, 0, 0, 0),
     1: (22, 24, 30, OVERLAY_ALPHA),
-    2: (35, 38, 47, OVERLAY_ALPHA),
-    3: (48, 52, 64, OVERLAY_ALPHA),
-    4: (61, 66, 81, OVERLAY_ALPHA),
-    5: (75, 81, 98, OVERLAY_ALPHA),
-    6: (90, 97, 116, OVERLAY_ALPHA),
+    2: (39, 42, 51, OVERLAY_ALPHA),
+    3: (58, 63, 75, OVERLAY_ALPHA),
+    4: (90, 97, 116, OVERLAY_ALPHA),
 }
-"""Six steps below the slate grey of the flat footprint, shadow to highlight.
+"""Four steps below the slate grey of the flat footprint, shadow to highlight.
 
-Steps and not a continuous ramp because the tiles are paletted PNGs and the
-whole recolouring machinery depends on that. It started at four, which read fine
-at the zoom the data actually has (z17 is 0.95 m/px, and the rasters are 1 m);
-past that the client upsamples, and four tones over an upsampled surface draw
-visible contour bands. Six is what the palette costs nothing to carry.
+Four and not a continuous ramp because the tiles are paletted PNGs and the
+whole recolouring machinery depends on that. Compared side by side against a
+continuous hillshade of Montalban the difference at map scale is small, and it
+falls on the right side: the quantized version is flatter, which is what a layer
+that sits *under* the shade overlay wants.
 
-The range is deliberately *below* the flat footprint's brightness. Rendered at
-its own level and composited under the winter shade of Montalban, the roofs won
-the picture: the eye went to the texture and the indigo in the streets became
-the quiet part, which is backwards for a map about shade.
+And *below* it, deliberately. Rendered at the brightness of the flat footprint
+and composited under the winter shade of Montalban, the roofs won the picture:
+the eye went to the texture and the indigo in the streets became the quiet part,
+which is backwards for a map about shade. These are that first set at 75%, which
+keeps every party wall legible and gives the streets back.
 """
 
-RELIEF_EDGES: Final = (0.30, 0.50, 0.66, 0.76, 0.86)
-"""Illumination cuts between the six tones, on the [0, 1] the hillshade gives.
+RELIEF_EDGES: Final = (0.45, 0.62, 0.78)
+"""Illumination cuts between the four tones, on the [0, 1] the hillshade gives.
 
-Not evenly spaced, and not guessed: they are roughly the sixths of the
-distribution the smoothed hillshade actually has over Montalban's building
-pixels. Flat roofs sit at ``sin(45 deg) = 0.707``, so the cuts crowd around
-there -- spaced evenly, half the roofscape would land in one bucket.
+Not evenly spaced: flat roofs sit at ``sin(45 deg) = 0.707`` and would otherwise
+all land in one bucket, taking the roofscape with them.
 """
-
-RELIEF_SMOOTH_SIGMA_PX: Final = DEFAULT_SMOOTH_SIGMA_PX
-"""Re-exported so the render's own knobs read together; see the constant."""
 
 RELIEF_TILES_FILENAME: Final = "relief.pmtiles"
 STATIC_FILENAMES: Final = {
@@ -932,12 +926,7 @@ def _render_relief(job: RenderJob, directory: Path, start: float) -> RenderResul
     with rasterio.open(directory / DSM_FILENAME) as src:
         surface = src.read()[0]
         resolution_m = abs(src.transform.a)
-    fields = np.stack(
-        [
-            hillshade(surface, resolution_m, smooth_sigma_px=RELIEF_SMOOTH_SIGMA_PX),
-            signed_distance(mask),
-        ]
-    ).astype(np.float32)
+    fields = np.stack([hillshade(surface, resolution_m), signed_distance(mask)]).astype(np.float32)
     del surface
     (summary,) = _write(
         job,

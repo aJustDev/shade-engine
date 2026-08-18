@@ -92,11 +92,9 @@ The relief is not competing with the shade for the same question; it is drawn
 LIGHT_RELIEF_COLORS: Final[dict[int, RGBA]] = {
     RELIEF_NONE: (0, 0, 0, 0),
     1: (86, 92, 104, LIGHT_RELIEF_ALPHA),
-    2: (106, 112, 123, LIGHT_RELIEF_ALPHA),
-    3: (127, 132, 142, LIGHT_RELIEF_ALPHA),
-    4: (147, 152, 161, LIGHT_RELIEF_ALPHA),
-    5: (168, 173, 180, LIGHT_RELIEF_ALPHA),
-    6: (188, 193, 200, LIGHT_RELIEF_ALPHA),
+    2: (118, 124, 136, LIGHT_RELIEF_ALPHA),
+    3: (150, 156, 166, LIGHT_RELIEF_ALPHA),
+    4: (188, 193, 200, LIGHT_RELIEF_ALPHA),
 }
 """The relief's four tones over a pale basemap: a darkening, like the shade.
 
@@ -152,7 +150,7 @@ LIGHT: Final = Palette(
         "shade": _hex(LIGHT_SHADE_COLOR),
         "canopy": _hex(LIGHT_CANOPY_COLOR),
         "buildings": _hex(LIGHT_BUILDINGS_COLOR),
-        "relief": _hex(LIGHT_RELIEF_COLORS[6]),
+        "relief": _hex(LIGHT_RELIEF_COLORS[4]),
         # El alfa TAMBIEN cambia con la paleta, y olvidarlo dejaba el manifiesto
         # claro anunciando el 0.78 del tema oscuro. Hoy no lo lee nadie en el
         # cliente, pero un manifiesto que miente sobre sus propios tiles es

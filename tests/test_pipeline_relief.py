@@ -103,33 +103,6 @@ def test_missing_elevation_stays_missing() -> None:
     assert not np.isnan(shaded[0, 0])
 
 
-def test_smoothing_takes_the_speckle_and_keeps_the_step() -> None:
-    """Why the drawing blurs a surface the sweep reads raw.
-
-    A LiDAR roof is rough at the scale of its own cell -- 0.61 m of local
-    standard deviation on Montalban's buildings, 2.48 at p90 -- and a gradient
-    turns that into noise. A party wall is metres of step and survives.
-    """
-    rng = np.random.default_rng(0)
-    surface = np.zeros((40, 40))
-    surface[:, 20:] = 6.0  # la medianera
-    noisy = surface + rng.normal(0.0, 0.6, surface.shape)
-    flat = (slice(5, 15), slice(5, 15))
-
-    def contrast(image: np.ndarray) -> float:
-        """Cuanto destaca la pared sobre el ruido que le queda al tejado."""
-        return float((image[:, 18:22].mean(axis=0).max() - image[flat].mean()) / image[flat].std())
-
-    crudo = hillshade(noisy, 1.0)
-    suave = hillshade(noisy, 1.0, smooth_sigma_px=1.2)
-
-    # Sin suavizar, el escalon esta ENTERRADO en el ruido del propio tejado.
-    assert contrast(crudo) < 1.0
-    # Suavizado, el tejado se aplana (sd 0,227 -> 0,036) y la pared emerge.
-    assert contrast(suave) > 4.0
-    assert suave[flat].std() < crudo[flat].std() / 5
-
-
 def test_the_output_is_float32() -> None:
     """It becomes a whole-city array in a render worker; float64 would double it."""
     assert hillshade(np.zeros((4, 4)), 1.0).dtype == np.float32

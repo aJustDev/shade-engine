@@ -45,29 +45,12 @@ from typing import Final
 
 import numpy as np
 import numpy.typing as npt
-from scipy import ndimage
 
 DEFAULT_AZIMUTH_DEG: Final = 315.0
 """Light from the north-west: the cartographic convention, not the real sun."""
 
 DEFAULT_ALTITUDE_DEG: Final = 45.0
 """Light 45 degrees over the horizon. Lower digs the contrast, higher flattens."""
-
-DEFAULT_SMOOTH_SIGMA_PX: Final = 1.2
-"""Gaussian blur applied to the surface before the gradient, in pixels.
-
-A LiDAR DSM is rough at the scale of its own cell, and a gradient is exactly the
-operator that turns roughness into noise. Measured on Montalban's building
-pixels: the local standard deviation over a 3x3 window is **0.61 m median and
-2.48 m at p90**, which over 1 m cells is tens of degrees of slope out of tiles,
-chimneys, antennas and the sensor itself. Shading that raw gives salt and
-pepper, not roofs.
-
-Blurring the surface is standard practice for hillshading LiDAR and costs
-nothing here, because this raster is **a drawing**: the sweep reads the DSM
-itself and never sees this. Sigma 1.2 px removes the speckle and keeps the party
-walls, which are metres of step and survive any blur this small.
-"""
 
 
 def hillshade(
@@ -77,7 +60,6 @@ def hillshade(
     azimuth_deg: float = DEFAULT_AZIMUTH_DEG,
     altitude_deg: float = DEFAULT_ALTITUDE_DEG,
     vertical_exaggeration: float = 1.0,
-    smooth_sigma_px: float = 0.0,
 ) -> npt.NDArray[np.float32]:
     """Illumination of ``elevation`` in [0, 1]; 0 is fully turned away.
 
@@ -90,20 +72,13 @@ def hillshade(
     1.0 a 1 m step over a 1 m cell is 45 degrees, which is already plenty for
     a town; it exists because a *terrain* relief usually needs more.
 
-    ``smooth_sigma_px`` blurs the surface before the gradient; zero here and
-    :data:`DEFAULT_SMOOTH_SIGMA_PX` at the call site that draws a city, for the
-    reason that constant explains.
-
     A cell with no elevation gets no illumination, explicitly: a central
     difference at that cell does not read the cell itself, so without the last
     line a hole would come out perfectly lit while its neighbours went NaN.
     Filling it with zero instead would draw flat ground where there is no data.
     """
     height = np.asarray(elevation, dtype=np.float32) * np.float32(vertical_exaggeration)
-    surface = height
-    if smooth_sigma_px > 0.0:
-        surface = ndimage.gaussian_filter(height, sigma=smooth_sigma_px)
-    dz_drow, dz_dcol = np.gradient(surface, np.float32(resolution_m))
+    dz_drow, dz_dcol = np.gradient(height, np.float32(resolution_m))
     dz_dx = dz_dcol
     dz_dy = -dz_drow
 
