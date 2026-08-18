@@ -80,6 +80,20 @@ publish that had in fact worked. Thirty seconds of patience, the same budget
 ``deploy/deploy.sh`` gives itself.
 """
 
+KEEP_ROLLBACKS = 2
+"""How many previous versions to leave on the server before pruning.
+
+A rollback is a ``cp -al`` hardlink copy, so on the day it is taken it costs
+nothing: measured on 2026-08-18, ``montalban/v1.rollback.1786972411`` held
+634 MB of which **zero** was unshared. That lasts exactly until a publish
+replaces the files -- rsync writes by rename, so the rollback keeps the old
+inodes and from then on holds a full copy of the previous build. Cordoba's live
+version is 13 GB, and the next rebuild is going to publish two cities.
+
+Two, and not one: the rollback that matters is the version before the one you
+just broke, and having the one before that has cost nothing so far.
+"""
+
 RSYNC_REPORTING = ("-v", "--info=stats1")
 """How rsync reports into a log file.
 
@@ -266,6 +280,14 @@ def plan_publish(
 ) -> PublishPlan:
     """The ordered commands that put ``config``'s artifacts into production."""
     city = config.id
+    if not SAFE_CITY_ID.fullmatch(city):
+        # Same guard as `plan_unpublish`, and now for the same reason: pruning
+        # the rollbacks is an `rm -rf` with the id in the path.
+        raise PublishError(
+            f"refusing to build remote commands for city id {city!r}: "
+            f"an id goes straight into `rm -rf` on the server and must match "
+            f"{SAFE_CITY_ID.pattern}"
+        )
     remote_city = f"{remote_root}/data/cities/{city}"
     remote_version = f"{remote_city}/v1"
     local = f"{artifact_dir}/"
@@ -283,6 +305,17 @@ def plan_publish(
         host,
         f"test -d {remote_version} && "
         f"cp -al {remote_version} {remote_version}.rollback.$(date +%s) || true",
+        allow_failure=True,
+    )
+    # Newest first, skip the ones being kept, delete the rest. Beside the line
+    # that makes them on purpose: nothing else on the server ever looks at these
+    # again, so without this they accumulate one per publish for ever.
+    add(
+        f"prune all but the newest {KEEP_ROLLBACKS} rollbacks",
+        "ssh",
+        host,
+        f"ls -1dt {remote_city}/v1.rollback.* 2>/dev/null | "
+        f"tail -n +{KEEP_ROLLBACKS + 1} | xargs -r rm -rf",
         allow_failure=True,
     )
     # --mkpath because rsync creates only the last component of a destination:

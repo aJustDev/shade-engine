@@ -23,6 +23,7 @@ from conftest import CUBE_CITY
 from shade_core.artifacts import COVERAGE_FILENAME, METADATA_FILENAME
 from shade_pipeline.basemap import declare_in_manifest
 from shade_pipeline.publish import (
+    KEEP_ROLLBACKS,
     Command,
     PublishError,
     PublishPlan,
@@ -201,14 +202,39 @@ def test_the_checks_come_last(publishable: Path) -> None:
     assert run.index_of("healthz") > run.index_of("restart api")
 
 
+def test_the_rollbacks_are_pruned_where_they_are_made(publishable: Path) -> None:
+    """One per publish, and nothing else on the server ever looks at them again.
+
+    Free the day they are taken -- `cp -al` shares inodes -- and a full copy of
+    the previous build from the first publish that replaces the rasters.
+    """
+    plan = _plan(publishable)
+
+    shells = [command.shell() for command in plan.commands]
+
+    assert "cp -al" in shells[0]
+    assert f"tail -n +{KEEP_ROLLBACKS + 1}" in shells[1]
+    assert "xargs -r rm -rf" in shells[1]
+    assert plan.commands[1].allow_failure, "a server with no rollbacks has nothing to prune"
+
+
+def test_publishing_refuses_an_id_that_would_reach_out_of_its_directory() -> None:
+    """The prune is an `rm -rf` with the id in the path, like unpublish's."""
+    with pytest.raises(PublishError, match="rm -rf"):
+        plan_publish(CUBE_CITY.model_copy(update={"id": "../etc"}), Path("nowhere"))
+
+
 def test_a_failure_stops_everything_after_it(publishable: Path) -> None:
     plan = _plan(publishable)
-    run = Recorder(fail_at=2)
+    # The third command, because the first two are the rollback and its pruning
+    # and both are allowed to fail: a first deployment has nothing to link
+    # aside, and a server with no rollbacks has nothing to prune.
+    run = Recorder(fail_at=3)
 
     with pytest.raises(PublishError, match="nothing after it ran"):
         execute(plan, run=run)
 
-    assert len(run.seen) == 2
+    assert len(run.seen) == 3
 
 
 def test_the_rollback_may_fail_without_stopping_the_publish(publishable: Path) -> None:
