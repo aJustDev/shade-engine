@@ -13,11 +13,14 @@ a console can *show* the state without owning the processes that produce it --
 which is what lets a six-hour render outlive the window it was launched from.
 
 Staleness is derived, never stored. A step is stale when the city's
-configuration has changed since it ran, or when an earlier step in the chain has
-finished more recently than it did: both mean "this was computed from something
-that has since moved". That converts a warning which today is only prose in
+configuration has changed since it ran, when an earlier step in the chain has
+finished more recently than it did, or when the engine that would run it now is
+not the one that ran it then: all three mean "this was computed from something
+that has since moved". The first converts a warning which today is only prose in
 ``shade-docs: ops/anadir-ciudad.md`` ("changing the bbox or the area invalidates
-the artifacts") into something the tooling can act on.
+the artifacts") into something the tooling can act on. The third exists because
+phase 13 moved the values in the cubes four times in two days and every city
+went on reporting itself done: see :data:`shade_core.engine.ARTIFACT_ENGINE_VERSION`.
 """
 
 import hashlib
@@ -30,6 +33,7 @@ from typing import Any, Self
 from pydantic import BaseModel, Field
 
 from shade_core.config import load_city
+from shade_core.engine import ARTIFACT_ENGINE_VERSION
 
 RUNS_DIRNAME = "runs"
 STATE_FILENAME = "state.json"
@@ -95,6 +99,18 @@ LOG_STEPS: tuple[str, ...] = (*DEPENDS_ON, "preview")
 it. It still has plenty to say while it runs, and that has to be findable.
 """
 
+ENGINE_STEPS: tuple[str, ...] = ("build",)
+"""Steps whose result is only as good as the engine that produced it.
+
+Just ``build``, and the reasoning is :data:`DEPENDS_ON`'s. ``area`` prices the
+city and ``basemap`` cuts a bbox out of a planet extract: neither has ever seen
+the sweep, so a new traversal rule says nothing about them. ``graph`` and
+``tiles`` do read the rasters, but they are consistent with the rasters *on
+disk* -- they only become wrong once those are replaced, and that is exactly
+what ``DEPENDS_ON`` already catches when ``build`` runs again. Adding them here
+would report four stale steps where there is one thing to redo.
+"""
+
 CHAIN: tuple[str, ...] = ("area", "basemap", "build", "graph", "tiles", "publish")
 """The order steps run in. ``publish`` is in the chain but gated.
 
@@ -154,6 +170,18 @@ class StepRecord(BaseModel):
 
     Absent in state files written before this existed, and on any system
     without procfs; both fall back to asking about the pid alone.
+    """
+    engine_version: int | None = None
+    """Which engine this run would have produced its artifacts with.
+
+    Recorded here rather than read back from ``metadata.json``, so staleness
+    stays what it has always been: what the step wrote down against what is true
+    now, with no raster opened and no artifact path to know about. Absent in
+    state files written before this existed, which is the honest answer for a
+    build nobody can date -- and which makes it stale, unlike a missing
+    ``config_digest``. The asymmetry is deliberate: a digest nobody recorded
+    proves nothing, while an engine nobody named is by construction not this
+    one.
     """
     params: dict[str, Any] = Field(default_factory=dict)
     log: str | None = None
@@ -248,6 +276,8 @@ class CityState(BaseModel):
             return entry.status
         if entry.config_digest is not None and entry.config_digest != self.config_digest:
             return StepStatus.STALE
+        if step in ENGINE_STEPS and entry.engine_version != ARTIFACT_ENGINE_VERSION:
+            return StepStatus.STALE
         if entry.finished_at is not None and self._outdated_by(step, entry.finished_at):
             return StepStatus.STALE
         return entry.status
@@ -271,6 +301,13 @@ class CityState(BaseModel):
             return None
         if entry.config_digest != self.config_digest:
             return "the city configuration changed since it ran"
+        if step in ENGINE_STEPS and entry.engine_version != ARTIFACT_ENGINE_VERSION:
+            built_by = (
+                "an engine that did not say which"
+                if entry.engine_version is None
+                else f"engine v{entry.engine_version}"
+            )
+            return f"it was built by {built_by}; this one writes v{ARTIFACT_ENGINE_VERSION}"
         if entry.finished_at is not None:
             source = self._outdated_by(step, entry.finished_at)
             if source is not None:
@@ -496,6 +533,7 @@ class RunState:
             # Read from /proc/self while this process is the one asking, which
             # is the only moment the answer is free of doubt.
             pid_started_at=process_started_at(),
+            engine_version=ARTIFACT_ENGINE_VERSION,
             params=params or {},
             log=str(log),
             events=str(events),

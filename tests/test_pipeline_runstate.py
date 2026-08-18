@@ -13,8 +13,10 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from shade_core.engine import ARTIFACT_ENGINE_VERSION
 from shade_pipeline.cli import app
 from shade_pipeline.runstate import (
+    ENGINE_STEPS,
     KEEP_RUNS,
     LATEST_DIRNAME,
     STATE_FILENAME,
@@ -125,6 +127,64 @@ def test_area_is_not_stale_for_having_rewritten_its_own_config(
 
     assert state.status("area") is StepStatus.DONE
     assert _state(cities_dir, tmp_path).status("area") is StepStatus.DONE
+
+
+def _finished(step: str, digest: str, **overrides: object) -> CityState:
+    """One city, one finished step, with everything the current rules want."""
+    record = StepRecord(
+        status=StepStatus.DONE,
+        finished_at=datetime.now(UTC),
+        config_digest=digest,
+        engine_version=ARTIFACT_ENGINE_VERSION,
+    )
+    return CityState(
+        city="cube", config_digest=digest, steps={step: record.model_copy(update=overrides)}
+    )
+
+
+def test_a_build_from_an_older_engine_is_stale(cities_dir: Path) -> None:
+    """The gap this closes: S3 moved 63,5% of the cube and every city stayed green."""
+    digest = config_digest(cities_dir, "cube")
+
+    state = _finished("build", digest, engine_version=ARTIFACT_ENGINE_VERSION - 1)
+
+    assert state.status("build") is StepStatus.STALE
+    assert state.stale_reason("build") == (
+        f"it was built by engine v{ARTIFACT_ENGINE_VERSION - 1}; "
+        f"this one writes v{ARTIFACT_ENGINE_VERSION}"
+    )
+
+
+def test_a_build_recorded_before_the_engine_was_versioned_is_stale(cities_dir: Path) -> None:
+    """Absence is not "no opinion" here, unlike a missing digest: it means old."""
+    digest = config_digest(cities_dir, "cube")
+
+    state = _finished("build", digest, engine_version=None)
+
+    assert state.status("build") is StepStatus.STALE
+    assert state.stale_reason("build") == (
+        f"it was built by an engine that did not say which; "
+        f"this one writes v{ARTIFACT_ENGINE_VERSION}"
+    )
+
+
+def test_the_engine_only_makes_the_build_stale(cities_dir: Path) -> None:
+    """basemap cuts a bbox and area prices the city: neither has seen the sweep."""
+    digest = config_digest(cities_dir, "cube")
+
+    for step in ("area", "basemap", "graph", "tiles"):
+        state = _finished(step, digest, engine_version=None)
+        assert state.status(step) is StepStatus.DONE, step
+    assert ENGINE_STEPS == ("build",)
+
+
+def test_a_run_records_the_engine_it_ran_with(cities_dir: Path, tmp_path: Path) -> None:
+    state = _state(cities_dir, tmp_path)
+
+    _run(state, "build")
+
+    assert state.record("build").engine_version == ARTIFACT_ENGINE_VERSION
+    assert state.status("build") is StepStatus.DONE
 
 
 def test_a_step_whose_process_is_gone_reads_as_failed_not_running() -> None:

@@ -40,6 +40,7 @@ from pathlib import Path
 
 from shade_core.artifacts import COVERAGE_FILENAME, METADATA_FILENAME, load_metadata
 from shade_core.config import CityConfig
+from shade_core.engine import ARTIFACT_ENGINE_VERSION
 from shade_pipeline.tiles import (
     BASEMAP_FILENAME,
     MANIFEST_FILENAME,
@@ -224,6 +225,22 @@ def check_ready(
     notes.append(
         f"{len(manifest['instants'])} instants, z{manifest['min_zoom']}-{manifest['max_zoom']}"
     )
+
+    # Also a note. A city built by an older engine serves perfectly well -- it
+    # just answers with the geometry of the day it was built -- and refusing
+    # would leave every city already in production unable to be republished
+    # until it is rebuilt, which is a lot of price for a signal a line of text
+    # gives just as well.
+    if metadata.engine_version != ARTIFACT_ENGINE_VERSION:
+        built_by = (
+            "an engine that did not say which"
+            if metadata.engine_version is None
+            else f"engine v{metadata.engine_version}"
+        )
+        notes.append(
+            f"built by {built_by}; this build writes v{ARTIFACT_ENGINE_VERSION}, "
+            f"so what goes up is not what this working copy would compute"
+        )
 
     # A note, never a refusal. Publishing sends the YAML to the server itself,
     # so the city works either way; what it cannot do is put it in git, and a

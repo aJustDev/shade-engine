@@ -38,6 +38,7 @@ from shade_core.artifacts import (
     TreeInventoryBuildParams,
 )
 from shade_core.config import CityConfig
+from shade_core.engine import ARTIFACT_ENGINE_VERSION
 from shade_core.shade import NO_BLOCKER, Landcover
 from shade_pipeline.area import coverage_mask, read_area
 from shade_pipeline.canopy import CANOPY_TAGS, canopy_mask
@@ -373,6 +374,7 @@ def build_city(
         schema_version=2,
         city_id=config.id,
         artifact_version=ARTIFACT_VERSION,
+        engine_version=ARTIFACT_ENGINE_VERSION,
         built_at=datetime.now(UTC),
         crs=config.crs,
         bbox=config.bbox,

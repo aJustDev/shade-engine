@@ -165,11 +165,32 @@ class SourceDates(BaseModel):
 
 
 class BuildMetadata(BaseModel):
-    """Contents of ``metadata.json``: everything needed to trust an artifact."""
+    """Contents of ``metadata.json``: everything needed to trust an artifact.
+
+    Three of these fields are versions and they answer different questions, so
+    they move independently:
+
+    - ``artifact_version`` ("v1") is the *layout*, and it is also a path
+      segment: ``data/cities/<id>/v1/``.
+    - ``schema_version`` is *this file*: which fields it carries. Additive
+      fields do not move it -- a reader that does not know one simply drops it.
+    - ``engine_version`` is *the numbers inside the rasters*. Same layout, same
+      fields, different values.
+
+    Only the last one tells you whether a city has to be rebuilt, and it is the
+    one that used to be missing entirely.
+    """
 
     schema_version: int
     city_id: str
     artifact_version: str
+    engine_version: int | None = None
+    """Which engine computed the cubes; None means older than the field.
+
+    Optional and additive, like ``source_dates``: the artifacts already on disk
+    were written before it existed and have to keep loading. See
+    :data:`shade_core.engine.ARTIFACT_ENGINE_VERSION`.
+    """
     built_at: datetime
     crs: str
     bbox: Bbox

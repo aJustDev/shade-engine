@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from conftest import CUBE_CITY
-from shade_core.artifacts import COVERAGE_FILENAME
+from shade_core.artifacts import COVERAGE_FILENAME, METADATA_FILENAME
 from shade_pipeline.basemap import declare_in_manifest
 from shade_pipeline.publish import (
     Command,
@@ -302,6 +302,23 @@ def test_a_city_with_an_area_must_ship_its_coverage(publishable: Path) -> None:
 
     with pytest.raises(PublishError, match="reads as open sky"):
         check_ready(with_area, publishable)
+
+
+def test_an_artifact_from_an_older_engine_is_published_with_a_note(publishable: Path) -> None:
+    """A note and not a refusal.
+
+    A city built by an older engine serves perfectly well; it answers with the
+    geometry of the day it was built. Refusing would have left every city
+    already in production unable to be republished until it was rebuilt.
+    """
+    metadata_path = publishable / METADATA_FILENAME
+    recorded = json.loads(metadata_path.read_text(encoding="utf-8"))
+    del recorded["engine_version"]
+    metadata_path.write_text(json.dumps(recorded), encoding="utf-8")
+
+    notes = check_ready(CUBE_CITY, publishable)
+
+    assert any("did not say which" in note for note in notes)
 
 
 def test_check_ready_reports_what_it_saw(publishable: Path) -> None:
