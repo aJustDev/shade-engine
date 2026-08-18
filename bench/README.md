@@ -105,6 +105,12 @@ exactly), `bench_s3_sweep.py` (a sweep per convention), `bench_s3_verdict.py`,
 lives), `verify_s3_arbiter.py`, `rebuild_s3_reference.py` (the reference cube,
 swept with the tie-break the S3 engine really had).
 
+**S5, the seasonal canopy.** `bench_s5_canopy_interval.py` (three scenes --
+opaque, geometric, felled -- to separate the opaque-canopy rule from the
+vegetation in the cube, in hours of shade per day over the declination ladder),
+`bench_s5_sanity.py` (is montilla-test's canopy typical, and how big is the
+horizon drop really).
+
 **S4, radius and step.** `bench_s4_timing.py` (the variants timed on a quiet
 machine), `bench_s4_sweep.py`, `bench_s4_verdict.py`, `bench_s4_blockers.py` (of
 the cells `geometric` skips, how many are the only blocker), `bench_s4_radius.py`
