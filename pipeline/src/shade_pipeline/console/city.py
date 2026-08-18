@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -126,6 +127,9 @@ class CityScreen(Screen[None]):
         # Both are still listed by `?`.
         Binding("U", "unpublish", "Unpublish", show=False),
         Binding("u", "utilities", "Utilities"),
+        # Off the footer with the other two: eight shortcuts do not fit in 80
+        # columns, and the Server tab says out loud which key fills it.
+        Binding("s", "check_server", "Check server", show=False),
         Binding("y", "copy_log", "Copy log", show=False),
     ]
     DEFAULT_CSS = """
@@ -140,6 +144,7 @@ class CityScreen(Screen[None]):
     CityScreen #config { height: 1fr; max-height: 50%; }
     CityScreen #explain { height: 5; padding: 1; background: $panel; }
     CityScreen #config-cost { height: 1fr; min-height: 8; }
+    CityScreen #server { padding: 1; }
     """
 
     def __init__(self, city: str) -> None:
@@ -149,6 +154,8 @@ class CityScreen(Screen[None]):
         self._offset = 0
         self._stopping: int | None = None
         """Pid of a preview already told to stop, so `v` does not signal twice."""
+        self._asked_server = False
+        """Whether the Server tab has already made its one request."""
 
     # ---------------------------------------------------------------- layout
 
@@ -170,6 +177,8 @@ class CityScreen(Screen[None]):
                     Static(id="explain"),
                     CostPanel(id="config-cost"),
                 )
+            with TabPane("Server", id="server-pane"):
+                yield Static(id="server")
             with TabPane("Log", id="log-pane"):
                 # max_lines: the largest log under data/runs is 22 KB today and this
                 # costs nothing, but a step that turns verbose would otherwise
@@ -179,6 +188,9 @@ class CityScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self.sub_title = self.city
+        self.query_one("#server", Static).update(
+            "press [b]s[/b] to ask the public API what it is serving for this city"
+        )
         self.query_one("#steps", DataTable).add_columns("step", "status", "when", "took", "detail")
         self.query_one("#config", DataTable).add_columns("setting", "value", "")
         self.fill_config()
@@ -588,6 +600,33 @@ class CityScreen(Screen[None]):
             return
         self.notify(
             f"copied {lines} lines by OSC 52; if nothing pasted, the log is {self._log_path}"
+        )
+
+    # ---------------------------------------------------------------- server
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Ask once, when somebody actually looks at the tab.
+
+        Not on mount: opening a city must stay a filesystem read, and most of
+        the time the question being asked of this screen is a local one.
+        """
+        if event.pane.id == "server-pane" and not self._asked_server:
+            self.action_check_server()
+
+    def action_check_server(self) -> None:
+        app = self.console_app
+        self._asked_server = True
+        self.query_one("#server", Static).update("asking the server...")
+        self.check_server(app.output_root, app.base_url)
+
+    @work(thread=True, group="server", exclusive=True)
+    def check_server(self, output_root: Path, base_url: str) -> None:
+        """The comparison, off the event loop; see shade_pipeline.deployed."""
+        from shade_pipeline.deployed import survey
+
+        report = survey([self.city], output_root=output_root, base_url=base_url)[0]
+        self.app.call_from_thread(
+            self.query_one("#server", Static).update, f"{base_url}\n\n{report.describe()}"
         )
 
     def action_utilities(self) -> None:

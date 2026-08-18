@@ -45,7 +45,7 @@ from textual.widgets._footer import FooterKey
 
 from shade_pipeline.area import utm_crs
 from shade_pipeline.console.app import ConsoleApp
-from shade_pipeline.console.cities import CitiesScreen
+from shade_pipeline.console.cities import SERVED_STYLE, CitiesScreen
 from shade_pipeline.console.city import CityScreen
 from shade_pipeline.console.confirm import ConfirmScreen, EditScreen
 from shade_pipeline.console.cost import CostPanel
@@ -65,6 +65,7 @@ from shade_pipeline.console.newcity import (
 )
 from shade_pipeline.console.utilities import UTILITIES, UtilitiesScreen
 from shade_pipeline.console.utilities import to_argv as utility_argv
+from shade_pipeline.deployed import Comparison, Verdict
 
 
 @pytest.fixture
@@ -133,7 +134,85 @@ def test_the_city_list_shows_a_row_per_city_and_a_column_per_step(workspace: Pat
         "graph",
         "tiles",
         "publish",
+        "served",
     ]
+
+
+# ------------------------------------------------------------- and the server
+
+
+def test_every_verdict_has_a_style() -> None:
+    """The style map is keyed by strings to keep rasterio off the startup path.
+
+    Which means nothing but this holds the two together.
+    """
+    assert {verdict.value for verdict in Verdict} == set(SERVED_STYLE)
+
+
+def test_the_served_column_says_nothing_until_it_is_asked(workspace: Path) -> None:
+    """The refresh loop runs twice a second and must never make a request."""
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    async def scenario(pilot: Any) -> None:
+        table = app.screen.query_one("#cities", DataTable)
+        seen["cell"] = str(table.get_row_at(0)[-1])
+
+    drive(app, scenario)
+
+    assert seen["cell"] == "?"
+
+
+def test_pressing_s_fills_the_served_column(workspace: Path, monkeypatch: Any) -> None:
+    app = _app(workspace)
+    asked: list[str] = []
+    seen: dict[str, Any] = {}
+
+    def fake_survey(cities: list[str], **kwargs: Any) -> list[Comparison]:
+        asked.extend(cities)
+        return [Comparison(city, Verdict.BEHIND, ["served yesterday"]) for city in cities]
+
+    monkeypatch.setattr("shade_pipeline.deployed.survey", fake_survey)
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("s")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        table = app.screen.query_one("#cities", DataTable)
+        seen["cell"] = str(table.get_row_at(0)[-1])
+
+    drive(app, scenario)
+
+    assert asked == ["cube"]
+    assert seen["cell"] == "behind"
+
+
+def test_the_server_tab_reports_the_comparison(workspace: Path, monkeypatch: Any) -> None:
+    """Opening the tab is what asks: a city screen otherwise touches no network."""
+    app = _app(workspace)
+    seen: dict[str, Any] = {}
+
+    def fake_survey(cities: list[str], **kwargs: Any) -> list[Comparison]:
+        return [Comparison(cities[0], Verdict.NOT_PUBLISHED, ["the server does not list it"])]
+
+    monkeypatch.setattr("shade_pipeline.deployed.survey", fake_survey)
+
+    async def scenario(pilot: Any) -> None:
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, CityScreen)
+        seen["before"] = str(screen.query_one("#server", Static).render())
+        await pilot.press("s")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        seen["after"] = str(screen.query_one("#server", Static).render())
+
+    drive(app, scenario)
+
+    assert "press" in seen["before"]
+    assert "unpublished" in seen["after"]
+    assert "does not list it" in seen["after"]
 
 
 def test_a_step_recorded_by_another_process_shows_up(workspace: Path) -> None:
@@ -1172,7 +1251,10 @@ def test_a_city_file_caught_mid_save_does_not_stop_the_console(workspace: Path) 
     drive(app, scenario)
 
     assert seen["cities"] == ["cube", "roto"], "the broken one is a row, not the end of the app"
-    assert all(cell == "error" for cell in seen["cells"][1:]), seen["cells"]
+    # Every step cell, and not the served one: a YAML that cannot be parsed says
+    # nothing at all about what the server is holding.
+    assert all(cell == "error" for cell in seen["cells"][1:-1]), seen["cells"]
+    assert seen["cells"][-1] == "?"
     assert "roto" in seen["hint"], "say which city, and why"
 
 

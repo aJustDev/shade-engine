@@ -6,8 +6,11 @@ whether anything was running at all, was to remember -- and the state of five
 cities across four steps is not something worth carrying in a head.
 """
 
+from pathlib import Path
 from typing import ClassVar
 
+from rich.text import Text
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
@@ -17,6 +20,22 @@ from shade_pipeline.console.city import CityScreen, error_cell, first_line, stat
 from shade_pipeline.runstate import CHAIN, StepStatus
 
 REFRESH_SECONDS = 2.0
+
+SERVED_STYLE: dict[str, str] = {
+    "live": "green",
+    "behind": "bold yellow",
+    "ahead": "yellow",
+    "unpublished": "dim",
+    "unbuilt": "dim",
+    "unknown": "dim",
+}
+"""Keyed by ``Verdict``'s values as strings, not by the enum.
+
+Importing :mod:`shade_pipeline.deployed` costs 835 ms because it reaches
+``shade_core.artifacts`` and therefore rasterio, and this module is on the path
+to the first table. The keys are held to the enum by a test rather than by an
+import.
+"""
 
 
 class CitiesScreen(Screen[None]):
@@ -28,6 +47,7 @@ class CitiesScreen(Screen[None]):
         Binding("o", "open", "Open"),
         Binding("n", "new_city", "New city"),
         Binding("g", "refresh_now", "Refresh"),
+        Binding("s", "check_server", "Server"),
     ]
     DEFAULT_CSS = """
     CitiesScreen DataTable { height: 1fr; }
@@ -43,6 +63,13 @@ class CitiesScreen(Screen[None]):
         it announced nothing: a step that failed at four in the morning was
         visible only to whoever happened to look at the table.
         """
+        self._served: dict[str, str] = {}
+        """Last verdict heard from the public API, per city.
+
+        Empty until somebody presses `s`. The refresh loop runs every two
+        seconds and must never make a request: a table that polls production
+        four hundred times an hour is a denial of service against yourself.
+        """
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -55,6 +82,7 @@ class CitiesScreen(Screen[None]):
         table.add_column("city", key="city")
         for step in CHAIN:
             table.add_column(step, key=step)
+        table.add_column("served", key="served")
         self.refresh_rows()
         self.set_interval(REFRESH_SECONDS, self.refresh_rows)
 
@@ -77,10 +105,17 @@ class CitiesScreen(Screen[None]):
                 # opening at all. It gets a row saying so, and the other six
                 # cities stay readable.
                 broken.append(f"{city}: {first_line(error)}")
-                table.add_row(city, *(error_cell() for _ in CHAIN), key=city)
+                table.add_row(
+                    city, *(error_cell() for _ in CHAIN), self.served_cell(city), key=city
+                )
                 continue
             statuses = [state.status(step) for step in CHAIN]
-            table.add_row(city, *(status_cell(status) for status in statuses), key=city)
+            table.add_row(
+                city,
+                *(status_cell(status) for status in statuses),
+                self.served_cell(city),
+                key=city,
+            )
             if StepStatus.RUNNING in statuses:
                 running.append(city)
             self.announce(city, dict(zip(CHAIN, statuses, strict=True)))
@@ -115,8 +150,37 @@ class CitiesScreen(Screen[None]):
             elif status is StepStatus.DONE and before is StepStatus.RUNNING:
                 self.notify(f"{city}: {step} done")
 
+    def served_cell(self, city: str) -> Text:
+        verdict = self._served.get(city)
+        if verdict is None:
+            return Text("?", style="dim")
+        return Text(verdict, style=SERVED_STYLE.get(verdict, ""))
+
     def action_refresh_now(self) -> None:
         self.refresh_rows()
+
+    def action_check_server(self) -> None:
+        """Ask the public API what it is serving, once, because somebody asked."""
+        from shade_pipeline.console.app import ConsoleApp
+
+        app = self.app
+        assert isinstance(app, ConsoleApp)
+        self.notify(f"asking {app.base_url}")
+        self.check_server(app.cities(), app.output_root, app.base_url)
+
+    @work(thread=True, group="server", exclusive=True)
+    def check_server(self, cities: list[str], output_root: Path, base_url: str) -> None:
+        """One request per city, off the event loop.
+
+        In a thread and not in the refresh: reading a state file is microseconds
+        and a round trip to a VPS is not, and this screen repaints itself twice
+        a second. `exclusive` so holding `s` down cannot stack up surveys.
+        """
+        from shade_pipeline.deployed import survey
+
+        for comparison in survey(list(cities), output_root=output_root, base_url=base_url):
+            self._served[comparison.city] = comparison.verdict.value
+        self.app.call_from_thread(self.refresh_rows)
 
     def selected(self) -> str | None:
         table = self.query_one("#cities", DataTable)

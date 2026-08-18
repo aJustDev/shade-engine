@@ -41,6 +41,7 @@ from shade_pipeline.budget import MemoryBudgetError, cpu_budget
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, derive_canopy
 from shade_pipeline.cnig import CnigError, CnigSource
+from shade_pipeline.deployed import survey
 from shade_pipeline.footprints import OsmnxFootprintSource
 from shade_pipeline.graph import DEFAULT_OSM_CACHE, DEFAULT_SPACING_M, OsmnxWalkSource, build_graph
 from shade_pipeline.horizon import HorizonParams
@@ -614,12 +615,24 @@ def logs(
 @app.command()
 def status(
     city: Annotated[str | None, typer.Argument(help="One city, or all of them")] = None,
+    published: Annotated[
+        bool,
+        typer.Option("--published", help="Also ask the public API what it is serving"),
+    ] = False,
     cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
         "cities"
     ),
     data_root: Annotated[Path, typer.Option(help="Where run state and logs live")] = Path("data"),
+    output_root: Annotated[Path, typer.Option(help="Artifact output root")] = Path("data/cities"),
+    base_url: Annotated[str, typer.Option(help="Public API to compare against")] = DEFAULT_BASE_URL,
 ) -> None:
-    """Where each city stands in the chain: one row per city, one column per step."""
+    """Where each city stands in the chain: one row per city, one column per step.
+
+    ``--published`` adds the other half of the question -- what is actually
+    being served -- by asking ``/v1/cities/{id}``. Opt-in on purpose: the local
+    answer must stay a filesystem read, so that ``status`` keeps working with no
+    network and costs nothing when nobody asked about the server.
+    """
     names = [city] if city else sorted(path.stem for path in cities_dir.glob("*.yaml"))
     if not names:
         typer.echo(f"no city configs under {cities_dir}")
@@ -649,6 +662,11 @@ def status(
                 typer.echo(f"{' ' * width}  {step}: {record.error}")
             if state.status(step) is StepStatus.RUNNING:
                 typer.echo(f"{' ' * width}  {step}: pid {record.pid}, log {record.log}")
+    if published:
+        typer.echo("")
+        typer.echo(f"against {base_url}:")
+        for comparison in survey(names, output_root=output_root, base_url=base_url):
+            typer.echo(comparison.describe())
 
 
 @app.command()
