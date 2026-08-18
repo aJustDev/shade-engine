@@ -25,6 +25,7 @@ binning; see the chunk loop for the details.
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Final
 
@@ -75,6 +76,13 @@ class RasterStack:
     landcover: npt.NDArray[np.uint8]
     transform: Affine
     point_counts: dict[str, int]
+    source_dates: dict[str, date | None]
+    """``creation_date`` per file, straight from its LAS header, uninterpreted.
+
+    Read here because this is where the headers are already open. It is what
+    the file says about itself, which is **not** the flight date -- see
+    :class:`shade_core.artifacts.SourceDates`.
+    """
 
 
 def rasterize_lidar(
@@ -110,6 +118,7 @@ def rasterize_lidar(
     dtm_sum = np.zeros(n, dtype=np.float32)
     dtm_count = np.zeros(n, dtype=np.int32)
     point_counts: dict[str, int] = {}
+    source_dates: dict[str, date | None] = {}
 
     binning_start = time.monotonic()
     for file_index, path in enumerate(files, start=1):
@@ -130,6 +139,7 @@ def rasterize_lidar(
             # encode overlap as classification 12 instead, dropped below.
             # Probe the header once per file, not per chunk.
             has_overlap = "overlap" in reader.header.point_format.dimension_names
+            source_dates[path.name] = reader.header.creation_date
             for points in reader.chunk_iterator(chunk_size):
                 x = np.asarray(points.x)
                 y = np.asarray(points.y)
@@ -205,6 +215,7 @@ def rasterize_lidar(
         landcover=landcover.reshape(rows, cols),
         transform=transform_from_bbox(bbox, resolution_m),
         point_counts=point_counts,
+        source_dates=source_dates,
     )
 
 

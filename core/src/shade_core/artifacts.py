@@ -20,7 +20,7 @@ import json
 import math
 import threading
 from collections import OrderedDict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Final
@@ -135,6 +135,33 @@ class ArtifactInput(BaseModel):
 
     name: str
     points: int
+    created: date | None = None
+    """``creation_date`` from the file's own LAS header. **Not the flight date.**
+
+    Optional because artifacts built before the field existed do not carry it,
+    and because a source without a header date is allowed to say so.
+    """
+
+
+class SourceDates(BaseModel):
+    """The span of dates the source files declare for themselves.
+
+    **This is not when the LiDAR was flown**, and the difference matters enough
+    to be worth a name. It is ``creation_date`` in the LAS header, which the
+    provider writes when it generates the file: PNOA's third coverage stamps
+    every tile of Montilla, Montalban and Cuesta Blanca with the same
+    2024-11-23 (40 tiles, three municipalities), so it is a batch mark and not
+    a survey date. A flight does not cover three towns in one day.
+
+    What it is good for is the question people actually ask -- "how old is this
+    data" -- answered with a lower bound the artifact can prove, instead of the
+    prose in ``sources`` and ``attribution`` that nobody can query. The flight
+    year, when it matters, is in the CNIG tile names carried by
+    :class:`ArtifactInput` (``PNOA-2024-AND-...``).
+    """
+
+    earliest: date
+    latest: date
 
 
 class BuildMetadata(BaseModel):
@@ -156,6 +183,7 @@ class BuildMetadata(BaseModel):
     no_blocker_value: int
     software: dict[str, str]
     inputs: list[ArtifactInput]
+    source_dates: SourceDates | None = None
     attribution: list[str]
 
 

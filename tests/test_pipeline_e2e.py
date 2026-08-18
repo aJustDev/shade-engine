@@ -1,6 +1,6 @@
 """End to end: synthetic LAZ -> build -> COG artifacts -> golden queries."""
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -15,6 +15,7 @@ from shade_core import artifacts
 from shade_core.horizon import compute_horizon_reference
 from shade_core.shade import NO_BLOCKER, ShadeState, ShadeType, is_shaded
 from shade_core.solar import sun_position
+from shade_pipeline.build import _source_dates
 from shade_pipeline.cli import app
 
 CORDOBA_LAT, CORDOBA_LON = 37.88, -4.78
@@ -60,6 +61,33 @@ def test_build_writes_all_artifacts(built_city: Path) -> None:
     # This fixture's terrain is at z=0, so the datum is 0 -- the point is that
     # the field travelled from the sweep into the manifest at all.
     assert metadata.horizon.height_datum_m == 0.0
+
+
+def test_the_build_records_when_its_sources_say_they_were_made(built_city: Path) -> None:
+    """F11: the date stops being prose in `sources` and becomes a field.
+
+    Both shapes, because they answer different questions: per input for
+    auditing a single tile, and the span for "how old is this city".
+    """
+    metadata = artifacts.load_metadata(built_city)
+
+    assert metadata.inputs[0].created == laz_fixture.FIXTURE_CREATED
+    assert metadata.source_dates is not None
+    assert metadata.source_dates.earliest == laz_fixture.FIXTURE_CREATED
+    assert metadata.source_dates.latest == laz_fixture.FIXTURE_CREATED
+
+
+def test_a_source_without_a_date_does_not_widen_the_span() -> None:
+    """The span has to be provable from the sources, so a missing date drops out.
+
+    Widening it with today, or with the build time, would turn the one field
+    somebody may act on into a guess dressed as a measurement.
+    """
+    assert _source_dates({}) is None
+    assert _source_dates({"a.laz": None}) is None
+    span = _source_dates({"a.laz": date(2024, 11, 23), "b.laz": None, "c.laz": date(2025, 3, 4)})
+    assert span is not None
+    assert (span.earliest, span.latest) == (date(2024, 11, 23), date(2025, 3, 4))
 
 
 def test_loaded_horizon_matches_reference_crop(built_city: Path) -> None:

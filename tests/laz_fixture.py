@@ -13,6 +13,7 @@ write 0. No CRS goes into the header: the pipeline trusts the CRS declared in
 the city YAML (PNOA files already come in the local UTM zone).
 """
 
+from datetime import date
 from pathlib import Path
 
 import laspy
@@ -21,6 +22,9 @@ import numpy.typing as npt
 
 import synthetic
 from shade_pipeline.rasterize import LIDAR_CLASS_BUILDING, LIDAR_CLASS_GROUND
+
+FIXTURE_CREATED = date(2024, 11, 23)
+"""Header date every fixture tile claims, unless a test wants another."""
 
 
 def write_laz(
@@ -35,16 +39,22 @@ def write_laz(
     withheld: npt.NDArray[np.bool_] | None = None,
     overlap: npt.NDArray[np.bool_] | None = None,
     synthetic_flag: npt.NDArray[np.bool_] | None = None,
+    created: date = FIXTURE_CREATED,
 ) -> int:
     """Write parallel point arrays as a LAZ file; returns the point count.
 
     The keyword flags map to the LAS 1.4 per-point classification flags
     (``synthetic_flag`` avoids shadowing the ``synthetic`` module).
+
+    ``created`` is pinned because laspy defaults the header date to *today*,
+    and the build now copies it into ``metadata.json``: left alone, a test that
+    asserts on that field would pass and then start failing tomorrow.
     """
     version = "1.4" if point_format >= 6 else "1.2"
     header = laspy.LasHeader(version=version, point_format=point_format)
     header.scales = np.array([0.01, 0.01, 0.01])
     header.offsets = np.array([0.0, 0.0, 0.0])
+    header.creation_date = created
     las = laspy.LasData(header)
     las.x = x
     las.y = y

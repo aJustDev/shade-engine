@@ -10,7 +10,7 @@ bbox -- every artifact shares one shape and georeference, as the engine's
 import tempfile
 import time
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
@@ -34,6 +34,7 @@ from shade_core.artifacts import (
     DeclutterBuildParams,
     HorizonBuildParams,
     LandcoverBuildParams,
+    SourceDates,
     TreeInventoryBuildParams,
 )
 from shade_core.config import CityConfig
@@ -72,6 +73,19 @@ from shade_pipeline.verify import ensure_verified
 
 ARTIFACT_VERSION = "v1"
 _VERSIONED_PACKAGES = ("shade-pipeline", "shade-core", "laspy", "rasterio", "numpy")
+
+
+def _source_dates(per_file: Mapping[str, date | None]) -> SourceDates | None:
+    """The span of the source files' own declared dates, or None if none has one.
+
+    A file with no header date drops out instead of widening the span with a
+    guess: the span has to be provable from the sources, which is the whole
+    point of turning this from prose into a field.
+    """
+    dates = sorted(value for value in per_file.values() if value is not None)
+    if not dates:
+        return None
+    return SourceDates(earliest=dates[0], latest=dates[-1])
 
 
 def build_city(
@@ -401,8 +415,10 @@ def build_city(
         no_blocker_value=NO_BLOCKER,
         software={name: importlib_metadata.version(name) for name in _VERSIONED_PACKAGES},
         inputs=[
-            ArtifactInput(name=name, points=count) for name, count in stack.point_counts.items()
+            ArtifactInput(name=name, points=count, created=stack.source_dates.get(name))
+            for name, count in stack.point_counts.items()
         ],
+        source_dates=_source_dates(stack.source_dates),
         attribution=config.attribution,
     )
     (out_dir / METADATA_FILENAME).write_text(metadata.model_dump_json(indent=2))

@@ -1,5 +1,6 @@
 """Binning and gap-filling of LiDAR points into the base rasters."""
 
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,34 @@ def _rasterize(
         synthetic_flag=None if synthetic_flag is None else np.array(synthetic_flag, dtype=np.bool_),
     )
     return rasterize_lidar([path], BBOX, 1.0)
+
+
+def test_the_header_date_of_each_file_comes_out_of_the_binning(tmp_path: Path) -> None:
+    """Read where the headers are already open, and per file, not per city.
+
+    Two tiles with different dates: a single date would look right on every
+    city built so far -- PNOA stamps a whole batch with one -- and hide that
+    the field is a span.
+    """
+    paths = []
+    for index, created in enumerate((date(2024, 11, 23), date(2025, 3, 4))):
+        path = tmp_path / f"tile{index}.laz"
+        laz_fixture.write_laz(
+            path,
+            np.array([0.5], dtype=np.float64),
+            np.array([3.5], dtype=np.float64),
+            np.array([1.0], dtype=np.float64),
+            np.array([2], dtype=np.uint8),
+            created=created,
+        )
+        paths.append(path)
+
+    stack = rasterize_lidar(paths, BBOX, 1.0)
+
+    assert stack.source_dates == {
+        "tile0.laz": date(2024, 11, 23),
+        "tile1.laz": date(2025, 3, 4),
+    }
 
 
 def test_dsm_keeps_max_first_return(tmp_path: Path) -> None:

@@ -30,6 +30,17 @@ def test_city_detail_exposes_build_metadata(client: TestClient) -> None:
     assert body["artifacts"]["crs"] == "EPSG:25830"
 
 
+def test_city_detail_answers_how_old_the_data_is(client: TestClient) -> None:
+    """F11: the flight date used to be prose in `sources` and `attribution`.
+
+    It rides inside `artifacts` rather than as a second top-level field: it is
+    a property of the build, and duplicating it would let the two drift.
+    """
+    artifacts = client.get("/v1/cities/cube").json()["artifacts"]
+    assert artifacts["source_dates"] == {"earliest": "2024-11-23", "latest": "2024-11-23"}
+    assert artifacts["inputs"][0]["created"] == "2024-11-23"
+
+
 def test_city_detail_always_declares_the_model_caveats(client: TestClient) -> None:
     """Unconditional here, because it describes the engine and not a verdict.
 
