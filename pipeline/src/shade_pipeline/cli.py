@@ -155,6 +155,27 @@ def run(
     force: Annotated[
         bool, typer.Option("--force", help="Redo steps whose state already says done")
     ] = False,
+    footprints: Annotated[
+        bool,
+        typer.Option(
+            "--footprints/--no-footprints",
+            help="Correct roof-height vegetation with OSM building outlines (needs Overpass)",
+        ),
+    ] = True,
+    tree_inventory: Annotated[
+        bool,
+        typer.Option(
+            "--tree-inventory/--no-tree-inventory",
+            help="Audit the canopy mask against the city's tree inventory, if it declares one",
+        ),
+    ] = True,
+    declutter: Annotated[
+        bool,
+        typer.Option(
+            "--declutter/--no-declutter",
+            help="Remove cables and awnings from the DSM before sweeping (ADR-022)",
+        ),
+    ] = True,
     detach: Annotated[
         bool, typer.Option("--detach", help="Run in the background and return immediately")
     ] = False,
@@ -209,6 +230,9 @@ def run(
         max_zoom=max_zoom,
         resume=resume,
         force=force,
+        footprints=footprints,
+        tree_inventory=tree_inventory,
+        declutter=declutter,
     )
     typer.echo(f"{city}: {' -> '.join(steps)}")
     try:

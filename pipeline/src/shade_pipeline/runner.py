@@ -33,6 +33,7 @@ from shade_pipeline.area import plan_city
 from shade_pipeline.basemap import DEFAULT_MARGIN_M, build_basemap, ensure_assets
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.events import JsonlSink, emit
+from shade_pipeline.footprints import OsmnxFootprintSource
 from shade_pipeline.graph import DEFAULT_SPACING_M, build_graph
 from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.progress import format_bytes, format_duration
@@ -44,6 +45,7 @@ from shade_pipeline.tiles import (
     build_tiles,
     season_preset_instants,
 )
+from shade_pipeline.trees import WfsTreeSource
 
 # CHAIN and UNATTENDED are imported above from `runstate`, where they now live
 # and where this module keeps re-exporting them from: naming the steps and
@@ -98,6 +100,20 @@ class ChainOptions:
     resume: bool = True
     force: bool = False
     """Re-run steps whose state already says done. Off, so a resumed chain skips them."""
+    footprints: bool = True
+    """Correct roof-height vegetation with OSM outlines ([[ADR-016]]).
+
+    On, because the chain has to produce what ``shade-engine build`` produces.
+    It did not: the chain called ``build_city`` with no source at all, so every
+    city built through it -- which is every city built from the console -- came
+    out without the correction, and said so only in a ``metadata.json`` field
+    nobody was reading. Montalban shipped that way while Cordoba and Montilla,
+    built by hand, had 248.645 and 12.256 cells relabelled.
+    """
+    tree_inventory: bool = True
+    """Audit the canopy against the city's inventory ([[ADR-021]]), if it has one."""
+    declutter: bool = True
+    """Take cables and awnings out of the DSM before the sweep ([[ADR-022]])."""
     cache_dir: Path | None = None
     """Where LiDAR is downloaded to. None means ``data/lidar/<city>``."""
 
@@ -318,15 +334,31 @@ def _run_step(
             tile_size=options.tile_size,
             workers=options.workers,
         )
-        with step_scope(
-            state, "build", {"workers": sweep.workers, "tile_size": sweep.tile_size}
-        ) as say:
+        # Same three sources the standalone command builds (`cli.build`), and
+        # built here for the same reason the params are: a chain that quietly
+        # skips them produces a different artifact from the one a direct build
+        # produces, and the difference only shows in a metadata field.
+        trees = (
+            WfsTreeSource(url=config.tree_inventory.wfs, layers=tuple(config.tree_inventory.layers))
+            if options.tree_inventory and config.tree_inventory is not None
+            else None
+        )
+        params = {
+            "workers": sweep.workers,
+            "tile_size": sweep.tile_size,
+            "footprints": options.footprints,
+            "declutter": options.declutter,
+        }
+        with step_scope(state, "build", params) as say:
             out = build_city(
                 config,
                 source(config, say),
                 options.output_root,
                 sweep,
                 progress=say,
+                footprints=OsmnxFootprintSource() if options.footprints else None,
+                trees=trees,
+                declutter=options.declutter,
                 events=_sink_of(state, "build"),
             )
         return str(out)

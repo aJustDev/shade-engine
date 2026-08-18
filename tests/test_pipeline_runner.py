@@ -17,6 +17,7 @@ import synthetic
 from conftest import CUBE_CITY
 from shade_pipeline import budget, runner
 from shade_pipeline.basemap import BasemapError
+from shade_pipeline.footprints import OsmnxFootprintSource
 from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.runner import (
     ChainError,
@@ -44,12 +45,20 @@ def workspace(tmp_path: Path) -> Path:
 
 
 def _options(workspace: Path, **overrides: object) -> ChainOptions:
+    """Chain options for a test: like production, minus the network.
+
+    ``footprints`` is off here and **on** in :class:`ChainOptions` itself. The
+    correction needs Overpass, and a suite that reaches the internet is a suite
+    that fails on a train; the shipped default is asserted directly instead,
+    and the tests that care about it intercept ``build_city``.
+    """
     defaults: dict[str, object] = {
         "cities_dir": workspace / "cities",
         "output_root": workspace / "out",
         "data_root": workspace / "data",
         "min_zoom": 17,
         "max_zoom": 18,
+        "footprints": False,
     }
     return ChainOptions(**{**defaults, **overrides})  # type: ignore[arg-type]
 
@@ -343,6 +352,81 @@ def test_the_sweep_gets_the_workers_and_tile_size_the_chain_was_asked_for(
     assert seen[0].sectors == CUBE_CITY.horizon_sectors
     assert seen[0].max_distance_m == CUBE_CITY.horizon_max_distance_m
     assert seen[0].observer_height_m == CUBE_CITY.observer_height_m
+
+
+def _spy_on_build(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Record what the chain hands `build_city`, without building anything."""
+    seen: list[dict[str, object]] = []
+
+    def spy(
+        config: object, source: object, output_root: Path, params: HorizonParams, **kw: object
+    ) -> Path:
+        seen.append({"params": params, **kw})
+        return output_root
+
+    monkeypatch.setattr("shade_pipeline.runner.build_city", spy)
+    return seen
+
+
+def test_the_chain_corrects_roofs_like_the_standalone_command(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It did not, and the difference only showed in a metadata field.
+
+    `run_chain` called `build_city` with no footprint source, so every city
+    built through the chain -- which is every city built from the console --
+    came out without [[ADR-016]]. Cordoba and Montilla, built by hand, had
+    248.645 and 12.256 cells relabelled; Montalban, built by the chain,
+    reported `footprints: null` and shipped that way.
+    """
+    seen = _spy_on_build(monkeypatch)
+
+    run_chain(
+        "cube",
+        steps=("build",),
+        options=_options(workspace, footprints=True),
+        source=_source(workspace),  # type: ignore[arg-type]
+    )
+
+    assert isinstance(seen[0]["footprints"], OsmnxFootprintSource)
+    assert seen[0]["declutter"] is True
+    # What ships, as opposed to what this suite runs with.
+    assert ChainOptions().footprints is True
+    assert ChainOptions().tree_inventory is True
+
+
+def test_a_build_with_no_network_is_still_one_flag_away(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escape hatch `build` already had: no Overpass, no correction, no build failure."""
+    seen = _spy_on_build(monkeypatch)
+
+    run_chain(
+        "cube",
+        steps=("build",),
+        options=_options(workspace, declutter=False),
+        source=_source(workspace),  # type: ignore[arg-type]
+    )
+
+    assert seen[0]["footprints"] is None
+    assert seen[0]["declutter"] is False
+
+
+def test_the_tree_audit_needs_the_city_to_declare_an_inventory(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two of seven cities declare one, so the flag alone cannot decide it."""
+    seen = _spy_on_build(monkeypatch)
+
+    run_chain(
+        "cube",
+        steps=("build",),
+        options=_options(workspace, footprints=True),
+        source=_source(workspace),  # type: ignore[arg-type]
+    )
+
+    assert CUBE_CITY.tree_inventory is None
+    assert seen[0]["trees"] is None
 
 
 def test_step_slicing() -> None:
