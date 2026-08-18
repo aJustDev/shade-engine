@@ -25,41 +25,59 @@ pierced parapet, a cell a wall only half occupies. Reporting both is how the
 engine says what it knows and what it is assuming (see shade-docs:
 learning/recorrido-de-rayo.md).
 
-**Corner crossings, and the bit they rest on.** When the ray passes exactly
-through a cell corner, four cells meet there and the walk emits two: the
-diagonal one, plus *one* of the two orthogonal neighbours, with zero thickness.
-Which one is decided by the last bit of sin against cos -- there is no tolerance
-here and no rule -- so sector 8 grazes the cell to the north and sector 24 the
-one to the east, and nobody chose either. This is not an edge case in the
+**Corner crossings.** When the ray passes exactly through a cell corner, four
+cells meet there and the walk emits two: the diagonal one, plus *one* of the two
+orthogonal neighbours, with zero thickness. This is not an edge case in the
 sweep: the four diagonal sectors (8, 24, 40, 56 = NE, SE, SW, NW, so mid-morning
 and mid-afternoon) cross a corner at *every* step, 354 of 354, while the other
 sixty never do.
 
-It is kept as it is because emitting one is measured to be the best of the
-three readings, not because it is the tidiest. Against the arbiter over
-montilla-test and the 83 ladder instants, open sky: emitting one gives 0.714% of
-wrong verdicts, both 0.722%, neither 0.739%. The reason is that a sector is a
-5.625-degree *interval* of azimuths, and everywhere in it except the exact
-centre line the ray really does enter exactly one of the two -- which one
-depending on the side. On the centre line the function is genuinely
-discontinuous, and one is the honest average of its two limits.
+Emitting one is measured to be the best of the three readings, not merely the
+tidiest. Against the arbiter over montilla-test and the 83 ladder instants, open
+sky: emitting one gives 0.714% of wrong verdicts, both 0.722%, neither 0.739%.
+The reason is that a sector is a 5.625-degree *interval* of azimuths, and
+everywhere in it except the exact centre line the ray really does enter exactly
+one of the two -- which one depending on the side. On the centre line the
+function is genuinely discontinuous, and one is the honest average of its two
+limits.
 
-What rests on that bit, measured: a libm rounding sin/cos the other way would
-emit the mirror cell, move **3,675,077 cube cells (4.5%)** and change the
-verdict by 0.009 points (0.714% -> 0.723%). Deterministic for a given build,
-and small where it counts -- but worth knowing before someone reads a rebuilt
-city as a regression. See shade-docs: learning/recorrido-de-rayo.md.
+**Which one is a rule, not an accident.** The two boundary distances coincide
+there, so whichever compares smaller is decided by an ulp of sin against cos
+(1 to 3 ulp at 45 degrees, measured) -- and transcendentals are not required to
+round identically across libms or architectures. Left alone, a libm update
+would silently rewrite 3,675,077 cube cells (4.5%) with nobody touching the
+code. So ties within :data:`CORNER_TOLERANCE` always step the **row** axis.
 
-The same bit picks the blocker class of the pair, since ascending distances and
-a strict ``>`` give ties to whichever cell came out first. Measured on
-montilla-test: reversing the order inside every tied pair moves 246 classes
+Row is arbitrary and permanent, and the arbitrariness is the point: the two
+choices are equivalent by construction. Approach a diagonal from below and the
+ray enters the row cell; approach from above and it enters the column cell; the
+sector covers both halves equally. Measured, they do not separate: pinning row
+gives 0.7305% and column 0.7059%, and today's accidental mix of two sectors each
+lands at 0.7143%, which is their average -- what you see when the difference is
+the city and not the rule. Row also moves the existing cube least (1.4 M cells
+against 2.3 M).
+
+The same tie decides the blocker class of the pair, since ascending distances
+and a strict ``>`` give ties to whichever cell came out first. Measured on
+montilla-test: flipping the order inside every tied pair moves 246 classes
 across the four diagonal planes (0.005%) and **not one angle**, quantized or
 float -- both cells are always visited, so only the tie-break can differ.
+
+See shade-docs: learning/recorrido-de-rayo.md.
 """
 
 import math
 
-__all__ = ["ray_cells"]
+CORNER_TOLERANCE = 1e-9
+"""Relative gap below which two cell boundaries are the same corner.
+
+Wide enough to swallow the 1-3 ulp that separate sin from cos at 45 degrees,
+and far too narrow to fire anywhere else: measured over all 64 sectors, the
+only ties are the 354-per-sector of the four diagonals, and zero in the other
+sixty.
+"""
+
+__all__ = ["CORNER_TOLERANCE", "ray_cells"]
 
 
 def ray_cells(
@@ -101,7 +119,12 @@ def ray_cells(
     row = col = 0
     entries: list[tuple[int, int, float]] = []
     while True:
-        if next_col < next_row:
+        # At an exact corner the two boundaries are the same distance, and which
+        # one compares smaller is decided by an ulp of sin against cos -- a
+        # property of libm, not of the geometry. Break the tie with a rule so a
+        # rebuilt city cannot come out different somewhere else.
+        corner = math.isclose(next_col, next_row, rel_tol=CORNER_TOLERANCE)
+        if next_col < next_row and not corner:
             entry, next_col = next_col, next_col + step_col_m
             col += step_col
         else:

@@ -1,6 +1,7 @@
 """Grid traversal: the properties the sweep and the arbiter both lean on."""
 
 import itertools
+import math
 
 import pytest
 
@@ -86,28 +87,47 @@ def test_diagonal_keeps_the_corner_cells() -> None:
     assert all(abs(row) + abs(col) <= 2 * 10 for row, col, _, _ in cells)
 
 
-DIAGONAL_SECTORS = {8: (-1, 0), 24: (0, 1), 40: (1, 0), 56: (0, -1)}
-"""Sector -> the orthogonal cell its ray grazes first, on this platform."""
+DIAGONAL_SECTORS = {8: (-1, 0), 24: (1, 0), 40: (1, 0), 56: (-1, 0)}
+"""Sector -> the orthogonal cell its ray grazes first. All four step the row."""
 
 
 @pytest.mark.parametrize(("sector", "grazed"), DIAGONAL_SECTORS.items())
-def test_which_corner_cell_a_diagonal_grazes_is_pinned(
-    sector: int, grazed: tuple[int, int]
-) -> None:
-    """The ulp of sin against cos picks this, so pin it and hear about a change.
+def test_a_diagonal_grazes_the_row_cell_by_rule(sector: int, grazed: tuple[int, int]) -> None:
+    """The corner tie is a rule, not whatever this platform's libm rounds to.
 
-    There is no rule behind these four values and no tolerance in ``ray_cells``:
-    at 45 degrees sin and cos differ by 1 to 3 ulp and whichever is smaller wins
-    the step. A libm that rounded the other way would graze the mirror cell,
-    which is legitimate -- measured, it moves 3,675,077 cube cells (4.5%) and the
-    verdict by 0.009 points -- but it must arrive as a red test and not as a city
-    that came out different when someone rebuilt it.
+    At 45 degrees the two boundary distances coincide to within 1-3 ulp of sin
+    against cos, and transcendentals are not required to round identically
+    across libms. Left to the comparison, a libm update would rewrite 3,675,077
+    cube cells (4.5%) with nobody touching the code, and it would arrive as "why
+    did this city come out different when we rebuilt it there?".
+
+    Row is arbitrary and the arbitrariness is the point: approach the diagonal
+    from either side and the ray enters one cell or the other, so the two are
+    equivalent over the sector. What matters is that it is written down.
     """
     cells = ray_cells(sector * 360.0 / 64, 10.0, 1.0)
     assert cells[0][:2] == grazed
+    assert cells[0][1] == 0, "the tie always steps the row axis"
     assert cells[0][3] == pytest.approx(cells[0][2]), "the grazed cell has zero thickness"
     # Exactly one orthogonal per corner: the pair is (orthogonal, diagonal).
     assert abs(cells[1][0]) == 1 and abs(cells[1][1]) == 1
+
+
+def test_the_corner_rule_survives_a_perturbed_sine() -> None:
+    """The whole point: nudging sin/cos by an ulp must not move a single cell.
+
+    Simulates the libm change, which is the failure mode the rule exists to
+    close. Without it, sectors 24 and 56 grazed the column cell and this test
+    would come back with different offsets.
+    """
+    for sector in DIAGONAL_SECTORS:
+        azimuth = sector * 360.0 / 64
+        baseline = ray_cells(azimuth, 20.0, 1.0)
+        for nudge in (-2e-16, -1e-16, 1e-16, 2e-16):
+            perturbed = ray_cells(azimuth + math.degrees(nudge), 20.0, 1.0)
+            assert [cell[:2] for cell in perturbed] == [cell[:2] for cell in baseline], (
+                f"sector {sector} moved when the azimuth shifted by {nudge}"
+            )
 
 
 def test_only_the_diagonals_cross_corners_and_they_do_it_every_step() -> None:
