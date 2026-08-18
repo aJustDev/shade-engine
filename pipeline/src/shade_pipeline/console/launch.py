@@ -46,6 +46,16 @@ def suggested_workers(config: CityConfig) -> int:
     whole-raster arrays for an instant -- so proposing ``cpu_budget()`` would
     routinely propose a number ``build_tiles`` then rejects. One core is left
     free so the machine stays usable during the hours this runs.
+
+    This number now reaches the sweep as well, which it did not before, and the
+    tile budget is still the tighter of the two: the sweep is bound *per tile*
+    (125.4 MiB at 64 sectors and tile 512, so 45 workers fit on this machine
+    whatever the city) while the render is bound by the whole raster (410.8 MiB
+    for Montalban, 2.7 GiB for Cordoba: 13 workers and 2). So the proposal is
+    always valid for both -- and for a big city it is the render that decides
+    it, which leaves the sweep running with fewer processes than it could hold.
+    Splitting the two would be a knob per phase, and that is a decision, not a
+    fix.
     """
     rows, cols = grid_shape(config.bbox, config.resolution_m)
     fits = workers_that_fit(estimate_tiles_worker_bytes(rows, cols))

@@ -34,6 +34,7 @@ from shade_pipeline.basemap import DEFAULT_MARGIN_M, build_basemap, ensure_asset
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
 from shade_pipeline.events import JsonlSink, emit
 from shade_pipeline.graph import DEFAULT_SPACING_M, build_graph
+from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.runstate import CHAIN, UNATTENDED, RunState, StepStatus, config_digest
 from shade_pipeline.sources import LidarSource
@@ -303,12 +304,28 @@ def _run_step(
         return str(out)
 
     if step == "build":
-        params = {"workers": options.workers, "tile_size": options.tile_size}
-        with step_scope(state, "build", params) as say:
+        # Built here and handed over, rather than left to `build_city`'s own
+        # default: without it the sweep ran with `workers=1` and `tile_size=512`
+        # whatever the chain was asked for, so `run --workers 13` priced a build
+        # with thirteen and then ran it serially. Measured on Montalban: 3m 18s
+        # of sweep where eleven tiles over thirteen workers is one round.
+        # `check_worker_budget` inside the sweep still refuses a number that
+        # does not fit, so this passes the request on, it does not override it.
+        sweep = HorizonParams(
+            sectors=config.horizon_sectors,
+            max_distance_m=config.horizon_max_distance_m,
+            observer_height_m=config.observer_height_m,
+            tile_size=options.tile_size,
+            workers=options.workers,
+        )
+        with step_scope(
+            state, "build", {"workers": sweep.workers, "tile_size": sweep.tile_size}
+        ) as say:
             out = build_city(
                 config,
                 source(config, say),
                 options.output_root,
+                sweep,
                 progress=say,
                 events=_sink_of(state, "build"),
             )

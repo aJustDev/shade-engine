@@ -17,6 +17,7 @@ import synthetic
 from conftest import CUBE_CITY
 from shade_pipeline import budget, runner
 from shade_pipeline.basemap import BasemapError
+from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.runner import (
     ChainError,
     ChainOptions,
@@ -308,6 +309,40 @@ def test_the_lidar_download_reports_into_the_step_log(workspace: Path) -> None:
     state = RunState.open("cube", cities_dir=options.cities_dir, data_root=options.data_root)
     log = Path(state.record("build").log or "")
     assert "PNOA-2024-AND-345-4160" in log.read_text(encoding="utf-8")
+
+
+def test_the_sweep_gets_the_workers_and_tile_size_the_chain_was_asked_for(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It did not, and that is what made a chain build slower than a direct one.
+
+    `run_chain` called `build_city` without params, so the sweep fell back to
+    its own defaults -- one worker, tile 512 -- while the chain priced the build
+    with whatever was asked for and recorded it in the state file. Measured on
+    Montalban: 3m 18s of serial sweep with `workers: 13` written next to it.
+    """
+    seen: list[HorizonParams] = []
+
+    def spy(
+        config: object, source: object, output_root: Path, params: HorizonParams, **kw: object
+    ) -> Path:
+        seen.append(params)
+        return output_root
+
+    monkeypatch.setattr("shade_pipeline.runner.build_city", spy)
+
+    run_chain(
+        "cube",
+        steps=("build",),
+        options=_options(workspace, workers=3, tile_size=256),
+        source=_source(workspace),  # type: ignore[arg-type]
+    )
+
+    assert (seen[0].workers, seen[0].tile_size) == (3, 256)
+    # And the city's own physics is still the city's, not the flag's.
+    assert seen[0].sectors == CUBE_CITY.horizon_sectors
+    assert seen[0].max_distance_m == CUBE_CITY.horizon_max_distance_m
+    assert seen[0].observer_height_m == CUBE_CITY.observer_height_m
 
 
 def test_step_slicing() -> None:
