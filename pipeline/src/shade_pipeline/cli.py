@@ -177,6 +177,13 @@ def run(
             help="Remove cables and awnings from the DSM before sweeping (ADR-022)",
         ),
     ] = True,
+    cadastre: Annotated[
+        bool,
+        typer.Option(
+            "--cadastre/--no-cadastre",
+            help="Draw the registered footprints beside ours (ADR-030; needs the Catastro WFS)",
+        ),
+    ] = True,
     detach: Annotated[
         bool, typer.Option("--detach", help="Run in the background and return immediately")
     ] = False,
@@ -234,6 +241,7 @@ def run(
         footprints=footprints,
         tree_inventory=tree_inventory,
         declutter=declutter,
+        cadastre=cadastre,
     )
     typer.echo(f"{city}: {' -> '.join(steps)}")
     try:

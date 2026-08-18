@@ -5,8 +5,10 @@ longer depends on somebody remembering which command comes next, or noticing at
 hour four that the city was never going to fit.
 """
 
+import inspect
 import shutil
 from collections.abc import Callable
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,7 @@ import yaml
 import laz_fixture
 import synthetic
 from conftest import CUBE_CITY
-from shade_pipeline import budget, runner
+from shade_pipeline import budget, cli, runner
 from shade_pipeline.basemap import BasemapError
 from shade_pipeline.cadastre import CadastreSource
 from shade_pipeline.footprints import OsmnxFootprintSource
@@ -428,6 +430,21 @@ def test_the_chain_asks_the_cadastre_like_the_standalone_command(
     )
 
     assert isinstance(seen[0]["cadastre"], CadastreSource)
+
+
+def test_every_chain_switch_is_reachable_from_the_command_line() -> None:
+    """The generic version of a mistake that has now been made three times.
+
+    `run_chain` gained `footprints`/`trees`, then the sweep's `workers`, then
+    `cadastre` -- and each time the switch existed in `ChainOptions` while
+    `shade-engine run` had no way to set it, so the chain silently produced
+    something the standalone command did not. Checking the two lists against
+    each other costs nothing and catches the fourth one before it ships.
+    """
+    switches = {field.name for field in fields(ChainOptions) if field.type in (bool, "bool")}
+    exposed = set(inspect.signature(cli.run).parameters)
+
+    assert switches <= exposed, f"not reachable from `shade-engine run`: {switches - exposed}"
 
 
 def test_a_build_with_no_network_is_still_one_flag_away(
