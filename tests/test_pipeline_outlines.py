@@ -42,7 +42,8 @@ def _mask(polygon: Polygon, shape: tuple[int, int] = (120, 120)) -> np.ndarray:
     burned = rasterio.features.rasterize(
         [(polygon, 1)], out_shape=shape, transform=TRANSFORM, fill=0, dtype="uint8"
     )
-    return burned.astype(bool)
+    mask: np.ndarray = burned.astype(bool)
+    return mask
 
 
 def test_a_wall_that_is_straight_comes_out_straight() -> None:

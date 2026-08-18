@@ -17,6 +17,7 @@ import synthetic
 from conftest import CUBE_CITY
 from shade_pipeline import budget, runner
 from shade_pipeline.basemap import BasemapError
+from shade_pipeline.cadastre import CadastreSource
 from shade_pipeline.footprints import OsmnxFootprintSource
 from shade_pipeline.horizon import HorizonParams
 from shade_pipeline.runner import (
@@ -47,10 +48,11 @@ def workspace(tmp_path: Path) -> Path:
 def _options(workspace: Path, **overrides: object) -> ChainOptions:
     """Chain options for a test: like production, minus the network.
 
-    ``footprints`` is off here and **on** in :class:`ChainOptions` itself. The
-    correction needs Overpass, and a suite that reaches the internet is a suite
-    that fails on a train; the shipped default is asserted directly instead,
-    and the tests that care about it intercept ``build_city``.
+    ``footprints`` and ``cadastre`` are off here and **on** in
+    :class:`ChainOptions` itself. One needs Overpass and the other the
+    Catastro WFS, and a suite that reaches the internet is a suite that fails
+    on a train; the shipped defaults are asserted directly instead, and the
+    tests that care about them intercept the call.
     """
     defaults: dict[str, object] = {
         "cities_dir": workspace / "cities",
@@ -59,6 +61,7 @@ def _options(workspace: Path, **overrides: object) -> ChainOptions:
         "min_zoom": 17,
         "max_zoom": 18,
         "footprints": False,
+        "cadastre": False,
     }
     return ChainOptions(**{**defaults, **overrides})  # type: ignore[arg-type]
 
@@ -393,6 +396,38 @@ def test_the_chain_corrects_roofs_like_the_standalone_command(
     # What ships, as opposed to what this suite runs with.
     assert ChainOptions().footprints is True
     assert ChainOptions().tree_inventory is True
+    assert ChainOptions().cadastre is True
+
+
+def test_the_chain_asks_the_cadastre_like_the_standalone_command(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The third parameter with a default, and the third chance to diverge.
+
+    Twice already a `build_city` argument the chain forgot to pass produced a
+    quietly different artifact. `build_tiles` now takes one too, so the two
+    invocations are checked against each other rather than trusted.
+    """
+    seen: list[dict[str, object]] = []
+
+    def spy(config: object, artifact_dir: Path, instants: object, **kw: object) -> Path:
+        seen.append(dict(kw))
+        return artifact_dir
+
+    monkeypatch.setattr("shade_pipeline.runner.build_tiles", spy)
+    # The artifacts are not what is under test here: this is about which
+    # arguments cross the boundary, and building a city to find out costs a
+    # minute per run.
+    monkeypatch.setattr("shade_pipeline.runner._require_artifacts", lambda *_args: None)
+
+    run_chain(
+        "cube",
+        steps=("tiles",),
+        options=_options(workspace, cadastre=True),
+        source=_source(workspace),  # type: ignore[arg-type]
+    )
+
+    assert isinstance(seen[0]["cadastre"], CadastreSource)
 
 
 def test_a_build_with_no_network_is_still_one_flag_away(

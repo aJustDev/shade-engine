@@ -79,8 +79,10 @@ from shade_pipeline.budget import (
     estimate_tiles_worker_bytes,
     warn_if_serial_is_tight,
 )
+from shade_pipeline.cadastre import CATASTRO_ATTRIBUTION, CadastreSource
 from shade_pipeline.events import EventSink, emit
 from shade_pipeline.grid import grid_shape, transform_from_bbox
+from shade_pipeline.outlines import building_outlines, outlines_geojson
 from shade_pipeline.progress import format_bytes, format_duration
 from shade_pipeline.relief import hillshade
 from shade_pipeline.shade_raster import (
@@ -222,6 +224,21 @@ STATIC_FILENAMES: Final = {
     "relief": RELIEF_TILES_FILENAME,
 }
 """The hour-independent sets, and the file each one writes."""
+
+OUTLINES_FILENAME: Final = "outlines.geojson"
+"""Our own building outlines, as vectors (:mod:`shade_pipeline.outlines`).
+
+Not a tile set, and deliberately not part of :data:`STATIC_FILENAMES`: it is
+one file for the whole city, written by the parent instead of by a render
+worker. A raster at 1 m cannot draw a straight wall at any zoom, and this is
+the layer that can.
+"""
+
+CADASTRE_FILENAME: Final = "cadastre.geojson"
+"""The registered footprints, when the cadastre answered for this city."""
+
+OUTLINE_COLOR: Final = (150, 160, 178, 255)  # slate, brighter than the relief it sits on
+CADASTRE_COLOR: Final = (216, 158, 92, 255)  # ochre: a second opinion, told apart by hue
 
 CAST_KINDS: Final = ("building", "trees")
 """The two disjoint cast-shade sets every instant writes, in filename order."""
@@ -1083,6 +1100,51 @@ def _render_parallel(jobs: list[RenderJob], workers: int) -> Generator[RenderRes
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def write_vector_layers(
+    config: CityConfig,
+    artifact_dir: Path,
+    tiles_dir: Path,
+    *,
+    cadastre: CadastreSource | None,
+    progress: Callable[[str], None],
+) -> tuple[str, ...]:
+    """Write the two vector layers and return the attribution they oblige.
+
+    Neither is a tile pyramid, so neither goes through the render pool: they
+    are seconds of work on the parent, and putting a network fetch inside a
+    worker would buy nothing but a harder failure to read.
+
+    A layer that is not written has its file **removed**, because the manifest
+    advertises these keys by asking the directory what is on disk. Leaving a
+    stale ``cadastre.geojson`` behind would publish last week's answer as this
+    build's.
+    """
+    with rasterio.open(artifact_dir / LANDCOVER_FILENAME) as src:
+        mask = src.read(1) == Landcover.BUILDING
+        transform = src.transform
+    outlines = building_outlines(mask, transform)
+    (tiles_dir / OUTLINES_FILENAME).write_text(
+        outlines_geojson(outlines.polygons, config.crs) + "\n", encoding="utf-8"
+    )
+    progress(
+        f"{OUTLINES_FILENAME}: {len(outlines.polygons)} outlines "
+        f"({outlines.regularized} regularized, {outlines.fell_back} left as traced), "
+        f"{outlines.area_m2 / 1e4:.1f} ha"
+    )
+
+    if cadastre is not None:
+        footprints = cadastre.fetch(config.bbox, config.crs)
+        if footprints:
+            (tiles_dir / CADASTRE_FILENAME).write_text(
+                outlines_geojson(footprints, config.crs) + "\n", encoding="utf-8"
+            )
+            progress(f"{CADASTRE_FILENAME}: {len(footprints)} registered footprints")
+            return (CATASTRO_ATTRIBUTION,)
+        progress(f"{CADASTRE_FILENAME}: the cadastre had nothing here; layer not written")
+    (tiles_dir / CADASTRE_FILENAME).unlink(missing_ok=True)
+    return ()
+
+
 def build_tiles(
     config: CityConfig,
     artifact_dir: str | Path,
@@ -1092,6 +1154,7 @@ def build_tiles(
     max_zoom: int = DEFAULT_MAX_ZOOM,
     workers: int = 1,
     resume: bool = False,
+    cadastre: CadastreSource | None = None,
     progress: Callable[[str], None] | None = None,
     events: EventSink | None = None,
 ) -> Path:
@@ -1266,6 +1329,10 @@ def build_tiles(
                 eta_s=None if eta_s is None else round(eta_s, 1),
             )
 
+    extra_attribution = write_vector_layers(
+        config, Path(artifact_dir), tiles_dir, cadastre=cadastre, progress=echo
+    )
+
     canopy_url = f"{CANOPY_TILES_FILENAME}?v={version}"
     buildings_url = f"{BUILDINGS_TILES_FILENAME}?v={version}"
     relief_url = f"{RELIEF_TILES_FILENAME}?v={version}"
@@ -1317,6 +1384,8 @@ def build_tiles(
             "canopy": _hex(CANOPY_COLOR),
             "buildings": _hex(BUILDINGS_COLOR),
             "relief": _hex(RELIEF_COLORS[RELIEF_TONES[-1]]),
+            "outline": _hex(OUTLINE_COLOR),
+            "cadastre": _hex(CADASTRE_COLOR),
             # Legacy keys for schema-2 clients: building/other equal the
             # unified shade color; shade_vegetation is the color of the file
             # their vegetation toggle now points at (the static canopy).
@@ -1332,6 +1401,19 @@ def build_tiles(
         # simply does not offer the key, and the flat footprint stays the
         # answer for it.
         "relief_url": relief_url,
+        # The vector layers, present exactly when their file is -- same promise
+        # as basemap_url. A city rendered before these existed simply does not
+        # offer the keys and the viewer keeps drawing the raster footprint.
+        **(
+            {"outlines_url": f"{OUTLINES_FILENAME}?v={version}"}
+            if (tiles_dir / OUTLINES_FILENAME).exists()
+            else {}
+        ),
+        **(
+            {"cadastre_url": f"{CADASTRE_FILENAME}?v={version}"}
+            if (tiles_dir / CADASTRE_FILENAME).exists()
+            else {}
+        ),
         # Additive, and absent for a city without an area. bounds_wgs84 is the
         # rectangle the rasters cover; this is the part of it that was actually
         # computed, which is what a client should veil.
@@ -1354,7 +1436,9 @@ def build_tiles(
         # because it is the same kind of obligation -- what has to travel with
         # the picture for it to be honest.
         "model_caveats": [OPAQUE_CANOPY_CAVEAT],
-        "attribution": metadata.attribution,
+        # The cadastre's credit joins the artifact's own: it is a condition of
+        # using the layer, not a courtesy, and the viewer reads this list.
+        "attribution": [*metadata.attribution, *extra_attribution],
     }
     (tiles_dir / MANIFEST_FILENAME).write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"

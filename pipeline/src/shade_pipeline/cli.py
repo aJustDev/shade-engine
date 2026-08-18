@@ -39,6 +39,7 @@ from shade_pipeline.basemap import (
 )
 from shade_pipeline.budget import MemoryBudgetError, cpu_budget
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
+from shade_pipeline.cadastre import CadastreSource
 from shade_pipeline.canopy import CANOPY_MIN_HEIGHT_M, CANOPY_SIEVE_PX, derive_canopy
 from shade_pipeline.cnig import CnigError, CnigSource
 from shade_pipeline.deployed import survey
@@ -1007,6 +1008,13 @@ def tiles(
             help="Keep units already rendered from these artifacts and this zoom range",
         ),
     ] = False,
+    cadastre: Annotated[
+        bool,
+        typer.Option(
+            "--cadastre/--no-cadastre",
+            help="Fetch registered footprints from the Catastro WFS as a second outline layer",
+        ),
+    ] = True,
     cities_dir: Annotated[Path, typer.Option(help="Directory holding <city>.yaml configs")] = Path(
         "cities"
     ),
@@ -1041,6 +1049,7 @@ def tiles(
             max_zoom=max_zoom,
             workers=workers,
             resume=resume,
+            cadastre=CadastreSource() if cadastre else None,
             progress=typer.echo,
         )
     except ValueError as exc:

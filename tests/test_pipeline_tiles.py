@@ -12,6 +12,7 @@ import mercantile
 import numpy as np
 import pytest
 import rasterio
+import shapely.geometry
 import yaml
 from PIL import Image
 from pmtiles.reader import MmapSource, Reader
@@ -34,6 +35,7 @@ from shade_core.shade import (
 from shade_core.solar import SunPosition, sun_position
 from shade_pipeline import budget
 from shade_pipeline.budget import MemoryBudgetError
+from shade_pipeline.cadastre import CATASTRO_ATTRIBUTION
 from shade_pipeline.cli import app
 from shade_pipeline.cog import write_cog
 from shade_pipeline.grid import transform_from_bbox
@@ -50,9 +52,11 @@ from shade_pipeline.tiles import (
     BASEMAP_FILENAME,
     BUILDINGS_COLORS,
     BUILDINGS_TILES_FILENAME,
+    CADASTRE_FILENAME,
     CANOPY_COLORS,
     CANOPY_TILES_FILENAME,
     MANIFEST_FILENAME,
+    OUTLINES_FILENAME,
     PALETTE_STATES,
     RELIEF_COLORS,
     RELIEF_NONE,
@@ -307,6 +311,66 @@ def test_the_relief_is_rendered_and_announced(built_city: Path, tmp_path: Path) 
     assert str(manifest["relief_url"]).startswith(RELIEF_TILES_FILENAME)
     # Additive, like every field before it.
     assert manifest["schema_version"] == 2
+
+
+def test_the_vector_outlines_are_written_and_announced(built_city: Path, tmp_path: Path) -> None:
+    """The layer a 1 m raster cannot draw, and the manifest key that offers it.
+
+    The synthetic city is one box, so the outline is one polygon: whatever the
+    regularization does to a real town, here it has a rectangle and it has to
+    hand back a rectangle.
+    """
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+
+    tiles_dir = build_tiles(CUBE_CITY, target, [WINTER_NOON], min_zoom=14, max_zoom=18)
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+    collection = json.loads((tiles_dir / OUTLINES_FILENAME).read_text(encoding="utf-8"))
+    (feature,) = collection["features"]
+    assert feature["geometry"]["type"] == "Polygon"
+    assert len(feature["geometry"]["coordinates"][0]) - 1 == 4
+    assert str(manifest["outlines_url"]).startswith(OUTLINES_FILENAME)
+    assert manifest["colors"]["outline"]
+    # No cadastre source was handed in, so the key must be absent rather than
+    # advertised and 404: the viewer believes these keys.
+    assert "cadastre_url" not in manifest
+    assert not (tiles_dir / CADASTRE_FILENAME).exists()
+    assert manifest["schema_version"] == 2
+
+
+def test_the_cadastre_layer_brings_its_attribution_with_it(
+    built_city: Path, tmp_path: Path
+) -> None:
+    """Credit is a condition of using the layer, not a courtesy.
+
+    And it travels in the manifest because that is where the viewer reads
+    attribution from -- adding the layer without it would publish the cadastre's
+    work unattributed.
+    """
+    target = tmp_path / "city"
+    shutil.copytree(built_city, target)
+    metadata = artifacts.load_metadata(target)
+    min_x, min_y, _, _ = metadata.bbox
+    shed = shapely.geometry.box(min_x + 10, min_y + 10, min_x + 30, min_y + 30)
+
+    class _Fixed:
+        def fetch(self, _bbox: object, _crs: str) -> list[object]:
+            return [shed]
+
+    tiles_dir = build_tiles(
+        CUBE_CITY,
+        target,
+        [WINTER_NOON],
+        min_zoom=14,
+        max_zoom=18,
+        cadastre=_Fixed(),  # type: ignore[arg-type]
+    )
+    manifest = json.loads((tiles_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+    assert str(manifest["cadastre_url"]).startswith(CADASTRE_FILENAME)
+    assert CATASTRO_ATTRIBUTION in manifest["attribution"]
+    assert len(json.loads((tiles_dir / CADASTRE_FILENAME).read_text())["features"]) == 1
 
 
 def test_the_relief_shades_the_roof_and_leaves_the_street_alone(

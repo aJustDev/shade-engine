@@ -205,6 +205,35 @@ class TestRecolorCity:
         # Untouched keys survive.
         assert manifest["schema_version"] == 2
 
+    def test_the_vector_layers_travel_verbatim_and_get_their_own_colours(
+        self, tmp_path: Path
+    ) -> None:
+        """They are lines, not tiles: nothing to repalette, everything to carry.
+
+        This used to work by falling off the end of ``_colors_for``'s if-chain,
+        which is not a decision. It is one now: a light tree missing
+        ``outlines.geojson`` would advertise the key in its manifest and 404 on
+        the file, and the colours the browser strokes them with have to change
+        with the theme or the outline vanishes over a pale basemap.
+        """
+        tiles_dir = tmp_path / "testcity" / "v1" / "tiles"
+        tiles_dir.mkdir(parents=True)
+        outlines = '{"type":"FeatureCollection","features":[]}'
+        (tiles_dir / "outlines.geojson").write_text(outlines, encoding="utf-8")
+        (tiles_dir / "cadastre.geojson").write_text(outlines, encoding="utf-8")
+        (tiles_dir / "index.json").write_text(
+            json.dumps({"schema_version": 2, "colors": {"outline": "#96a0b2"}}), encoding="utf-8"
+        )
+
+        report = recolor_city(tmp_path, "testcity", LIGHT)
+
+        for name in ("outlines.geojson", "cadastre.geojson"):
+            assert name in report.copied
+            assert (report.destination / name).read_text(encoding="utf-8") == outlines
+        manifest = json.loads((report.destination / "index.json").read_text(encoding="utf-8"))
+        assert manifest["colors"]["outline"] == "#485060"
+        assert manifest["colors"]["cadastre"] == "#a66820"
+
     def test_missing_tree_is_an_accionable_error(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError, match="no tile tree"):
             recolor_city(tmp_path, "nope", LIGHT)

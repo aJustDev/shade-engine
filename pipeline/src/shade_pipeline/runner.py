@@ -32,6 +32,7 @@ from shade_core.config import CityConfig, load_city
 from shade_pipeline.area import plan_city
 from shade_pipeline.basemap import DEFAULT_MARGIN_M, build_basemap, ensure_assets
 from shade_pipeline.build import ARTIFACT_VERSION, build_city
+from shade_pipeline.cadastre import CadastreSource
 from shade_pipeline.events import JsonlSink, emit
 from shade_pipeline.footprints import OsmnxFootprintSource
 from shade_pipeline.graph import DEFAULT_SPACING_M, build_graph
@@ -114,6 +115,12 @@ class ChainOptions:
     """Audit the canopy against the city's inventory ([[ADR-021]]), if it has one."""
     declutter: bool = True
     """Take cables and awnings out of the DSM before the sweep ([[ADR-022]])."""
+    cadastre: bool = True
+    """Draw the registered footprints beside ours ([[ADR-030]]), if the WFS answers.
+
+    A drawing and only a drawing: it never reaches a raster, so turning it off
+    changes what the viewer can show and nothing the engine computes.
+    """
     cache_dir: Path | None = None
     """Where LiDAR is downloaded to. None means ``data/lidar/<city>``."""
 
@@ -384,6 +391,7 @@ def _run_step(
             "max_zoom": options.max_zoom,
             "instants": len(instants),
             "resume": options.resume,
+            "cadastre": options.cadastre,
         }
         with step_scope(state, "tiles", params) as say:
             out = build_tiles(
@@ -394,6 +402,7 @@ def _run_step(
                 max_zoom=options.max_zoom,
                 workers=options.workers,
                 resume=options.resume,
+                cadastre=CadastreSource() if options.cadastre else None,
                 progress=say,
                 events=_sink_of(state, "tiles"),
             )

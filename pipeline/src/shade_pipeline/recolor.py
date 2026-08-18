@@ -104,6 +104,17 @@ photographic negative. The order is the dark theme's, 1 being the face turned
 away from the light, so a tile keeps meaning the same thing after the rewrite.
 """
 
+LIGHT_OUTLINE_COLOR: Final[RGBA] = (72, 80, 96, 255)
+LIGHT_CADASTRE_COLOR: Final[RGBA] = (166, 104, 32, 255)
+"""The two vector layers, inverted in lightness rather than recoloured.
+
+These are lines and not tiles, so nothing here rewrites a palette: the browser
+strokes them with whatever the manifest says. Over a pale basemap the dark
+theme's colours vanish, so both go darker while keeping their hue -- slate for
+ours, ochre for the cadastre's -- because hue is what tells the reader which of
+the two disagreeing outlines they are looking at.
+"""
+
 _TRANSPARENT: Final[RGBA] = (0, 0, 0, 0)
 
 
@@ -151,6 +162,8 @@ LIGHT: Final = Palette(
         "canopy": _hex(LIGHT_CANOPY_COLOR),
         "buildings": _hex(LIGHT_BUILDINGS_COLOR),
         "relief": _hex(LIGHT_RELIEF_COLORS[4]),
+        "outline": _hex(LIGHT_OUTLINE_COLOR),
+        "cadastre": _hex(LIGHT_CADASTRE_COLOR),
         # El alfa TAMBIEN cambia con la paleta, y olvidarlo dejaba el manifiesto
         # claro anunciando el 0.78 del tema oscuro. Hoy no lo lee nadie en el
         # cliente, pero un manifiesto que miente sobre sus propios tiles es
