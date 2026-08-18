@@ -103,6 +103,44 @@ def test_missing_elevation_stays_missing() -> None:
     assert not np.isnan(shaded[0, 0])
 
 
+def test_smoothing_takes_the_speckle_and_keeps_the_step() -> None:
+    """Why the drawing blurs a surface the sweep reads raw.
+
+    A LiDAR roof is rough at the scale of its own cell -- 0.61 m of local
+    standard deviation on Montalban's buildings, 2.48 at p90 -- and a gradient
+    turns that into noise. What the blur has to prove is that it removes the
+    speckle **without** flattening the roofscape, which are two different
+    measurements: on the city itself the shading keeps the same spread either
+    way (sd 0.285) while isolated tones fall from 7.9% to 2.7%.
+    """
+    rng = np.random.default_rng(0)
+    surface = np.zeros((40, 40))
+    surface[:, 20:] = 6.0  # the party wall
+    noisy = surface + rng.normal(0.0, 0.6, surface.shape)
+    flat = (slice(5, 15), slice(5, 15))
+
+    def contrast(image: np.ndarray) -> float:
+        """How far the wall stands out of the noise left on the roof."""
+        return float((image[:, 18:22].mean(axis=0).max() - image[flat].mean()) / image[flat].std())
+
+    raw = hillshade(noisy, 1.0)
+    smoothed = hillshade(noisy, 1.0, smooth_sigma_px=1.2)
+
+    # Unsmoothed, the step is BURIED in the roof's own noise.
+    assert contrast(raw) < 1.0
+    # Smoothed, the roof flattens (sd 0.227 -> 0.036) and the wall emerges.
+    assert contrast(smoothed) > 4.0
+    assert smoothed[flat].std() < raw[flat].std() / 5
+
+
+def test_smoothing_is_off_unless_it_is_asked_for() -> None:
+    """The sweep reads the DSM raw, and only the drawing is allowed to blur it."""
+    rng = np.random.default_rng(1)
+    rough = rng.normal(0.0, 0.5, (32, 32))
+
+    assert np.array_equal(hillshade(rough, 1.0), hillshade(rough, 1.0, smooth_sigma_px=0.0))
+
+
 def test_the_output_is_float32() -> None:
     """It becomes a whole-city array in a render worker; float64 would double it."""
     assert hillshade(np.zeros((4, 4)), 1.0).dtype == np.float32

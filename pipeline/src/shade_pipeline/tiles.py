@@ -84,7 +84,7 @@ from shade_pipeline.events import EventSink, emit
 from shade_pipeline.grid import grid_shape, transform_from_bbox
 from shade_pipeline.outlines import building_outlines, outlines_geojson
 from shade_pipeline.progress import format_bytes, format_duration
-from shade_pipeline.relief import hillshade
+from shade_pipeline.relief import DEFAULT_SMOOTH_SIGMA_PX, hillshade
 from shade_pipeline.shade_raster import (
     STATE_OUTSIDE,
     STATE_SHADE_BOTH,
@@ -216,6 +216,9 @@ RELIEF_EDGES: Final = (0.45, 0.62, 0.78)
 Not evenly spaced: flat roofs sit at ``sin(45 deg) = 0.707`` and would otherwise
 all land in one bucket, taking the roofscape with them.
 """
+
+RELIEF_SMOOTH_SIGMA_PX: Final = DEFAULT_SMOOTH_SIGMA_PX
+"""Re-exported so the render's own knobs read together; see the constant."""
 
 RELIEF_TILES_FILENAME: Final = "relief.pmtiles"
 STATIC_FILENAMES: Final = {
@@ -943,7 +946,12 @@ def _render_relief(job: RenderJob, directory: Path, start: float) -> RenderResul
     with rasterio.open(directory / DSM_FILENAME) as src:
         surface = src.read()[0]
         resolution_m = abs(src.transform.a)
-    fields = np.stack([hillshade(surface, resolution_m), signed_distance(mask)]).astype(np.float32)
+    fields = np.stack(
+        [
+            hillshade(surface, resolution_m, smooth_sigma_px=RELIEF_SMOOTH_SIGMA_PX),
+            signed_distance(mask),
+        ]
+    ).astype(np.float32)
     del surface
     (summary,) = _write(
         job,
